@@ -1,9 +1,10 @@
+import crypto from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
-import { claimEvent, messages, candidates } from './db/models.js';
+import { claimEvent, messages, candidates, storedDocuments } from './db/models.js';
 import { queue } from './queue/index.js';
 import { markAsRead } from './whatsapp/client.js';
 
@@ -106,35 +107,81 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   /* --------------------------------------------------------------- */
   /* Read-only endpoints the CRM will consume                          */
+  /*                                                                   */
+  /* These return candidate PII. They are served only when             */
+  /* ADMIN_API_KEY is configured, and every request must present it.   */
   /* --------------------------------------------------------------- */
 
-  app.get('/api/candidates', async (req) => {
-    const q = req.query as { stage?: string; limit?: string };
-    const filter = q.stage ? { stage: q.stage as never } : {};
-    const limit = Math.min(Number(q.limit) || 50, 200);
+  if (!config.ADMIN_API_KEY) {
+    logger.warn('ADMIN_API_KEY not set — /api/* routes are disabled');
+  } else {
+    const expected = Buffer.from(config.ADMIN_API_KEY);
 
-    const rows = await candidates()
-      .find(filter)
-      .sort({ updatedAt: -1 })
-      .limit(limit)
-      .toArray();
+    app.addHook('onRequest', async (req, res) => {
+      if (!req.url.startsWith('/api/')) return;
 
-    return { count: rows.length, candidates: rows };
-  });
+      const provided = req.headers['x-api-key'];
+      const supplied = Buffer.from(typeof provided === 'string' ? provided : '');
 
-  app.get('/api/candidates/:waId', async (req, res) => {
-    const { waId } = req.params as { waId: string };
-    const candidate = await candidates().findOne({ waId });
-    if (!candidate) return res.code(404).send({ error: 'not found' });
+      // Constant-time compare, length-guarded — timingSafeEqual throws on a
+      // length mismatch rather than returning false.
+      const ok =
+        supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
 
-    const transcript = await messages()
-      .find({ waId })
-      .sort({ createdAt: 1, _id: 1 })
-      .limit(500)
-      .toArray();
+      if (!ok) {
+        logger.warn({ url: req.url, ip: req.ip }, 'rejected unauthenticated api request');
+        return res.code(401).send({ error: 'unauthorized' });
+      }
+    });
 
-    return { candidate, transcript };
-  });
+    app.get('/api/candidates', async (req) => {
+      const q = req.query as { stage?: string; limit?: string };
+      const filter = q.stage ? { stage: q.stage as never } : {};
+      const limit = Math.min(Number(q.limit) || 50, 200);
+
+      const rows = await candidates()
+        .find(filter)
+        .sort({ updatedAt: -1 })
+        .limit(limit)
+        .toArray();
+
+      return { count: rows.length, candidates: rows };
+    });
+
+    app.get('/api/candidates/:waId', async (req, res) => {
+      const { waId } = req.params as { waId: string };
+      const candidate = await candidates().findOne({ waId });
+      if (!candidate) return res.code(404).send({ error: 'not found' });
+
+      const [transcript, documents] = await Promise.all([
+        messages().find({ waId }).sort({ createdAt: 1, _id: 1 }).limit(500).toArray(),
+        // Drop the raw OCR payload — it is large and the structured fields
+        // are what a reader actually wants.
+        storedDocuments()
+          .find({ waId }, { projection: { 'ocr.raw': 0 } })
+          .sort({ createdAt: 1 })
+          .toArray(),
+      ]);
+
+      return { candidate, documents, transcript };
+    });
+
+    /** The review queue: documents whose extraction a human must confirm. */
+    app.get('/api/documents', async (req) => {
+      const q = req.query as { needsReview?: string; waId?: string; limit?: string };
+      const filter: Record<string, unknown> = {};
+      if (q.needsReview === 'true') filter['ocr.needsReview'] = true;
+      if (q.waId) filter.waId = q.waId;
+
+      const rows = await storedDocuments()
+        .find(filter, { projection: { 'ocr.raw': 0 } })
+        .sort({ createdAt: -1 })
+        .limit(Math.min(Number(q.limit) || 50, 200))
+        .toArray();
+
+      return { count: rows.length, documents: rows };
+    });
+  }
 
   return app;
 }

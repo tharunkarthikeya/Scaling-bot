@@ -37,6 +37,11 @@ const schema = z.object({
 
   STORAGE_PATH: z.string().default('./storage'),
 
+  // Guards the read-only /api/* endpoints, which expose candidate PII —
+  // names, passport numbers, transcripts. Unset means those routes are not
+  // served at all, which is the safe default for a public deployment.
+  ADMIN_API_KEY: z.string().min(16).optional(),
+
   // true  = process inbound and decide a reply, but never hand it to Meta.
   // false = actually send.
   SHADOW_MODE: bool.default('false'),
