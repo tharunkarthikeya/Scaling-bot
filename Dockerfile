@@ -5,6 +5,11 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
+# mongodb-memory-server is a devDependency used only by the local harness. Its
+# postinstall downloads a ~74MB mongod binary, which is dead weight in the image
+# and fails outright on musl. The build needs its types, not its binary.
+ENV MONGOMS_DISABLE_POSTINSTALL=1
+
 COPY package*.json ./
 RUN npm ci
 
