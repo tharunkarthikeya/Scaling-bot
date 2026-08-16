@@ -103,6 +103,113 @@ export async function sendText(to: string, text: string): Promise<SendResult[]> 
   return results;
 }
 
+/* ------------------------------------------------------------------ */
+/* Interactive messages                                                */
+/*                                                                     */
+/* §1 asks for buttons wherever possible. WhatsApp offers two shapes:  */
+/* up to three reply buttons, or a list of up to ten rows behind a     */
+/* single tap. Which one is used is decided by the number of options,  */
+/* not by the caller.                                                  */
+/* ------------------------------------------------------------------ */
+
+export interface Button {
+  id: string;
+  title: string;
+}
+
+export interface Row {
+  id: string;
+  title: string;
+  description?: string;
+}
+
+export type Outbound =
+  | { kind: 'text'; body: string }
+  | { kind: 'buttons'; body: string; buttons: Button[] }
+  | { kind: 'list'; body: string; buttonText: string; rows: Row[] };
+
+/** Meta's limits. Exceeding one rejects the whole message rather than trimming it. */
+const INTERACTIVE_BODY_LIMIT = 1024;
+const BUTTON_TITLE_LIMIT = 20;
+const ROW_TITLE_LIMIT = 24;
+const ROW_DESCRIPTION_LIMIT = 72;
+const MAX_BUTTONS = 3;
+const MAX_ROWS = 10;
+
+function clip(text: string, limit: number): string {
+  const glyphs = [...text];
+  return glyphs.length <= limit ? text : glyphs.slice(0, limit - 1).join('') + '…';
+}
+
+/**
+ * Sends a message, choosing the WhatsApp shape that fits it.
+ *
+ * A body longer than the interactive limit is sent as a plain message first and
+ * the options follow with a short prompt — the alternative is Meta rejecting the
+ * message and the candidate receiving nothing.
+ */
+export async function send(to: string, message: Outbound): Promise<SendResult[]> {
+  if (message.kind === 'text') return sendText(to, message.body);
+
+  const results: SendResult[] = [];
+  let body = message.body;
+
+  if ([...body].length > INTERACTIVE_BODY_LIMIT) {
+    const split = [...body].length - INTERACTIVE_BODY_LIMIT;
+    logger.warn({ to, overBy: split }, 'interactive body too long; sending it as text first');
+    results.push(...(await sendText(to, body)));
+    body = message.kind === 'buttons' ? '👇' : '👇';
+  }
+
+  const interactive =
+    message.kind === 'buttons'
+      ? {
+          type: 'button',
+          body: { text: body },
+          action: {
+            buttons: message.buttons.slice(0, MAX_BUTTONS).map((b) => ({
+              type: 'reply',
+              reply: { id: b.id, title: clip(b.title, BUTTON_TITLE_LIMIT) },
+            })),
+          },
+        }
+      : {
+          type: 'list',
+          body: { text: body },
+          action: {
+            button: clip(message.buttonText, BUTTON_TITLE_LIMIT),
+            sections: [
+              {
+                rows: message.rows.slice(0, MAX_ROWS).map((r) => ({
+                  id: r.id,
+                  title: clip(r.title, ROW_TITLE_LIMIT),
+                  ...(r.description
+                    ? { description: clip(r.description, ROW_DESCRIPTION_LIMIT) }
+                    : {}),
+                })),
+              },
+            ],
+          },
+        };
+
+  if (config.SHADOW_MODE) {
+    logger.info({ to, body, interactive }, 'shadow mode: interactive suppressed');
+    results.push({ shadowed: true });
+    return results;
+  }
+
+  const json = await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive,
+  });
+
+  results.push({ wamid: json?.messages?.[0]?.id, shadowed: false });
+  return results;
+}
+
 /**
  * Sends the approved re-engagement template. This is the only thing that may be
  * sent once the 24-hour window has closed.

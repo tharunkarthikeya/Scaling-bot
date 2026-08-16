@@ -1,226 +1,291 @@
 /**
  * ─────────────────────────────────────────────────────────────────────────────
- *  THIS IS THE FILE YOU EDIT TO CHANGE HOW THE BOT TALKS AND BEHAVES.
+ *  THIS IS THE FILE YOU EDIT TO CHANGE HOW THE BOT BEHAVES.
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * Everything here is prompt text and configuration. Nothing else in the
- * codebase needs to change when you rewrite the persona, the rules, or the
- * document checklist.
+ * What lives where:
  *
- * One constraint: keep `buildSystemPrompt()` deterministic. No timestamps, no
- * candidate names, no random ids. It is the cached prefix of every request —
- * a single changing byte in it re-bills the whole prompt on every message.
- * Per-candidate state is injected separately, further down the conversation.
+ *   rules.ts   (this file)  documents, thresholds, trigger lists, the one prompt
+ *   flow.ts                 the questions, in order, and what each answer means
+ *   copy.ts                 every other sentence the candidate can receive
+ *   trades.ts               trade-specific question packs (§8)
+ *
+ * The bot never composes a candidate-facing sentence. Every word it sends comes
+ * from `flow.ts` or `copy.ts`, already written, in the candidate's language. The
+ * model's entire job is to read what the candidate typed and say which of the
+ * offered answers it corresponds to. That is why the bot cannot go off-topic:
+ * it has no channel through which to do so.
  */
+
+import type { Localised } from './language.js';
 
 export interface DocumentRequirement {
   /** Stable key. Used in the database and in OCR routing — don't rename casually. */
   id: string;
-  /** How the bot refers to it when asking. */
-  label: string;
-  /** Extra context for the model: what counts, what doesn't. */
-  description: string;
+  /** How the bot refers to it. */
+  label: Localised;
   required: boolean;
   /** Keywords that let an inbound file be re-attributed to this slot from its caption/filename. */
   keywords: string[];
   /**
-   * Which Veris extractor to run. 'none' skips OCR entirely — use it for files
-   * with nothing to read, like a headshot.
+   * Which Veris extractor to run. 'none' skips OCR entirely.
    */
   ocr: 'passport' | 'resume' | 'document' | 'none';
+  /**
+   * Extracted values from this document are personal identifiers and must never
+   * be echoed back to the candidate or shown unmasked in ordinary CRM screens
+   * (§15, §16, §27).
+   */
+  sensitive?: boolean;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 1. THE CHECKLIST
+ * 1. DOCUMENTS
  *
- * The bot asks for these in order. The state machine — not the model — decides
- * what is outstanding, so the bot can never lose track or ask twice.
+ * The CV is asked of everyone (§5). Passport, Aadhaar and PAN are asked only in
+ * the Europe/Russia branch (§13) — the flow decides that, not this list.
  * ───────────────────────────────────────────────────────────────────────────*/
 
-export const REQUIRED_DOCUMENTS: DocumentRequirement[] = [
+export const DOCUMENTS: DocumentRequirement[] = [
   {
     id: 'cv',
-    label: 'CV / resume',
-    description:
-      'A CV or resume as a PDF, Word document, or clear photo. Any format is acceptable as long as the text is readable.',
+    label: {
+      en: 'CV',
+      ta: 'CV',
+      hi: 'CV',
+    },
     required: true,
-    keywords: ['cv', 'resume', 'curriculum', 'biodata', 'bio data'],
+    keywords: ['cv', 'resume', 'curriculum', 'biodata', 'bio data', 'ரெஸ்யூம்', 'बायोडाटा'],
     ocr: 'resume',
   },
   {
     id: 'passport',
-    label: 'passport photo page',
-    description:
-      'A photo or scan of the passport page showing the photograph, full name, passport number and expiry date. All four corners must be visible and the text must be legible.',
-    required: true,
-    keywords: ['passport', 'pp', 'travel document'],
+    label: {
+      en: 'passport',
+      ta: 'பாஸ்போர்ட்',
+      hi: 'पासपोर्ट',
+    },
+    required: false,
+    keywords: ['passport', 'pp', 'travel document', 'பாஸ்போர்ட்', 'पासपोर्ट'],
     ocr: 'passport',
+    sensitive: true,
   },
   {
-    id: 'photograph',
-    label: 'passport-size photograph',
-    description:
-      'A recent passport-size photograph with a plain background. A clear selfie against a plain wall is acceptable.',
-    required: true,
-    keywords: ['photo', 'photograph', 'picture', 'selfie', 'headshot'],
-    // A headshot has no text worth extracting.
-    ocr: 'none',
-  },
-  {
-    id: 'certificates',
-    label: 'educational or trade certificates',
-    description:
-      'Degree, diploma or trade certificates relevant to the role. Multiple files are fine.',
+    id: 'aadhaar',
+    label: {
+      en: 'Aadhaar card',
+      ta: 'ஆதார் அட்டை',
+      hi: 'आधार कार्ड',
+    },
     required: false,
-    keywords: ['certificate', 'degree', 'diploma', 'marksheet', 'qualification', 'iti'],
+    keywords: ['aadhaar', 'aadhar', 'adhar', 'uid', 'ஆதார்', 'आधार'],
     ocr: 'document',
+    sensitive: true,
   },
   {
-    id: 'experience_letter',
-    label: 'experience letter',
-    description:
-      'A letter or service certificate from a previous employer confirming role and duration.',
+    id: 'pan',
+    label: {
+      en: 'PAN card',
+      ta: 'PAN அட்டை',
+      hi: 'PAN कार्ड',
+    },
     required: false,
-    keywords: ['experience', 'service certificate', 'employment letter', 'relieving'],
+    keywords: ['pan', 'pan card', 'PAN', 'पैन'],
+    ocr: 'document',
+    sensitive: true,
+  },
+  {
+    // Never asked for by the flow. It exists so a certificate the candidate
+    // sends unprompted, or adds later through UPDATE (§22), has somewhere to go
+    // rather than being filed as whatever we last asked for.
+    id: 'certificate',
+    label: {
+      en: 'certificate',
+      ta: 'சான்றிதழ்',
+      hi: 'सर्टिफिकेट',
+    },
+    required: false,
+    keywords: [
+      'certificate', 'certificat', 'degree', 'diploma', 'marksheet', 'qualification',
+      'iti', 'licence', 'license', 'சான்றிதழ்', 'सर्टिफिकेट', 'प्रमाणपत्र',
+    ],
     ocr: 'document',
   },
 ];
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 2. PERSONA — who the bot is
- * ───────────────────────────────────────────────────────────────────────────*/
-
-const PERSONA = `
-You are the document-intake assistant for a recruitment agency, speaking to job
-candidates over WhatsApp. Your job is to collect the documents needed to verify
-a candidate's application, and to answer straightforward questions about that
-process along the way.
-
-You are not the recruiter. You do not discuss salary, visa outcomes, job
-availability, interview dates, or whether an application will succeed. When a
-candidate asks about any of those, say plainly that a recruiter will follow up
-on it, and carry on with the documents.
-`.trim();
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * 3. RULES — how the bot behaves
+ * 2. THE EUROPE / RUSSIA TRIGGER (§13)
  *
- * Add, remove, or rewrite freely. Say what you want, once, at normal volume:
- * the model follows this text closely, so shouting at it produces a bot that
- * over-applies the instruction rather than one that follows it better.
+ * Editing these lists changes who gets asked for identity documents. Nothing
+ * else needs to change.
  * ───────────────────────────────────────────────────────────────────────────*/
 
-const CONVERSATION_RULES = `
-# How to write
+/** Country-preference option ids that put a candidate in the document branch. */
+export const EUROPE_RUSSIA_PREFERENCES = ['europe', 'russia_cis'];
 
-Write the way a person messaging on WhatsApp writes. Short messages, two or
-three sentences. No greetings block, no sign-off, no bullet lists unless you are
-genuinely listing documents. Never use markdown headers or bold — they render as
-literal asterisks on WhatsApp.
-
-Match the candidate's language. If they write in Hindi, Tamil, Malayalam or
-Hinglish, reply in the same language. If you are unsure, use simple English.
-
-# What to do on each turn
-
-Every turn must end with a message to the candidate. Recording something with a
-tool is bookkeeping, not a reply — after you use a tool, still write the message.
-
-Ask for exactly one document at a time — the one named as OUTSTANDING in the
-conversation state. Do not list every remaining document at once; it reads as a
-form and candidates drop out.
-
-When a document arrives, confirm you received it in a few words, then ask for
-the next one. Do not claim a document has been verified or approved — you have
-only received it.
-
-If the candidate says they will send something later, acknowledge it and move to
-the next outstanding document rather than waiting.
-
-If the candidate says they do not have a document at all, record that and move
-on. Do not press them more than once.
-
-# Boundaries
-
-Never state or imply that a candidate has been selected, shortlisted, or
-rejected.
-
-Never give visa, immigration, legal, or medical advice.
-
-Never ask for bank details, card numbers, passwords, or OTPs, and never confirm
-a request for payment. If a candidate mentions being asked to pay for a job,
-tell them to stop and that a recruiter will call them.
-
-If a candidate is distressed, angry, or reports being defrauded, hand off to a
-human rather than continuing the checklist.
-
-# Accuracy
-
-Only state facts that appear in the conversation state or in what the candidate
-has told you. If you do not know something, say a recruiter will confirm it.
-
-If a document is unreadable, say specifically what is wrong — too dark, cut off,
-blurred — and ask for one more photo.
-`.trim();
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * 4. THE OPENING MESSAGE — sent when a candidate first messages in
- * ───────────────────────────────────────────────────────────────────────────*/
-
-export const GREETING = `
-Hello! I'm here to collect the documents needed for your application. It takes
-about five minutes and you can send everything right here in this chat.
-`
-  .trim()
-  .replace(/\s+/g, ' ');
+/**
+ * Free-typed country names that also trigger the branch. Matched case- and
+ * accent-insensitively against whatever the candidate types at `selected_countries`.
+ */
+export const EUROPE_RUSSIA_COUNTRIES = [
+  'romania',
+  'serbia',
+  'russia',
+  'poland',
+  'croatia',
+  'hungary',
+  'slovakia',
+  'slovenia',
+  'czech',
+  'czechia',
+  'bulgaria',
+  'lithuania',
+  'latvia',
+  'estonia',
+  'portugal',
+  'spain',
+  'italy',
+  'germany',
+  'france',
+  'netherlands',
+  'belgium',
+  'austria',
+  'greece',
+  'malta',
+  'cyprus',
+  'ireland',
+  'norway',
+  'sweden',
+  'finland',
+  'denmark',
+  'belarus',
+  'kazakhstan',
+  'uzbekistan',
+  'georgia',
+  'armenia',
+  'azerbaijan',
+  'moldova',
+  'ukraine',
+  'albania',
+  'montenegro',
+  'macedonia',
+  'bosnia',
+];
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 5. TUNABLES
+ * 3. TUNABLES
  * ───────────────────────────────────────────────────────────────────────────*/
 
 export const TUNABLES = {
-  /** How many turns of history to send to the model. Older turns are dropped. */
-  historyTurns: 20,
-  /**
-   * Ceiling on a turn's output, not a target — the rules keep replies short.
-   * Tool calls share this budget, so leave headroom: too tight and a turn that
-   * calls a tool truncates before it writes any text, and the candidate gets
-   * the fallback for no visible reason.
-   */
-  maxReplyTokens: 1200,
-  /** Stop chasing a document after this many asks and move on. */
+  /** Turns of history sent to the interpreter. It needs very little context. */
+  historyTurns: 6,
+  /** Ceiling on the interpreter's output. It returns a small JSON object. */
+  maxInterpretTokens: 400,
+  /** Stop re-asking a question after this many attempts and hand to staff. */
+  maxAsksPerStep: 3,
+  /** Stop chasing a document after this many asks. */
   maxAsksPerDocument: 2,
   /** OCR field confidence below this routes the document to human review. */
   ocrReviewThreshold: 0.85,
-};
+  /** Flag a passport expiring within this many months for staff attention (§12). */
+  passportExpiryWarningMonths: 12,
+  /**
+   * How long a candidate may go quiet before the one permitted reminder is sent
+   * (§21). Comfortably inside Meta's 24-hour window so the reminder is a normal
+   * message rather than a billed template.
+   */
+  reminderAfterHours: 20,
+  /**
+   * Minimum age the flow will register. Below this the conversation goes to
+   * staff rather than continuing — an automated overseas-work registration is
+   * not the right thing to run with a minor.
+   */
+  minimumAge: 18,
+} as const;
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 6. ASSEMBLY — you generally don't need to touch this
+ * 4. THE INTERPRETER PROMPT
+ *
+ * The only prompt in the system. Note what it does not do: it never writes to
+ * the candidate, never decides what to ask next, and never sees the candidate's
+ * name, documents, or any other field. It is handed one question, the answers
+ * that question accepts, and one message — and it returns a choice.
+ *
+ * Keep it deterministic. It is the cached prefix of every interpretation call.
  * ───────────────────────────────────────────────────────────────────────────*/
 
-function renderChecklistReference(): string {
-  return REQUIRED_DOCUMENTS.map(
-    (d) =>
-      `- ${d.id} (${d.required ? 'required' : 'optional'}) — ${d.label}: ${d.description}`,
-  ).join('\n');
+export const INTERPRETER_PROMPT = `
+You classify short replies from job candidates messaging a recruitment agency on
+WhatsApp. You are a parser, not a chat partner. You never write a message to the
+candidate; something else does that.
+
+You are given one question that was asked, the answers it accepts, and the
+candidate's reply. The reply may be in English, Tamil, Hindi, or a romanised mix
+of these ("naan welder", "mujhe driver ka kaam chahiye"). Read it in whatever
+language it arrives in.
+
+Return exactly one classification by calling the interpret tool:
+
+- matched      the reply corresponds to one or more of the offered options.
+               Return their ids. Only return an id that was actually offered.
+- value        the question wanted free text, a date, or a number, and the reply
+               supplies it. Return the normalised value and the candidate's exact
+               original wording.
+- staff        the candidate is asking for a human, is angry, distressed,
+               reports being asked to pay for a job, or raises a legal, medical
+               or safety matter.
+- command      the reply is the word UPDATE or DELETE, or plainly asks to change
+               or remove their profile.
+- unrelated    the reply has nothing to do with the question and is not any of
+               the above — small talk, a question about salary or visas, a
+               forwarded message, a greeting.
+- unclear      you cannot tell. Prefer this over guessing.
+
+Rules:
+
+Never invent an option id. If the reply does not match one of the offered
+options, it is not "matched" — even if it is close in meaning to something you
+think should have been offered.
+
+A reply can be brief, misspelled, or lowercase and still be a clear match. "ya",
+"ok", "sari", "haan", "1", and a bare thumbs-up all match a yes-type option when
+one is offered.
+
+Numbers refer to the offered options in the order they were listed. "2" means
+the second option.
+
+For a date, normalise to YYYY-MM-DD. Indian candidates write DD/MM/YYYY —
+15/08/1995 is 15 August 1995, never 8 March. If the day is above 12 the order is
+unambiguous; if both numbers could be a month, assume DD/MM.
+
+For a month-and-year, normalise to MM/YYYY.
+
+When the candidate answers a question you were not asked about — volunteering
+their experience while you asked for their city — classify what they said
+against the question that was actually asked. Extra information they offer is
+captured elsewhere; do not force it into this answer.
+
+Prefer "unclear" to a confident wrong answer. A re-asked question costs one
+message. A wrong answer written into a candidate's permanent record costs a
+placement.
+`.trim();
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 5. MASKING (§15, §16, §27)
+ *
+ * Identity numbers are stored so staff can verify them and masked everywhere
+ * else. Never send an unmasked value to a candidate — they are the one person
+ * who does not need us to read their own Aadhaar number back to them, and a
+ * WhatsApp transcript is not a secure store.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export function maskIdentifier(value: string | undefined): string {
+  if (!value) return '—';
+  const compact = value.replace(/\s+/g, '');
+  if (compact.length <= 4) return '•'.repeat(compact.length);
+  return `${'•'.repeat(Math.max(4, compact.length - 4))}${compact.slice(-4)}`;
 }
 
-/**
- * The cached prefix of every request. Deterministic by construction — if you add
- * anything that varies per candidate or per request, caching silently stops
- * working and every message pays full input price.
- */
-export function buildSystemPrompt(): string {
-  return [
-    PERSONA,
-    CONVERSATION_RULES,
-    '# The document checklist\n\n' + renderChecklistReference(),
-    `# Conversation state
-
-Every message you receive is preceded by a <state> block describing the
-candidate and which documents are outstanding. That block is the source of
-truth — it is maintained by the system, not by you. Trust it over your own
-recollection of the conversation, and never repeat its contents verbatim to the
-candidate.`,
-  ].join('\n\n---\n\n');
+export function requirementFor(docType: string): DocumentRequirement | undefined {
+  return DOCUMENTS.find((d) => d.id === docType);
 }

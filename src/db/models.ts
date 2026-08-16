@@ -1,15 +1,83 @@
 import type { Collection, ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../logger.js';
+import type { Language } from '../conversation/language.js';
 
-/** Where a candidate is in the intake flow. The engine owns these transitions, not the model. */
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Registration state (protocol §21)
+ *
+ * These are the states the protocol names, plus the operational ones it implies.
+ * The engine owns every transition. The model never writes one — it cannot even
+ * see them.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
 export type ConversationStage =
-  | 'new'
-  | 'collecting_documents'
-  | 'awaiting_review'
-  | 'complete'
-  | 'human_handoff'
-  | 'opted_out';
+  | 'NEW'
+  | 'LANGUAGE_PENDING'
+  | 'CONSENT_PENDING'
+  | 'CV_PENDING'
+  | 'BASIC_DETAILS_PENDING'
+  | 'JOB_PREFERENCE_PENDING'
+  | 'DOCUMENTS_PENDING'
+  | 'CONFIRMATION_PENDING'
+  | 'REGISTRATION_COMPLETED'
+  | 'HUMAN_HANDOFF'
+  | 'CONSENT_REFUSED'
+  | 'DELETED';
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Candidate status (protocol §26)
+ *
+ * Distinct from stage. Stage is where the conversation is; status is what the
+ * business thinks of the candidate. The bot sets a handful of these; the rest
+ * are set by staff through the CRM.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export const CANDIDATE_STATUSES = [
+  'new_enquiry',
+  'consent_pending',
+  'registration_started',
+  'profile_incomplete',
+  'profile_registered',
+  'documents_pending',
+  'documents_received',
+  'documents_incomplete',
+  'documents_verified',
+  'manual_review',
+  'job_ready',
+  'shortlisted',
+  'contacted',
+  'interested',
+  'interview_scheduled',
+  'selected',
+  'processing',
+  'deployed',
+  'temporarily_unavailable',
+  'not_interested',
+  'consent_withdrawn',
+  'archived',
+] as const;
+
+export type CandidateStatus = (typeof CANDIDATE_STATUSES)[number];
+
+/** Statuses the bot is allowed to set on its own. Everything else is staff-only (§27). */
+export const BOT_SETTABLE_STATUSES: ReadonlySet<CandidateStatus> = new Set<CandidateStatus>([
+  'new_enquiry',
+  'consent_pending',
+  'registration_started',
+  'profile_incomplete',
+  'profile_registered',
+  'documents_pending',
+  'documents_received',
+  'documents_incomplete',
+  'manual_review',
+  'not_interested',
+  'consent_withdrawn',
+]);
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Documents
+ * ───────────────────────────────────────────────────────────────────────────*/
 
 export type DocumentStatus =
   | 'pending' // never asked for, or asked for and no answer yet
@@ -17,9 +85,10 @@ export type DocumentStatus =
   | 'ocr_queued'
   | 'ocr_done'
   | 'ocr_failed'
-  | 'needs_review' // OCR confidence below threshold — a human must confirm
-  | 'promised' // candidate said they'll send it later
-  | 'unavailable'; // candidate says they don't have it
+  | 'incomplete' // arrived but unreadable or missing pages (§14)
+  | 'needs_review' // extraction confidence too low — a human must confirm
+  | 'promised' // candidate said they will send it later
+  | 'unavailable'; // candidate says they do not have it
 
 export interface DocumentSlot {
   status: DocumentStatus;
@@ -27,39 +96,199 @@ export interface DocumentSlot {
   askedCount: number;
   lastAskedAt?: Date;
   updatedAt: Date;
+  /** Why it is incomplete, in plain language, for the candidate-facing re-ask. */
   note?: string;
+  /** Superseded uploads, newest last. §22 forbids destroying old versions. */
+  previousDocumentIds?: ObjectId[];
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Profile
+ *
+ * Flat and queryable. Three rules from the protocol are load-bearing here:
+ *
+ *  §9  previous, current and desired occupation are three separate fields and
+ *      are never merged into one another.
+ *  §10 country preference carries its own strictness flag, because a strict
+ *      candidate must never be matched outside their list.
+ *  §27 every value records where it came from and keeps the candidate's own
+ *      wording — see `fieldMeta` on the candidate document.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
 export interface CandidateProfile {
+  /** §2 — answered before anything personal is collected. */
+  lookingForOverseasJob?: boolean;
+  /** Trade question packs selected for this candidate (§8). */
+  tradePacks?: string[];
+  /** Set once the §17 comparison has flagged a difference, so it is raised once. */
+  identityFlagged?: boolean;
+
+  /* identity */
   fullName?: string;
-  email?: string;
+  /** ISO yyyy-mm-dd. Stored normalised; the candidate always types DD/MM/YYYY. */
   dateOfBirth?: string;
+  email?: string;
+  alternateNumber?: string;
   nationality?: string;
+  fatherName?: string;
+
+  /* location — stored split, because matching filters on state and country (§6) */
+  currentCity?: string;
+  currentDistrict?: string;
+  currentState?: string;
+  currentCountry?: string;
+
+  /* education */
+  education?: string;
+  educationCourse?: string;
+
+  /* experience */
+  primaryTrade?: string;
+  totalExperienceBand?: string;
+  /** Set only when the candidate gives an exact figure; the band is always set. */
+  totalExperienceYears?: number;
+  indiaExperienceYears?: number;
+  overseasExperienceYears?: number;
+  overseasCountries?: string[];
+  employers?: string[];
+  skills?: string[];
+  certifications?: string[];
+  drivingLicences?: string[];
+  machinery?: string[];
+  hasOverseasExperience?: boolean;
+
+  /* §9 — three occupations, never mixed */
+  previousOccupations?: string[];
+  currentOccupation?: string;
+  desiredOccupation?: string;
+
+  /* trade-specific answers, keyed by question id (§8) */
+  tradeAnswers?: Record<string, string[]>;
+
+  /* job preference (§9) */
+  workTypePreference?: string;
+  relatedAcceptance?: string;
+  generalWorkWillingness?: string;
+  generalJobs?: string[];
+  trainingWillingness?: string;
+
+  /* country preference (§10) */
+  countryPreference?: string;
+  selectedCountries?: string[];
+  /** 'strict' means never shortlist outside `selectedCountries` without asking. */
+  countryStrictness?: string;
+
+  /* availability (§11) */
+  availability?: string;
+  availabilityNote?: string;
+
+  /* passport (§12) */
+  passportStatus?: string;
+  /** MM/YYYY as the candidate gives it. */
+  passportExpiry?: string;
+  passportAppliedWhen?: string;
+  passportRenewalIntent?: string;
+  passportApplyWillingness?: string;
+
+  /* Europe / Russia document branch (§13) */
+  documentAvailability?: string;
+  availableDocuments?: string[];
+
+  /* extracted from documents — never echoed to the candidate in full (§27) */
   passportNumber?: string;
-  roleAppliedFor?: string;
-  yearsOfExperience?: number;
-  currentLocation?: string;
+  aadhaarNumber?: string;
+  panNumber?: string;
+
   [key: string]: unknown;
 }
 
+/** Where a value came from. Required by §27. */
+export type FieldSource = 'cv' | 'chat' | 'document' | 'staff';
+
+export interface FieldMeta {
+  source: FieldSource;
+  /** The candidate's own wording, kept alongside the standardised value (§27). */
+  raw?: string;
+  at: Date;
+  /** Extraction confidence, when the source reported one. Null means unscored. */
+  confidence?: number | null;
+  /** True once a human has confirmed it. CV data is never verified by default (§27). */
+  verified?: boolean;
+}
+
+export interface ProfileChange {
+  field: string;
+  from?: unknown;
+  to?: unknown;
+  source: FieldSource;
+  at: Date;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Candidate
+ * ───────────────────────────────────────────────────────────────────────────*/
+
 export interface CandidateDoc {
   _id?: ObjectId;
-  /** Meta's stable per-business identifier for the user. Primary key for the conversation. */
+  /** Meta's stable per-business identifier. Primary key for the conversation. */
   waId: string;
   phone: string;
   profileName?: string;
+
+  /** Human-facing id, assigned once registration completes (§19). */
+  candidateId?: string;
+
+  language?: Language;
+  /** What the candidate typed when they chose "Other" (§3). */
+  languageOther?: string;
+
+  /** §4. Nothing personal is collected until this is recorded as given. */
+  consent?: {
+    given: boolean;
+    at: Date;
+    /** How consent was obtained, for the audit record. */
+    source: 'whatsapp_chat' | 'staff';
+    withdrawnAt?: Date;
+  };
+
   stage: ConversationStage;
+  status: CandidateStatus;
+
   profile: CandidateProfile;
-  /** documentId -> slot. Keys come from REQUIRED_DOCUMENTS in conversation/rules.ts. */
+  /** Provenance per profile field (§27). Keys mirror `profile`. */
+  fieldMeta: Record<string, FieldMeta>;
+  /** Append-only change log (§22). */
+  history: ProfileChange[];
+
+  /** Slot key -> slot. Keys come from DOCUMENTS in conversation/rules.ts. */
   documents: Record<string, DocumentSlot>;
-  /** Which document the bot most recently asked for; inbound media is attributed here by default. */
-  awaitingDocument?: string;
-  humanHandoff?: { reason: string; at: Date };
+
+  /** The step whose answer the next inbound message is presumed to be. */
+  currentStep?: string;
+  /** Partial selection for a multi-select step, held until the candidate taps Done. */
+  pendingMulti?: { step: string; selected: string[] };
+  /** Steps queued by an UPDATE or an edit request (§18, §22). Drains before normal flow. */
+  editQueue?: string[];
+  /**
+   * Consecutive replies we could not make sense of. Reset by any answer that
+   * lands. Past the limit the conversation goes to a person rather than asking
+   * the same question a fourth time.
+   */
+  unclearCount?: number;
+
+  humanHandoff?: { reason: string; at: Date; returnedAt?: Date };
+
   /** Meta's 24-hour customer service window. Outside it, only templates may be sent. */
   windowExpiresAt?: Date;
   lastInboundAt?: Date;
   lastOutboundAt?: Date;
-  reengagementSentAt?: Date;
+  /** §21 allows exactly one reminder. This is what enforces "exactly one". */
+  reminderSentAt?: Date;
+
+  completedAt?: Date;
+  /** §23. The record is tombstoned, not dropped — a minimum audit trail survives. */
+  deletion?: { requestedAt: Date; completedAt?: Date; by: 'candidate' | 'staff' };
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -72,9 +301,13 @@ export interface MessageDoc {
   wamid?: string;
   type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'template' | 'interactive' | 'other';
   text?: string;
+  /** For an interactive reply, the stable option id the candidate tapped. */
+  replyId?: string;
   mediaId?: string;
   filename?: string;
   mimeType?: string;
+  /** Which flow step this message asked or answered. Makes the transcript auditable. */
+  step?: string;
   /** Set on outbound rows when SHADOW_MODE suppressed the actual send. */
   shadowed?: boolean;
   error?: string;
@@ -86,7 +319,7 @@ export interface OcrField {
   value: string;
   /**
    * Null when the extractor returned no score for this field. Null is not
-   * confidence — an unscored field must never be treated as verified.
+   * confidence — an unscored field must never be treated as verified (§27).
    */
   confidence: number | null;
   page?: number;
@@ -98,7 +331,7 @@ export interface StoredDocumentDoc {
   _id?: ObjectId;
   candidateId: ObjectId;
   waId: string;
-  /** Slot key, e.g. 'cv' | 'passport'. */
+  /** Slot key, e.g. 'cv' | 'passport' | 'aadhaar' | 'pan'. */
   docType: string;
   mediaId: string;
   storageKey: string;
@@ -107,23 +340,29 @@ export interface StoredDocumentDoc {
   sha256: string;
   originalFilename?: string;
   caption?: string;
+  /** Set when a later upload replaced this one. Old versions are kept (§22). */
+  supersededAt?: Date;
   ocr?: {
     status: 'queued' | 'running' | 'done' | 'failed' | 'skipped';
-    /** Which Veris extractor ran. */
     extractor?: 'passport' | 'resume' | 'document';
     startedAt?: Date;
     finishedAt?: Date;
     error?: string;
-    /** Raw OCR payload, kept verbatim so extraction can be re-derived without re-OCRing. */
+    /** Raw payload, kept verbatim so extraction can be re-derived without re-OCRing. */
     raw?: unknown;
     /** Field-level extraction with provenance. The CRM reads this, not `raw`. */
     fields?: OcrField[];
-    /** Overall score, when the extractor reports one. Null means it does not. */
     confidence?: number | null;
-    /** True when a human must confirm before this data is treated as fact. */
     needsReview?: boolean;
-    /** Why review is needed, in plain language, for the CRM to display. */
     reviewReasons?: string[];
+    /** Document-completeness verdict (§14). Separate from extraction confidence. */
+    completeness?: {
+      complete: boolean;
+      /** Plain-language problems to quote back to the candidate. */
+      problems: string[];
+      /** Page numbers to re-request, when the extractor can tell us. */
+      missingPages?: number[];
+    };
   };
   createdAt: Date;
   updatedAt: Date;
@@ -136,6 +375,29 @@ export interface ProcessedEventDoc {
   processedAt: Date;
 }
 
+/**
+ * Audit trail for the events §23 and §27 require us to be able to prove:
+ * consent given, consent withdrawn, deletion requested, staff takeover.
+ * Survives candidate deletion by design — it holds no document content.
+ */
+export interface AuditEventDoc {
+  _id?: ObjectId;
+  waId: string;
+  candidateId?: string;
+  event:
+    | 'consent_given'
+    | 'consent_refused'
+    | 'consent_withdrawn'
+    | 'deletion_requested'
+    | 'deletion_completed'
+    | 'handoff_requested'
+    | 'handoff_returned'
+    | 'registration_completed'
+    | 'reminder_sent';
+  detail?: string;
+  at: Date;
+}
+
 export const candidates = (): Collection<CandidateDoc> =>
   getDb().collection<CandidateDoc>('candidates');
 export const messages = (): Collection<MessageDoc> => getDb().collection<MessageDoc>('messages');
@@ -143,6 +405,11 @@ export const storedDocuments = (): Collection<StoredDocumentDoc> =>
   getDb().collection<StoredDocumentDoc>('documents');
 export const processedEvents = (): Collection<ProcessedEventDoc> =>
   getDb().collection<ProcessedEventDoc>('processed_events');
+export const auditEvents = (): Collection<AuditEventDoc> =>
+  getDb().collection<AuditEventDoc>('audit_events');
+/** Single-document counter behind the human-facing candidate id. */
+const counters = (): Collection<{ _id: string; seq: number }> =>
+  getDb().collection<{ _id: string; seq: number }>('counters');
 
 /**
  * Creates indexes, replacing any that already exist with different options.
@@ -170,8 +437,22 @@ async function createIndexes(
 export async function ensureIndexes(): Promise<void> {
   await createIndexes(candidates(), [
     { key: { waId: 1 }, unique: true, name: 'waId_unique' },
+    {
+      key: { candidateId: 1 },
+      unique: true,
+      name: 'candidateId_unique',
+      partialFilterExpression: { candidateId: { $type: 'string' } },
+    },
     { key: { stage: 1, updatedAt: -1 }, name: 'stage_updatedAt' },
+    { key: { status: 1, updatedAt: -1 }, name: 'status_updatedAt' },
     { key: { windowExpiresAt: 1 }, name: 'windowExpiresAt' },
+    // Drives the §21 reminder sweep: incomplete, gone quiet, not yet reminded.
+    { key: { reminderSentAt: 1, lastInboundAt: 1 }, name: 'reminder_sweep' },
+    // Matching filters on these together often enough to earn a compound index.
+    {
+      key: { 'profile.primaryTrade': 1, 'profile.countryPreference': 1, status: 1 },
+      name: 'match_trade_country',
+    },
   ]);
 
   await createIndexes(messages(), [
@@ -189,7 +470,7 @@ export async function ensureIndexes(): Promise<void> {
   ]);
 
   await createIndexes(storedDocuments(), [
-    { key: { candidateId: 1, docType: 1 }, name: 'candidate_docType' },
+    { key: { candidateId: 1, docType: 1, createdAt: -1 }, name: 'candidate_docType' },
     { key: { 'ocr.status': 1, createdAt: 1 }, name: 'ocr_status' },
     // The CRM's review queue reads off this.
     { key: { 'ocr.needsReview': 1, createdAt: 1 }, name: 'ocr_needsReview' },
@@ -200,6 +481,11 @@ export async function ensureIndexes(): Promise<void> {
     { key: { wamid: 1 }, unique: true, name: 'wamid_unique' },
     // Meta stops retrying long before 7 days; the dedupe table doesn't need to grow forever.
     { key: { processedAt: 1 }, expireAfterSeconds: 60 * 60 * 24 * 7, name: 'processedAt_ttl' },
+  ]);
+
+  await createIndexes(auditEvents(), [
+    { key: { waId: 1, at: -1 }, name: 'waId_at' },
+    { key: { event: 1, at: -1 }, name: 'event_at' },
   ]);
 
   logger.info('mongodb indexes ensured');
@@ -217,4 +503,27 @@ export async function claimEvent(wamid: string): Promise<boolean> {
     if ((err as { code?: number }).code === 11000) return false;
     throw err;
   }
+}
+
+export async function recordAudit(
+  event: Omit<AuditEventDoc, '_id' | 'at'> & { at?: Date },
+): Promise<void> {
+  await auditEvents().insertOne({ ...event, at: event.at ?? new Date() });
+}
+
+/**
+ * Allocates the next human-facing candidate id (§19).
+ *
+ * A counter document rather than a random string: candidates read these out over
+ * the phone to staff, so they have to be short and unambiguous. findOneAndUpdate
+ * with $inc is atomic, so two concurrent completions cannot collide.
+ */
+export async function nextCandidateId(prefix = 'ADR'): Promise<string> {
+  const result = await counters().findOneAndUpdate(
+    { _id: 'candidateId' },
+    { $inc: { seq: 1 } },
+    { upsert: true, returnDocument: 'after' },
+  );
+  const seq = result?.seq ?? 1;
+  return `${prefix}-${String(seq).padStart(5, '0')}`;
 }

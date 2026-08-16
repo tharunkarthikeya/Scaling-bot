@@ -1,14 +1,16 @@
 import type { CandidateDoc, DocumentSlot, DocumentStatus } from '../db/models.js';
-import { REQUIRED_DOCUMENTS, TUNABLES, type DocumentRequirement } from './rules.js';
+import { DOCUMENTS, TUNABLES, requirementFor, type DocumentRequirement } from './rules.js';
 
 /**
- * The checklist is deterministic and lives entirely in code. The model decides
- * how to phrase a request; it never decides whether a document has been
- * received. That split is what makes the bot auditable — every state change has
- * a cause you can point at.
+ * Document slots.
+ *
+ * Whether a document has arrived is a fact about the filesystem, so the engine
+ * decides it and the model is never asked. The model's only involvement with
+ * documents is reading a sentence like "I'll send it tomorrow" and reporting
+ * that it means "promised".
  */
 
-/** Statuses that mean "we are done chasing this slot", one way or another. */
+/** Statuses that mean we are done asking for this slot, one way or another. */
 const RESOLVED: ReadonlySet<DocumentStatus> = new Set<DocumentStatus>([
   'received',
   'ocr_queued',
@@ -18,24 +20,24 @@ const RESOLVED: ReadonlySet<DocumentStatus> = new Set<DocumentStatus>([
   'unavailable',
 ]);
 
-export function requirementFor(docType: string): DocumentRequirement | undefined {
-  return REQUIRED_DOCUMENTS.find((d) => d.id === docType);
-}
+export { requirementFor };
 
 export function initialSlots(): Record<string, DocumentSlot> {
   const now = new Date();
   const slots: Record<string, DocumentSlot> = {};
-  for (const req of REQUIRED_DOCUMENTS) {
+  for (const req of DOCUMENTS) {
     slots[req.id] = { status: 'pending', askedCount: 0, updatedAt: now };
   }
   return slots;
 }
 
-/** Backfills slots for requirements added after a candidate was created. */
-export function withMissingSlots(slots: Record<string, DocumentSlot>): Record<string, DocumentSlot> {
+/** Backfills slots for documents added after a candidate was created. */
+export function withMissingSlots(
+  slots: Record<string, DocumentSlot> | undefined,
+): Record<string, DocumentSlot> {
   const now = new Date();
-  const merged = { ...slots };
-  for (const req of REQUIRED_DOCUMENTS) {
+  const merged = { ...(slots ?? {}) };
+  for (const req of DOCUMENTS) {
     merged[req.id] ??= { status: 'pending', askedCount: 0, updatedAt: now };
   }
   return merged;
@@ -46,100 +48,70 @@ export function isResolved(slot: DocumentSlot | undefined): boolean {
 }
 
 /**
- * The next document to ask for, in checklist order. A slot the candidate has
- * been asked about `maxAsksPerDocument` times is skipped — chasing it further
- * annoys candidates and stalls the flow.
+ * A slot that arrived but could not be read (§14). Distinct from resolved: the
+ * file is on disk, but we still need a usable copy, so the flow asks again.
  */
-export function nextDocumentToAsk(candidate: CandidateDoc): DocumentRequirement | undefined {
-  const slots = withMissingSlots(candidate.documents);
-
-  const askable = (req: DocumentRequirement) => {
-    const slot = slots[req.id]!;
-    if (isResolved(slot)) return false;
-    if (slot.status === 'promised' && slot.askedCount >= TUNABLES.maxAsksPerDocument) return false;
-    return slot.askedCount < TUNABLES.maxAsksPerDocument;
-  };
-
-  // Required documents first, then optional ones.
-  return (
-    REQUIRED_DOCUMENTS.filter((d) => d.required).find(askable) ??
-    REQUIRED_DOCUMENTS.filter((d) => !d.required).find(askable)
-  );
+export function isIncomplete(slot: DocumentSlot | undefined): boolean {
+  return slot?.status === 'incomplete';
 }
 
-/** True once every required slot is resolved. Optional slots never block completion. */
-export function isChecklistComplete(candidate: CandidateDoc): boolean {
-  const slots = withMissingSlots(candidate.documents);
-  return REQUIRED_DOCUMENTS.filter((d) => d.required).every((d) => isResolved(slots[d.id]));
-}
-
-export function outstandingDocuments(candidate: CandidateDoc): DocumentRequirement[] {
-  const slots = withMissingSlots(candidate.documents);
-  return REQUIRED_DOCUMENTS.filter((d) => !isResolved(slots[d.id]));
+export function exhausted(slot: DocumentSlot | undefined): boolean {
+  return (slot?.askedCount ?? 0) >= TUNABLES.maxAsksPerDocument;
 }
 
 /**
- * Works out which checklist slot an inbound file belongs to.
+ * Works out which slot an inbound file belongs to.
  *
- * The caption or filename wins when it clearly names a document, because a
- * candidate who sends their passport while we're asking for a CV should not have
- * it filed as a CV. Otherwise it goes to whatever we last asked for.
+ * A caption or filename that names a document wins, because a candidate who
+ * sends their passport while we are asking for a CV should not have it filed as
+ * a CV. Otherwise it goes to whatever we last asked for.
  */
 export function attributeInboundDocument(
   candidate: CandidateDoc,
-  hints: { caption?: string; filename?: string },
+  hints: { caption?: string; filename?: string; expecting?: string },
 ): string {
   const haystack = `${hints.caption ?? ''} ${hints.filename ?? ''}`.toLowerCase();
 
   if (haystack.trim()) {
-    for (const req of REQUIRED_DOCUMENTS) {
-      if (req.keywords.some((kw) => haystack.includes(kw))) return req.id;
+    for (const req of DOCUMENTS) {
+      if (req.keywords.some((kw) => haystack.includes(kw.toLowerCase()))) return req.id;
     }
   }
 
-  if (candidate.awaitingDocument && requirementFor(candidate.awaitingDocument)) {
-    return candidate.awaitingDocument;
+  if (hints.expecting && requirementFor(hints.expecting)) return hints.expecting;
+  if (candidate.currentStep) {
+    const expected = documentForStep(candidate.currentStep);
+    if (expected) return expected;
   }
 
-  return nextDocumentToAsk(candidate)?.id ?? REQUIRED_DOCUMENTS[0]!.id;
+  return DOCUMENTS[0]!.id;
 }
 
-/**
- * The per-candidate state block prepended to the latest user turn.
- *
- * It goes in the message, not the system prompt, so the cached system prefix
- * stays byte-identical across every candidate and every turn.
- */
-export function renderState(candidate: CandidateDoc): string {
+/** The slot a `document` step is asking for, derived from its id. */
+function documentForStep(stepId: string): string | undefined {
+  const direct = DOCUMENTS.find((d) => stepId === d.id || stepId === `${d.id}_upload`);
+  return direct?.id;
+}
+
+export function documentsOutstanding(candidate: CandidateDoc): DocumentRequirement[] {
   const slots = withMissingSlots(candidate.documents);
-  const next = nextDocumentToAsk(candidate);
+  return DOCUMENTS.filter((d) => !isResolved(slots[d.id]));
+}
 
-  const lines: string[] = ['<state>'];
+/** A one-line summary of document state for the confirmation message (§18). */
+export function documentSummary(
+  candidate: CandidateDoc,
+): { received: string[]; pending: string[] } {
+  const slots = withMissingSlots(candidate.documents);
+  const received: string[] = [];
+  const pending: string[] = [];
 
-  const knownProfile = Object.entries(candidate.profile ?? {}).filter(
-    ([, v]) => v !== undefined && v !== null && v !== '',
-  );
-  lines.push(
-    knownProfile.length
-      ? `known_about_candidate: ${knownProfile.map(([k, v]) => `${k}=${String(v)}`).join(', ')}`
-      : 'known_about_candidate: nothing yet',
-  );
-
-  lines.push('documents:');
-  for (const req of REQUIRED_DOCUMENTS) {
+  for (const req of DOCUMENTS) {
     const slot = slots[req.id]!;
-    const flags = [req.required ? 'required' : 'optional', `asked ${slot.askedCount}x`];
-    lines.push(`  - ${req.id}: ${slot.status} (${flags.join(', ')})`);
+    if (slot.status === 'pending') continue;
+    if (isResolved(slot) && slot.status !== 'unavailable') received.push(req.id);
+    else pending.push(req.id);
   }
 
-  lines.push(
-    next
-      ? `OUTSTANDING: ${next.id} — ask for the ${next.label} in this reply.`
-      : isChecklistComplete(candidate)
-        ? 'OUTSTANDING: none. Every required document is in. Thank the candidate and tell them a recruiter will review and follow up.'
-        : 'OUTSTANDING: none askable. Do not chase further; acknowledge and let them know a recruiter will follow up.',
-  );
-
-  lines.push('</state>');
-  return lines.join('\n');
+  return { received, pending };
 }

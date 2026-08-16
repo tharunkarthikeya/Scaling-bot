@@ -4,11 +4,20 @@ import { connectDb, closeDb } from './db/client.js';
 import { ensureIndexes } from './db/models.js';
 import { ensureStorageRoot } from './storage/index.js';
 import { queue, withCandidateLock } from './queue/index.js';
-import { handleInboundMessage } from './conversation/engine.js';
+import { handleInboundMessage, sendReminders } from './conversation/engine.js';
+import { validateCopy } from './conversation/validate.js';
 import { processOcrJob } from './ocr/veris.js';
 import { buildServer } from './server.js';
 
+/** How often the §21 reminder sweep runs. The claim is per candidate, not per sweep. */
+const REMINDER_SWEEP_MS = 15 * 60 * 1000;
+
 async function main(): Promise<void> {
+  // Before anything accepts traffic: a button title one character over Meta's
+  // limit rejects the whole message, and that must break the deploy rather than
+  // one candidate's registration.
+  validateCopy();
+
   await connectDb();
   await ensureIndexes();
   await ensureStorageRoot();
@@ -29,6 +38,14 @@ async function main(): Promise<void> {
   const app = await buildServer();
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
 
+  // §21 — one reminder per candidate who goes quiet mid-registration. The sweep
+  // runs often; "exactly one" is enforced per candidate in the database, so a
+  // restart or a second instance cannot produce a second reminder.
+  const reminderSweep = setInterval(() => {
+    void sendReminders().catch((err) => logger.error({ err }, 'reminder sweep failed'));
+  }, REMINDER_SWEEP_MS);
+  reminderSweep.unref();
+
   logger.info(
     {
       port: config.PORT,
@@ -42,6 +59,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
+    clearInterval(reminderSweep);
     try {
       await app.close();
       await queue.close();

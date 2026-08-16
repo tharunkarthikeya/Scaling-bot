@@ -75,8 +75,28 @@ if (reviewOnly) {
     console.log(`no candidate with waId ${waIdArg}`);
   } else {
     console.log(`\n${B}${candidate.profileName ?? 'unknown'}${R}  ${candidate.waId}`);
-    console.log(`  stage     ${candidate.stage}`);
-    console.log(`  awaiting  ${candidate.awaitingDocument ?? '—'}`);
+    console.log(`  candidate id  ${candidate.candidateId ?? '—'}`);
+    console.log(`  stage         ${candidate.stage}`);
+    console.log(`  status        ${candidate.status}`);
+    console.log(`  language      ${candidate.language ?? '—'}${candidate.languageOther ? ` (${candidate.languageOther})` : ''}`);
+    console.log(
+      `  consent       ${candidate.consent?.given ? `given ${candidate.consent.at.toISOString().slice(0, 10)}` : '—'}`,
+    );
+    console.log(`  on question   ${candidate.currentStep ?? '—'}`);
+
+    // Every field with where it came from — §27 wants the source visible, not
+    // just the value.
+    const profileEntries = Object.entries(candidate.profile ?? {}).filter(
+      ([, v]) => v !== undefined && v !== null && v !== '',
+    );
+    console.log(`\n  ${B}profile (${profileEntries.length} fields)${R}`);
+    for (const [key, value] of profileEntries) {
+      const meta = candidate.fieldMeta?.[key];
+      const shown = Array.isArray(value) ? value.join(', ') : String(value);
+      const origin = meta ? `${D}from ${meta.source}${meta.raw ? ` — "${meta.raw}"` : ''}${R}` : '';
+      console.log(`    ${key.padEnd(24)} ${shown.slice(0, 44).padEnd(46)} ${origin}`);
+    }
+
     console.log(`\n  ${B}checklist${R}`);
     for (const [id, slot] of Object.entries(candidate.documents)) {
       console.log(`    ${id.padEnd(20)} ${slot.status}  ${D}asked ${slot.askedCount}x${R}`);
@@ -103,8 +123,9 @@ if (reviewOnly) {
   for (const c of rows) {
     const docCount = await storedDocuments().countDocuments({ waId: c.waId });
     console.log(
-      `  ${c.waId.padEnd(16)} ${(c.profileName ?? '').padEnd(18)} ${c.stage.padEnd(22)} ` +
-        `${D}${docCount} docs, awaiting ${c.awaitingDocument ?? '—'}${R}`,
+      `  ${c.waId.padEnd(16)} ${(c.candidateId ?? '—').padEnd(11)} ` +
+        `${(c.profileName ?? '').padEnd(16)} ${c.stage.padEnd(24)} ` +
+        `${D}${docCount} docs, on ${c.currentStep ?? '—'}${R}`,
     );
   }
   console.log(`\n${D}  npm run inspect <waId>     full detail with OCR fields`);

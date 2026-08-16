@@ -5,7 +5,15 @@ import { storedDocuments, type OcrField } from '../db/models.js';
 import { readFile } from '../storage/index.js';
 import { TUNABLES } from '../conversation/rules.js';
 import { requirementFor } from '../conversation/checklist.js';
-import { markSlotFromOcr } from '../conversation/engine.js';
+import {
+  flagIdentityMismatch,
+  markSlotFromOcr,
+  mergeExtractedProfile,
+  resumeAfterDocument,
+} from '../conversation/engine.js';
+import { extractFromCv, identityFromDocument } from '../conversation/cv.js';
+import { compareIdentity } from '../conversation/profile.js';
+import type { CandidateProfile } from '../db/models.js';
 
 /**
  * Veris (RecursAI) OCR client — https://veris.recursai.in
@@ -35,6 +43,13 @@ export interface OcrOutcome {
   confidence: number | null;
   needsReview: boolean;
   reviewReasons: string[];
+  /**
+   * Whether the upload is usable as a document (§14). Distinct from extraction
+   * confidence: a perfectly sharp photo of one page of a passport scores well
+   * and is still an incomplete upload. This is what decides whether the
+   * candidate is asked to send it again.
+   */
+  completeness: { complete: boolean; problems: string[]; missingPages?: number[] };
 }
 
 /* ------------------------------------------------------------------ */
@@ -105,7 +120,73 @@ function normalisePassport(payload: any): OcrOutcome {
     confidence: overall,
     needsReview: reasons.length > 0,
     reviewReasons: reasons,
+    completeness: passportCompleteness(payload, mrz, overall),
   };
+}
+
+/**
+ * The §14 checks, as far as an extractor can answer them.
+ *
+ * §14 lists more than this — blank pages present, page sequence, visa pages,
+ * entry and exit stamps, the observation page, ECR/ECNR. Those are page-by-page
+ * judgements the extractor does not make, so they belong to the documentation
+ * team, and the review queue is what puts the upload in front of them. What is
+ * checked here is what can be checked reliably: that the photo page was read,
+ * that the number came off it, that the passport is in date, and that nothing
+ * was too dark or blurred to read.
+ */
+function passportCompleteness(
+  payload: any,
+  mrz: any,
+  overall: number | null,
+): OcrOutcome['completeness'] {
+  const problems: string[] = [];
+  const missingPages: number[] = [];
+
+  if (!mrz?.passport_number && !payload?.fields?.length) {
+    problems.push('the photo page could not be read');
+  } else if (!mrz?.passport_number) {
+    problems.push('the passport number was not readable');
+  }
+
+  if (mrz?.expiry_date) {
+    // MRZ dates are YYMMDD. A passport already expired is not a bad scan, but it
+    // is not a usable document either, and staff need to know now.
+    const expiry = parseMrzDate(String(mrz.expiry_date));
+    if (expiry && expiry.getTime() < Date.now()) problems.push('the passport has expired');
+  }
+
+  if (overall !== null && overall < TUNABLES.ocrReviewThreshold) {
+    problems.push('some of the text was too unclear to read');
+  }
+
+  for (const page of payload?.pages ?? []) {
+    if (
+      typeof page?.average_confidence === 'number' &&
+      page.average_confidence < TUNABLES.ocrReviewThreshold &&
+      typeof page.page_number === 'number'
+    ) {
+      missingPages.push(page.page_number);
+    }
+  }
+
+  return {
+    complete: problems.length === 0,
+    problems,
+    ...(missingPages.length ? { missingPages } : {}),
+  };
+}
+
+/** YYMMDD, as written in the machine-readable zone. */
+function parseMrzDate(value: string): Date | undefined {
+  const match = /^(\d{2})(\d{2})(\d{2})$/.exec(value.trim());
+  if (!match) return undefined;
+
+  const year = Number(match[1]);
+  // A two-digit year on an expiry date is always in the future or recent past.
+  const fullYear = year > 70 ? 1900 + year : 2000 + year;
+  const date = new Date(fullYear, Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 function normaliseResume(payload: any): OcrOutcome {
@@ -159,6 +240,9 @@ function normaliseResume(payload: any): OcrOutcome {
     // CRM shows it as unverified until then.
     needsReview: true,
     reviewReasons: reasons,
+    // A CV is never sent back to be re-taken. Whatever it yields skips a
+    // question, and whatever it does not, the flow simply asks (§5).
+    completeness: { complete: true, problems: [] },
   };
 }
 
@@ -189,12 +273,34 @@ function normaliseDocument(payload: any): OcrOutcome {
   if (!fields.length) reasons.push('nothing extracted');
   for (const w of payload?.warnings ?? []) reasons.push(String(w));
 
+  // Aadhaar and PAN come through here. Unlike a CV, an unreadable one is worth
+  // asking for again — it is a single card photographed on a phone (§15, §16).
+  const problems: string[] = [];
+  if (!fields.length) problems.push('nothing could be read from the image');
+  else if (overall !== null && overall < TUNABLES.ocrReviewThreshold) {
+    problems.push('the text was too unclear to read');
+  }
+
+  const unreadablePages = (payload?.pages ?? [])
+    .filter(
+      (p: any) =>
+        typeof p?.average_confidence === 'number' &&
+        p.average_confidence < TUNABLES.ocrReviewThreshold,
+    )
+    .map((p: any) => p.page_number)
+    .filter((n: unknown): n is number => typeof n === 'number');
+
   return {
     raw: payload,
     fields,
     confidence: overall,
     needsReview: reasons.length > 0,
     reviewReasons: reasons,
+    completeness: {
+      complete: problems.length === 0,
+      problems,
+      ...(unreadablePages.length ? { missingPages: unreadablePages } : {}),
+    },
   };
 }
 
@@ -264,6 +370,57 @@ export async function ocrHealth(): Promise<{ ok: boolean; detail: string }> {
 /* Queue handler                                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Compares identity fields across every current document (§17).
+ *
+ * Runs after each extraction, because the comparison only becomes possible once
+ * a second document exists. Nothing is rejected on the strength of it — a
+ * difference raises a flag for the documentation team and nothing else.
+ */
+async function runIdentityComparison(candidateId: ObjectId): Promise<void> {
+  const docs = await storedDocuments()
+    .find({ candidateId, supersededAt: { $exists: false } })
+    .toArray();
+
+  const sources: Record<string, { name?: string; dateOfBirth?: string; fatherName?: string }> = {};
+
+  for (const doc of docs) {
+    const fields = doc.ocr?.fields;
+    if (!fields?.length) continue;
+    sources[doc.docType] =
+      doc.docType === 'cv' ? extractFromCv(fields).identity : identityFromDocument(fields);
+  }
+
+  if (Object.keys(sources).length < 2) return;
+
+  const comparison = compareIdentity(sources);
+  if (!comparison.consistent) {
+    await flagIdentityMismatch(candidateId, comparison.differences);
+  }
+}
+
+/** Maps an identity document's extraction onto the profile fields it can fill. */
+function profileFromIdentityDocument(
+  docType: string,
+  fields: Parameters<typeof identityFromDocument>[0],
+): Partial<CandidateProfile> {
+  const identity = identityFromDocument(fields);
+  const patch: Partial<CandidateProfile> = {};
+
+  if (identity.fatherName) patch.fatherName = identity.fatherName;
+  if (identity.dateOfBirth) patch.dateOfBirth = identity.dateOfBirth;
+
+  // Stored so staff can verify them, masked everywhere else, and never read back
+  // to the candidate (§15, §16, §27).
+  if (identity.number) {
+    if (docType === 'passport') patch.passportNumber = identity.number;
+    if (docType === 'aadhaar') patch.aadhaarNumber = identity.number;
+    if (docType === 'pan') patch.panNumber = identity.number;
+  }
+
+  return patch;
+}
+
 export async function processOcrJob(payload: { documentId: string }): Promise<void> {
   const _id = new ObjectId(payload.documentId);
   const doc = await storedDocuments().findOne({ _id });
@@ -279,6 +436,8 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
       { _id },
       { $set: { 'ocr.status': 'skipped', updatedAt: new Date() } },
     );
+    // Nothing to read, so the conversation moves on immediately.
+    await resumeAfterDocument(doc.candidateId, doc.docType, { complete: true, problems: [] });
     return;
   }
 
@@ -317,13 +476,43 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
             confidence: outcome.confidence,
             needsReview: outcome.needsReview,
             reviewReasons: outcome.reviewReasons,
+            completeness: outcome.completeness,
           },
           updatedAt: new Date(),
         },
       },
     );
 
-    await markSlotFromOcr(doc.candidateId, doc.docType, outcome.needsReview ? 'needs_review' : 'ocr_done');
+    await markSlotFromOcr(
+      doc.candidateId,
+      doc.docType,
+      !outcome.completeness.complete
+        ? 'incomplete'
+        : outcome.needsReview
+          ? 'needs_review'
+          : 'ocr_done',
+    );
+
+    // §5 — what the document yields becomes profile fields, so the questions it
+    // answers are never asked. Marked unverified; a person confirms it (§27).
+    const patch =
+      extractor === 'resume'
+        ? extractFromCv(outcome.fields, doc.waId).patch
+        : profileFromIdentityDocument(doc.docType, outcome.fields);
+
+    if (Object.keys(patch).length) {
+      await mergeExtractedProfile(
+        doc.candidateId,
+        patch,
+        extractor === 'resume' ? 'cv' : 'document',
+        outcome.confidence,
+      );
+    }
+
+    await runIdentityComparison(doc.candidateId);
+
+    // Moves the conversation on: the acknowledgement, or the re-ask (§14).
+    await resumeAfterDocument(doc.candidateId, doc.docType, outcome.completeness);
 
     logger.info(
       {
@@ -333,6 +522,7 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
         fields: outcome.fields.length,
         confidence: outcome.confidence,
         needsReview: outcome.needsReview,
+        complete: outcome.completeness.complete,
       },
       'ocr complete',
     );
@@ -350,8 +540,14 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
         },
       },
     );
-    // The file is still on disk and the slot stays resolved — a failed OCR is a
-    // review task, not a reason to ask the candidate for the document again.
+
+    // The file is on disk; what failed is our reading of it. A failed extraction
+    // is a review task, not a reason to make the candidate photograph their
+    // passport again — so the upload is acknowledged and staff pick it up.
     await markSlotFromOcr(doc.candidateId, doc.docType, 'ocr_failed');
+    await resumeAfterDocument(doc.candidateId, doc.docType, {
+      complete: true,
+      problems: ['extraction failed; needs a manual check'],
+    });
   }
 }
