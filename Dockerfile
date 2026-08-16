@@ -25,6 +25,11 @@ FROM node:22-alpine AS runtime
 
 ENV NODE_ENV=production
 
+# The app's own default is 3100, but the image exposes 3000 and Dokploy maps the
+# domain to 3000. Without this default the container listens on a port nothing
+# is routed to, and the deploy looks healthy while being unreachable.
+ENV PORT=3000
+
 WORKDIR /app
 
 COPY --from=build /app/node_modules ./node_modules
