@@ -17,9 +17,19 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 const dbPath = path.resolve('.mongo-data');
 await fs.mkdir(dbPath, { recursive: true });
 
-const mongo = await MongoMemoryServer.create({
-  instance: { dbName: 'mountroad_wa_bot', dbPath, storageEngine: 'wiredTiger' },
-});
+// Pin the standard port so MongoDB Compass can connect at a predictable
+// address. Falls back to a random port if something already holds 27017.
+let mongo;
+try {
+  mongo = await MongoMemoryServer.create({
+    instance: { port: 27017, dbName: 'mountroad_wa_bot', dbPath, storageEngine: 'wiredTiger' },
+  });
+} catch {
+  console.warn('port 27017 is busy — falling back to a random port');
+  mongo = await MongoMemoryServer.create({
+    instance: { dbName: 'mountroad_wa_bot', dbPath, storageEngine: 'wiredTiger' },
+  });
+}
 
 // Set before importing config; dotenv leaves existing variables alone.
 process.env.MONGODB_URI = mongo.getUri();
@@ -56,6 +66,9 @@ logger.info(
 );
 console.log(`\n  local:   http://127.0.0.1:${config.PORT}/health`);
 console.log(`  webhook: http://127.0.0.1:${config.PORT}/webhook`);
+console.log(`  mongodb: ${mongo.getUri()}`);
+console.log(`${'           '}↑ paste into MongoDB Compass. OCR output is in the`);
+console.log(`${'           '}  "documents" collection, under the ocr field.`);
 console.log(`\n  Meta cannot reach this directly — expose it with a tunnel, e.g.`);
 console.log(`    cloudflared tunnel --url http://localhost:${config.PORT}\n`);
 
