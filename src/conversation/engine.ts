@@ -1357,6 +1357,12 @@ async function acknowledgeDocument(candidate: CandidateDoc, docType: string): Pr
 
 export interface DocumentOutcome {
   complete: boolean;
+  /**
+   * What was wrong with the upload, which decides which re-ask is sent.
+   * Optional so callers with nothing to report (a skipped extraction) can omit
+   * it; absent behaves as the generic "pages missing or unclear" re-ask.
+   */
+  verdict?: 'ok' | 'pages' | 'unreadable' | 'empty' | 'wrong_document';
   /** Plain-language problems, for the candidate-facing re-ask. */
   problems: string[];
   missingPages?: number[];
@@ -1459,13 +1465,30 @@ export async function resumeAfterDocument(
       return;
     }
 
-    const detail = outcome.missingPages?.length
-      ? (await renderMessage(copy.DOCUMENT_PAGES, candidate, {
-          pages: outcome.missingPages.join(', '),
-        })).body
-      : (await renderMessage(copy.DOCUMENT_ALL_PAGES, candidate)).body;
+    // What went wrong decides what to say. Telling someone to "resend all pages"
+    // when the extractor got nothing at all — or when they sent the wrong card —
+    // is advice they cannot act on, and they send the same file again.
+    const documentName = (await renderMessage(
+      requirementFor(docType)?.label ?? copy.DOCUMENT_THIS_ONE,
+      candidate,
+    )).body;
 
-    await tell(candidate, copy.DOCUMENT_INCOMPLETE, { detail });
+    if (outcome.verdict === 'empty') {
+      await tell(candidate, copy.DOCUMENT_NOT_READ, { document: documentName });
+    } else if (outcome.verdict === 'wrong_document') {
+      await tell(candidate, copy.DOCUMENT_WRONG_TYPE, { document: documentName });
+    } else if (outcome.verdict === 'unreadable') {
+      await tell(candidate, copy.DOCUMENT_UNREADABLE);
+    } else {
+      const detail = outcome.missingPages?.length
+        ? (await renderMessage(copy.DOCUMENT_PAGES, candidate, {
+            pages: outcome.missingPages.join(', '),
+          })).body
+        : (await renderMessage(copy.DOCUMENT_ALL_PAGES, candidate)).body;
+
+      await tell(candidate, copy.DOCUMENT_INCOMPLETE, { detail });
+    }
+
     await askNextQuestion(candidate);
     return;
   }

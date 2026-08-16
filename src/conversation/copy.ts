@@ -167,6 +167,40 @@ export const DOCUMENT_UNREADABLE: Localised = {
   hi: 'यह फ़ाइल पढ़ने लायक साफ़ नहीं थी। कृपया अच्छी रोशनी में, चारों कोने दिखते हुए दोबारा भेजें।',
 };
 
+/**
+ * Nothing at all came back from the extractor (§14).
+ *
+ * At this point a bad photo and a file that is not the document are
+ * indistinguishable, so the wording covers both without accusing anyone of
+ * sending the wrong thing. `{{document}}` names the slot — "passport",
+ * "Aadhaar card" — so the candidate knows exactly what to point the camera at.
+ */
+export const DOCUMENT_NOT_READ: Localised = {
+  en: 'I could not read anything from that file. Please send a clear photo of your {{document}} — the whole page, flat, in good light, with all four corners visible.',
+  ta: 'அந்தக் கோப்பிலிருந்து எதையும் என்னால் படிக்க முடியவில்லை. உங்கள் {{document}}-ஐ தெளிவாகப் படம் எடுத்து அனுப்பவும் — முழுப் பக்கமும், நல்ல வெளிச்சத்தில், நான்கு மூலைகளும் தெரியும்படி.',
+  hi: 'मैं उस फ़ाइल से कुछ भी नहीं पढ़ पाया। कृपया अपने {{document}} की साफ़ फ़ोटो भेजें — पूरा पेज, अच्छी रोशनी में, चारों कोने दिखते हुए।',
+};
+
+/**
+ * The upload read cleanly and is a different document (§14).
+ *
+ * Only sent when the extraction was confident enough to trust — see
+ * `identifyDocument` in the OCR client. Saying "that isn't your PAN" about a
+ * blurred PAN would be both wrong and insulting, so the bar is deliberately high.
+ */
+export const DOCUMENT_WRONG_TYPE: Localised = {
+  en: 'That does not look like a {{document}}. Could you check the file and send your {{document}}?',
+  ta: 'அது {{document}} போல் தெரியவில்லை. கோப்பைச் சரிபார்த்து உங்கள் {{document}}-ஐ அனுப்ப முடியுமா?',
+  hi: 'यह {{document}} जैसा नहीं लग रहा। कृपया फ़ाइल जाँच कर अपना {{document}} भेजें।',
+};
+
+/** Stands in for the document's name when the slot has no label of its own. */
+export const DOCUMENT_THIS_ONE: Localised = {
+  en: 'document',
+  ta: 'ஆவணம்',
+  hi: 'दस्तावेज़',
+};
+
 export const DOCUMENT_ALL_PAGES: Localised = {
   en: 'all pages',
   ta: 'எல்லா பக்கங்களையும்',

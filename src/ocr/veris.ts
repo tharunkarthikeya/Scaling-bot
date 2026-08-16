@@ -49,8 +49,25 @@ export interface OcrOutcome {
    * and is still an incomplete upload. This is what decides whether the
    * candidate is asked to send it again.
    */
-  completeness: { complete: boolean; problems: string[]; missingPages?: number[] };
+  completeness: {
+    complete: boolean;
+    /**
+     * Why it is unusable, which decides *which* re-ask the candidate gets.
+     * Telling someone "send all the pages" when they sent a selfie is useless.
+     *
+     *   ok             usable
+     *   pages          the right document, but pages are missing or unclear
+     *   unreadable     probably the right document, too poor a photo to read
+     *   empty          nothing came back at all — bad photo, or not a document
+     *   wrong_document read cleanly, and it is not the document we asked for
+     */
+    verdict: CompletenessVerdict;
+    problems: string[];
+    missingPages?: number[];
+  };
 }
+
+export type CompletenessVerdict = 'ok' | 'pages' | 'unreadable' | 'empty' | 'wrong_document';
 
 /* ------------------------------------------------------------------ */
 /* Normalisation — one branch per response shape                       */
@@ -81,6 +98,67 @@ function fromExtractedFields(raw: any): OcrField[] {
       source: f.source ? String(f.source) : undefined,
     }));
 }
+
+/* ------------------------------------------------------------------ */
+/* Is this the document we asked for?                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Markers that identify a document type from whatever text was read.
+ *
+ * Deliberately generous: a real Aadhaar photographed badly may yield only the
+ * number, or only the word "Government of India". Any one hit is enough. The
+ * cost of a false "that isn't an Aadhaar" is a confused candidate, so the bar
+ * for declaring a mismatch is high and this is only consulted when the read was
+ * confident enough to be trusted (see `identifyDocument`).
+ */
+const DOCUMENT_MARKERS: Record<string, RegExp[]> = {
+  aadhaar: [
+    /\b\d{4}\s?\d{4}\s?\d{4}\b/, // the 12-digit UID, spaced or not
+    /aadhaar|aadhar|adhaar|uidai|unique\s+identification/i,
+    /आधार|ஆதார்/,
+  ],
+  pan: [
+    /\b[A-Z]{5}\s?\d{4}\s?[A-Z]\b/, // ABCDE1234F
+    /permanent\s+account\s+number|income\s+tax\s+department/i,
+    /आयकर|स्थायी\s+लेखा/,
+  ],
+};
+
+/** Every readable string the extractor gave us, as one haystack. */
+function textOf(fields: OcrField[]): string {
+  return fields.map((f) => `${f.key} ${f.value}`).join('\n');
+}
+
+/**
+ * Decides whether an upload is the document type the slot asked for.
+ *
+ * Returns `null` when there is no opinion — either we have no markers for this
+ * type, or too little text came back to judge. A null is not a pass; the caller
+ * still treats an empty read as unusable. It only means "don't accuse them of
+ * sending the wrong thing".
+ */
+function identifyDocument(
+  docType: string | undefined,
+  fields: OcrField[],
+  overall: number | null,
+): boolean | null {
+  if (!docType) return null;
+  const markers = DOCUMENT_MARKERS[docType];
+  if (!markers) return null;
+
+  const haystack = textOf(fields);
+  // A confident mismatch is the only mismatch worth reporting. If the read was
+  // poor, the honest verdict is "I couldn't read it", not "wrong document" —
+  // blur destroys exactly the markers we are looking for.
+  if (haystack.trim().length < MIN_TEXT_TO_JUDGE) return null;
+  if (overall !== null && overall < TUNABLES.ocrReviewThreshold) return null;
+
+  return markers.some((m) => m.test(haystack));
+}
+
+/** Below this much text, any verdict about document type is guesswork. */
+const MIN_TEXT_TO_JUDGE = 40;
 
 function normalisePassport(payload: any): OcrOutcome {
   const fields: OcrField[] = [];
@@ -142,11 +220,17 @@ function passportCompleteness(
 ): OcrOutcome['completeness'] {
   const problems: string[] = [];
   const missingPages: number[] = [];
+  let verdict: CompletenessVerdict = 'ok';
 
   if (!mrz?.passport_number && !payload?.fields?.length) {
+    // No MRZ band, no printed bio fields, nothing. Either the photo is unusable
+    // or this is not a passport page at all — from here the two are
+    // indistinguishable, and the re-ask covers both.
     problems.push('the photo page could not be read');
+    verdict = 'empty';
   } else if (!mrz?.passport_number) {
     problems.push('the passport number was not readable');
+    verdict = 'unreadable';
   }
 
   if (mrz?.expiry_date) {
@@ -158,6 +242,7 @@ function passportCompleteness(
 
   if (overall !== null && overall < TUNABLES.ocrReviewThreshold) {
     problems.push('some of the text was too unclear to read');
+    if (verdict === 'ok') verdict = 'unreadable';
   }
 
   for (const page of payload?.pages ?? []) {
@@ -170,8 +255,24 @@ function passportCompleteness(
     }
   }
 
+  // Named pages beat a general "it was blurry", but only when naming them says
+  // something: on a single page, or when every page failed, the useful
+  // instruction is "send a clearer photo".
+  const totalPages = (payload?.pages ?? []).length;
+  if (
+    verdict === 'unreadable' &&
+    missingPages.length &&
+    totalPages > 1 &&
+    missingPages.length < totalPages
+  ) {
+    verdict = 'pages';
+  }
+
   return {
     complete: problems.length === 0,
+    // A problem with no verdict of its own (an expired passport, say) falls back
+    // to the generic re-ask rather than silently reporting 'ok'.
+    verdict: problems.length === 0 ? 'ok' : verdict === 'ok' ? 'pages' : verdict,
     problems,
     ...(missingPages.length ? { missingPages } : {}),
   };
@@ -242,11 +343,11 @@ function normaliseResume(payload: any): OcrOutcome {
     reviewReasons: reasons,
     // A CV is never sent back to be re-taken. Whatever it yields skips a
     // question, and whatever it does not, the flow simply asks (§5).
-    completeness: { complete: true, problems: [] },
+    completeness: { complete: true, verdict: 'ok', problems: [] },
   };
 }
 
-function normaliseDocument(payload: any): OcrOutcome {
+function normaliseDocument(payload: any, docType?: string): OcrOutcome {
   const fields = fromExtractedFields(payload?.key_fields);
   const reasons: string[] = [];
 
@@ -276,9 +377,23 @@ function normaliseDocument(payload: any): OcrOutcome {
   // Aadhaar and PAN come through here. Unlike a CV, an unreadable one is worth
   // asking for again — it is a single card photographed on a phone (§15, §16).
   const problems: string[] = [];
-  if (!fields.length) problems.push('nothing could be read from the image');
-  else if (overall !== null && overall < TUNABLES.ocrReviewThreshold) {
+  let verdict: CompletenessVerdict = 'ok';
+
+  const isExpectedType = identifyDocument(docType, fields, overall);
+
+  if (!fields.length) {
+    problems.push('nothing could be read from the image');
+    verdict = 'empty';
+  } else if (isExpectedType === false) {
+    // Text came back clean and carries none of this document's markers. That is
+    // a different document, not a bad photo — say so, or they will keep
+    // resending the same wrong card.
+    problems.push('this does not look like the document that was asked for');
+    reasons.push(`expected ${docType}, none of its markers appear in the extracted text`);
+    verdict = 'wrong_document';
+  } else if (overall !== null && overall < TUNABLES.ocrReviewThreshold) {
     problems.push('the text was too unclear to read');
+    verdict = 'unreadable';
   }
 
   const unreadablePages = (payload?.pages ?? [])
@@ -290,6 +405,8 @@ function normaliseDocument(payload: any): OcrOutcome {
     .map((p: any) => p.page_number)
     .filter((n: unknown): n is number => typeof n === 'number');
 
+  const totalPages = (payload?.pages ?? []).length;
+
   return {
     raw: payload,
     fields,
@@ -298,13 +415,26 @@ function normaliseDocument(payload: any): OcrOutcome {
     reviewReasons: reasons,
     completeness: {
       complete: problems.length === 0,
+      // Naming the bad pages beats a general "it was blurry" — but only when
+      // naming them tells the candidate something. On a one-page card, or when
+      // every page is bad, "resend page 1" is noise; "send a clearer photo" is
+      // the actionable instruction.
+      verdict:
+        problems.length === 0
+          ? 'ok'
+          : verdict === 'unreadable' &&
+              unreadablePages.length &&
+              totalPages > 1 &&
+              unreadablePages.length < totalPages
+            ? 'pages'
+            : verdict,
       problems,
       ...(unreadablePages.length ? { missingPages: unreadablePages } : {}),
     },
   };
 }
 
-const NORMALISERS: Record<Extractor, (payload: any) => OcrOutcome> = {
+const NORMALISERS: Record<Extractor, (payload: any, docType?: string) => OcrOutcome> = {
   passport: normalisePassport,
   resume: normaliseResume,
   document: normaliseDocument,
@@ -319,6 +449,8 @@ export async function runOcr(params: {
   buffer: Buffer;
   mimeType: string;
   filename: string;
+  /** Which slot this was uploaded against, so the read can be checked against it. */
+  docType?: string;
 }): Promise<OcrOutcome> {
   const route = ROUTES[params.extractor];
 
@@ -346,7 +478,7 @@ export async function runOcr(params: {
       throw new Error(`${params.extractor} extract failed with ${res.status}: ${text.slice(0, 400)}`);
     }
 
-    return NORMALISERS[params.extractor](JSON.parse(text));
+    return NORMALISERS[params.extractor](JSON.parse(text), params.docType);
   } finally {
     clearTimeout(timer);
   }
@@ -437,7 +569,11 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
       { $set: { 'ocr.status': 'skipped', updatedAt: new Date() } },
     );
     // Nothing to read, so the conversation moves on immediately.
-    await resumeAfterDocument(doc.candidateId, doc.docType, { complete: true, problems: [] });
+    await resumeAfterDocument(doc.candidateId, doc.docType, {
+      complete: true,
+      verdict: 'ok',
+      problems: [],
+    });
     return;
   }
 
@@ -460,6 +596,7 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
       buffer,
       mimeType: doc.mimeType,
       filename: doc.originalFilename ?? doc.storageKey.split('/').pop() ?? 'upload',
+      docType: doc.docType,
     });
 
     await storedDocuments().updateOne(
@@ -547,6 +684,7 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
     await markSlotFromOcr(doc.candidateId, doc.docType, 'ocr_failed');
     await resumeAfterDocument(doc.candidateId, doc.docType, {
       complete: true,
+      verdict: 'ok',
       problems: ['extraction failed; needs a manual check'],
     });
   }

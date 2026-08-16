@@ -135,6 +135,75 @@ export function normaliseEducation(input: string | undefined): string | undefine
   return undefined;
 }
 
+/** The level words a qualification line opens with, before naming the course. */
+const QUALIFICATION_LEVEL =
+  /^(?:i\.?t\.?i\.?|diploma|degree|graduation|graduate|post\s*graduate|pg|bachelors?|masters?|b\.?e\.?|b\.?tech|m\.?tech|b\.?sc|m\.?sc|b\.?com|m\.?com|b\.?a|m\.?a|mba|bca|mca)\b/i;
+
+/**
+ * Pulls the course out of a qualification line — "Diploma in Mechanical
+ * Engineering" gives "Mechanical Engineering" (§6).
+ *
+ * The CV states the level and the course in one string, and the flow stores them
+ * in two fields. Reading only the level and then asking "what course did you
+ * complete?" asks for something already on the page, which is the one thing §1
+ * says not to do. Returns undefined when the line is a bare level ("Diploma"),
+ * because then there genuinely is nothing to record.
+ */
+export function courseFromQualification(input: string | undefined): string | undefined {
+  if (!input) return undefined;
+
+  const text = input.trim();
+  const withoutLevel = text.replace(QUALIFICATION_LEVEL, '');
+  // Nothing was stripped, so the line never named a level and this is not the
+  // "level + course" shape being parsed.
+  if (withoutLevel === text) return undefined;
+
+  const course = withoutLevel
+    .replace(/^[\s.,\-–:()]*(?:in|of)?[\s.,\-–:()]*/i, '')
+    .replace(/[\s.,\-–:()]+$/, '')
+    .trim();
+
+  if (course.length < 3 || course.length > 60) return undefined;
+  // "Graduate Degree" leaves "Degree" — still a level, still not a course.
+  if (QUALIFICATION_LEVEL.test(course)) return undefined;
+  return course;
+}
+
+/**
+ * Maps a job title to one of the trades the flow offers (§7).
+ *
+ * Only direct term matches count: "Welder" is fabrication/welding by name, not
+ * by inference, so recording it is reading the CV rather than guessing at it.
+ * Anything this cannot place returns undefined and the candidate is asked —
+ * §27 forbids inventing candidate information, and a plausible-looking trade is
+ * worse than a question because it also selects the trade-specific follow-ups.
+ * Whatever is matched here still reaches the candidate in the §18 summary.
+ */
+/**
+ * Stems, not whole words — "fabricat" has to reach "Fabrication" and "housekeep"
+ * has to reach "Housekeeping", so each group is followed by `\w*`. Short tokens
+ * that would over-match under that rule (mig, civil, jcb) are matched exactly.
+ * Order decides ties: housekeeping is cleaning work before it is hotel work.
+ */
+const TRADE_PATTERNS: Array<[RegExp, string]> = [
+  [/\b(?:weld|fabricat|sheet\s*metal|boiler\s*mak|structural\s*fitt)\w*|\b(?:mig|tig|ndt)\b/i, 'fabrication_welding'],
+  [/\b(?:driver|chauffeur|forklift|excavator|crane\s*operat|heavy\s*vehicle|heavy\s*driv)\w*|\b(?:jcb|hgv|lmv|hmv)\b/i, 'driver_operator'],
+  [/\b(?:electric|wireman|lineman|mechanic|technician|hvac|refrigerat|plumb|instrumentat)\w*/i, 'electrical_mechanical'],
+  [/\b(?:mason|carpenter|painter|steel\s*fix|shutter|construction|scaffold|plaster|bar\s*bend)\w*|\bcivil\b/i, 'construction'],
+  [/\b(?:house\s*keep|housekeep|clean|janitor)\w*/i, 'cleaning_housekeeping'],
+  [/\b(?:chef|cook|waiter|steward|barista|kitchen|hotel|restaurant|hospitality)\w*|\bf\s*&\s*b\b/i, 'hospitality'],
+  [/\b(?:sales|retail|cashier|salesman|shop\s*assistant|merchandis)\w*/i, 'sales_retail'],
+  [/\b(?:factory|warehouse|pack|production|assembly|machine\s*operat|loader|store\s*keep|storekeep)\w*/i, 'factory_warehouse'],
+];
+
+export function normaliseTrade(input: string | undefined): string | undefined {
+  if (!input) return undefined;
+  for (const [pattern, id] of TRADE_PATTERNS) {
+    if (pattern.test(input)) return id;
+  }
+  return undefined;
+}
+
 /**
  * Indian states and union territories, for splitting a CV address into the
  * fields matching filters on (§6). Matching on the state is what makes an
@@ -219,12 +288,23 @@ export function extractFromCv(ocrFields: OcrField[], ownPhone?: string): CvExtra
   });
   if (alternate) patch.alternateNumber = alternate;
 
-  const education = normaliseEducation(first(f, 'highest_qualification'));
+  const qualification = first(f, 'highest_qualification');
+  const education = normaliseEducation(qualification);
   if (education) patch.education = education;
+
+  // The same line names the course. Recording it is what stops the flow asking
+  // "what course did you complete?" about a course the CV already printed (§5).
+  const course = courseFromQualification(qualification);
+  if (course) patch.educationCourse = course;
 
   const designation = first(f, 'designation');
   // §9: this is what they currently do. It is never copied into what they want.
   if (designation) patch.currentOccupation = designation;
+
+  // The trade only where the title names it outright. Where it does not, the
+  // field stays empty and the flow asks — see `normaliseTrade`.
+  const trade = normaliseTrade(designation) ?? normaliseTrade(first(f, 'industry'));
+  if (trade) patch.primaryTrade = trade;
 
   const totalYears =
     parseYears(first(f, 'total_experience_human')) ??
