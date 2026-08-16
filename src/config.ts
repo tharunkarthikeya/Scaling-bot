@@ -1,0 +1,66 @@
+import 'dotenv/config';
+import { z } from 'zod';
+
+const bool = z
+  .string()
+  .transform((v) => v.trim().toLowerCase() === 'true')
+  .pipe(z.boolean());
+
+const schema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().int().positive().default(3100),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+
+  MONGODB_URI: z.string().min(1),
+  MONGODB_DB: z.string().min(1),
+
+  // Omit to fall back to the in-process queue (local dev only — jobs are lost on restart).
+  REDIS_URL: z.string().min(1).optional(),
+
+  WHATSAPP_APP_SECRET: z.string().min(1),
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
+  WHATSAPP_ACCESS_TOKEN: z.string().min(1),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
+  WHATSAPP_WABA_ID: z.string().min(1).optional(),
+  WHATSAPP_GRAPH_API_VERSION: z.string().default('v25.0'),
+
+  WHATSAPP_REENGAGEMENT_TEMPLATE: z.string().min(1).optional(),
+  WHATSAPP_REENGAGEMENT_TEMPLATE_LANG: z.string().default('en'),
+
+  ANTHROPIC_API_KEY: z.string().min(1),
+  // Model is read from env so it can be changed without touching code.
+  CLAUDE_MODEL: z.string().default('claude-opus-5'),
+
+  VERIS_OCR_BASE_URL: z.string().min(1),
+  VERIS_OCR_API_KEY: z.string().min(1),
+  VERIS_OCR_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+
+  STORAGE_PATH: z.string().default('./storage'),
+
+  // true  = process inbound and decide a reply, but never hand it to Meta.
+  // false = actually send.
+  SHADOW_MODE: bool.default('false'),
+
+  // Test-only. Serves a canned file instead of calling Meta's media API, so the
+  // document path can be exercised without a real media id. Never set in production:
+  // in shadow mode against real traffic you still want the real download.
+  MOCK_WHATSAPP_MEDIA: bool.default('false'),
+
+  OUTBOUND_RATE_PER_SECOND: z.coerce.number().int().positive().default(20),
+});
+
+const parsed = schema.safeParse(process.env);
+
+if (!parsed.success) {
+  const issues = parsed.error.issues
+    .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
+    .join('\n');
+  // Fail at boot, not on the first candidate's resume.
+  console.error(`Invalid environment configuration:\n${issues}`);
+  process.exit(1);
+}
+
+export const config = parsed.data;
+export type Config = typeof config;
+
+export const graphBaseUrl = `https://graph.facebook.com/${config.WHATSAPP_GRAPH_API_VERSION}`;

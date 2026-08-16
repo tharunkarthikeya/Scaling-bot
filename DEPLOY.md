@@ -1,0 +1,168 @@
+# Deploying to Dokploy
+
+## The order that matters
+
+1. Database (done)
+2. App service + environment
+3. Domain → HTTPS
+4. Meta callback URL → that domain
+5. `npm run doctor` inside the container
+
+Skipping step 4 is the usual reason a correctly-deployed bot stays silent.
+
+---
+
+## 1. Database
+
+Already created. Two things to fix on it:
+
+**Remove `NODE_ENV` and `PORT` from the database service's Environment tab.**
+Those belong to the app, not to MongoDB. They do nothing there.
+
+**Remove the External Port (27017).** Setting it publishes MongoDB to the open
+internet, and this database holds candidate passports and CVs. The app reaches
+it over Dokploy's internal network, so the external port buys nothing and is a
+standing exposure. Leave it blank unless you specifically need to connect a GUI
+from your laptop — and if you do, take it back out afterwards.
+
+---
+
+## 2. App service
+
+Create a **separate** service (Application, not Database) in the same Dokploy
+project — same project is what makes the internal hostname resolve.
+
+- Build type: **Dockerfile** (one is in the repo root)
+- Port: **3000**
+
+### Environment
+
+Paste this into the *app* service's Environment tab, filling in the four
+bracketed values:
+
+```
+NODE_ENV=production
+PORT=3000
+LOG_LEVEL=info
+
+# Copy the "Internal Connection URL" from the database service and append the
+# database name + authSource. Do NOT use localhost — that is the app's own
+# container, where nothing is listening.
+MONGODB_URI=<paste Internal Connection URL>/mountroad_wa_bot?authSource=admin
+MONGODB_DB=mountroad_wa_bot
+
+# --- Meta WhatsApp Cloud API ---
+WHATSAPP_APP_SECRET=<from your .env>
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=<from your .env>
+WHATSAPP_ACCESS_TOKEN=<from your .env>
+WHATSAPP_PHONE_NUMBER_ID=<from your .env>
+WHATSAPP_WABA_ID=<from your .env>
+WHATSAPP_GRAPH_API_VERSION=v25.0
+WHATSAPP_REENGAGEMENT_TEMPLATE=<from your .env>
+WHATSAPP_REENGAGEMENT_TEMPLATE_LANG=en
+
+# --- Anthropic ---
+ANTHROPIC_API_KEY=<from your .env>
+CLAUDE_MODEL=claude-haiku-4-5
+
+# --- Veris OCR ---
+VERIS_OCR_BASE_URL=https://veris.recursai.in
+VERIS_OCR_API_KEY=<from your .env>
+VERIS_OCR_TIMEOUT_MS=120000
+
+STORAGE_PATH=/data/storage
+SHADOW_MODE=false
+OUTBOUND_RATE_PER_SECOND=20
+```
+
+`MOCK_WHATSAPP_MEDIA` must not be set here. It replaces real candidate documents
+with a test fixture.
+
+### Volume
+
+Mount a persistent volume at **`/data/storage`**. Without it, every redeploy
+destroys candidate documents that have not been reviewed yet.
+
+### Redis (optional)
+
+Not required. Without `REDIS_URL` the queue runs in-process, which is fine for
+one instance — but jobs are lost on restart and are never retried. Add a Redis
+service and set `REDIS_URL` when volume justifies it.
+
+**Do not run more than one replica without Redis.** The per-candidate lock is
+in-memory, so two instances would answer the same candidate twice.
+
+---
+
+## 3. Domain
+
+Attach a domain in Dokploy pointing at container port **3000**, with HTTPS
+enabled. Meta requires a public HTTPS callback on port 443 with a valid
+certificate — it will not accept an IP, a self-signed cert, or a custom port.
+
+Confirm it from your laptop:
+
+```bash
+curl https://<your-domain>/health
+# {"ok":true,"shadowMode":false}
+```
+
+If that does not return JSON, stop here. Nothing downstream can work yet.
+
+---
+
+## 4. Meta callback URL — the step that is probably missing
+
+`npm run doctor` currently reports:
+
+```
+ok  webhook subscription    app subscribed — MLSG Web App Automation
+```
+
+Your WABA **is** subscribed, but to an app called *MLSG Web App Automation* —
+and your `.env` notes the app secret is shared with `career-pathways-suite`.
+So Meta already has a callback URL on file for that app, and it points at
+whatever that other service is. Messages are being delivered there, not here.
+
+In Meta → your app → **WhatsApp → Configuration**:
+
+- Callback URL: `https://<your-domain>/webhook`
+- Verify token: exactly your `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
+- Subscribe to the **`messages`** field
+
+Then send a test message and watch the app logs for `webhook verification
+succeeded` followed by inbound traffic.
+
+> ⚠️ **One callback URL per app.** Changing it moves *all* traffic for this
+> number away from the existing receiver. If `career-pathways-suite` is live and
+> serving real candidates, repointing the URL will break it. Decide first
+> whether this bot replaces that receiver, or whether it needs its own Meta app
+> and phone number. This is a product decision, not a config one.
+
+---
+
+## 5. Verify
+
+Open a terminal in the app container and run:
+
+```bash
+npm run doctor:prod
+```
+
+Every line should read `ok`. It checks, in order: shadow mode, MongoDB
+connectivity and writability, storage, the Anthropic key, the OCR service, the
+WhatsApp token and number, and whether Meta has an app subscribed.
+
+---
+
+## Quick triage — "the bot isn't replying"
+
+| Symptom | Cause |
+|---|---|
+| `doctor` says shadow mode is ON | `SHADOW_MODE=true`. Replies are generated and discarded. |
+| `doctor` fails on mongodb | `MONGODB_URI` still says `localhost`, or the app is in a different Dokploy project from the database. |
+| `/health` does not respond | Container is not running or the domain is not mapped to port 3000. Check the app logs. |
+| `/health` fine, no logs on send | Meta's callback URL does not point here — see step 4. |
+| Logs show `rejected webhook with an invalid signature` | `WHATSAPP_APP_SECRET` does not match the app sending the webhook. |
+| Logs show inbound, no reply | `doctor` will show whether it is the Anthropic key. Otherwise check for `outside_24h_window`. |
+| Replies stop after 24h of candidate silence | Expected. Meta's window closed; only the approved template can reopen it, and nothing schedules it yet. |

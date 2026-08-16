@@ -1,0 +1,10 @@
+node_modules
+dist
+storage
+.git
+.gitignore
+.env
+*.log
+README.md
+DEPLOY.md
+.mongo-data
