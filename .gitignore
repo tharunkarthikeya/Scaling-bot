@@ -1,7 +1,9 @@
 node_modules/
-dist/
+/dist/
 .env
-storage/
+# Anchored to the repo root. Unanchored, this also matches src/storage/ —
+# which silently excluded the storage module from the repo and broke the build.
+/storage/
+/.mongo-data/
 *.log
 .DS_Store
-.mongo-data/
