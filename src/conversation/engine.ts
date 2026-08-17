@@ -513,6 +513,17 @@ async function startTracking(candidate: CandidateDoc): Promise<void> {
     await reportApplicationStatus(candidate, candidate);
     return;
   }
+
+  // Mid-registration on this very number: they have no id yet, and asking them
+  // to type one they were never given is a dead end. Consent is the marker —
+  // nothing is recorded before it, so someone who has given it is partway
+  // through, whereas a first-time contact may well be tracking a registration
+  // made on another number and does need to be asked.
+  if (candidate.consent?.given) {
+    await ask(candidate, copy.TRACK_NOT_REGISTERED, copy.RESUME_CHOICES, MENU.resume);
+    return;
+  }
+
   await tell(candidate, copy.TRACK_ASK_ID);
   await setState(candidate, { currentStep: MENU.trackId });
 }
@@ -1651,6 +1662,28 @@ export async function handleInboundMessage(payload: {
 
     // "Other" on a trade question needs the candidate's own words before moving on.
     if (answer.ids?.includes('other') && (await askForOtherText(candidate, step))) return;
+  }
+
+  // An answer that was understood but left the question unsatisfied would have
+  // the same question asked again next turn, and the turn after that, forever.
+  // It happens when the interpreter returns a value for a step that needed an
+  // option id — `total_experience` gets "about six" with no band, `location`
+  // yields only a country — and no amount of re-asking fixes it. Counted like a
+  // reply we could not read, so the conversation reaches a person instead.
+  if ((!step.when || step.when(candidate)) && !step.satisfied(candidate)) {
+    const count = (candidate.unclearCount ?? 0) + 1;
+    await setState(candidate, { unclearCount: count });
+
+    if (count >= TUNABLES.maxAsksPerStep) {
+      await tell(candidate, copy.STUCK);
+      await handOffToStaff(candidate, `"${step.id}" still unanswered after ${count} replies`);
+      return;
+    }
+
+    logger.warn({ waId: candidate.waId, step: step.id, count }, 'answer left the step unsatisfied');
+    await tell(candidate, copy.UNCLEAR);
+    await reply(candidate, await renderStep(step, candidate), step.id);
+    return;
   }
 
   await drainEditQueue(candidate, step.id);

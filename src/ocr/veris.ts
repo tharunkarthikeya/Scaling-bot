@@ -522,6 +522,17 @@ function normaliseResume(payload: any): OcrOutcome {
     pushField(fields, 'previous_designation', title, null, { category: 'experience' });
   }
 
+  // Only where the extractor states them outright. Inferring countries from an
+  // employer's address — "Gulf Steel Works, Sharjah" — would be guessing at the
+  // CV rather than reading it, and §27 forbids inventing candidate information.
+  for (const country of stringsFrom(
+    payload?.overseas_countries ?? payload?.countries_worked ?? payload?.overseas?.countries,
+    'name',
+    'country',
+  )) {
+    pushField(fields, 'overseas_country', country, null, { category: 'experience' });
+  }
+
   for (const cert of stringsFrom(
     payload?.certifications ?? payload?.certificates ?? payload?.licenses,
     'name',

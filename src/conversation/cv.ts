@@ -333,6 +333,12 @@ export function extractFromCv(ocrFields: OcrField[], ownPhone?: string): CvExtra
     patch.hasOverseasExperience = true;
   }
 
+  // Where the CV names them, that question is answered and never asked (§1).
+  if (f.overseas_country?.length) {
+    patch.overseasCountries = f.overseas_country.slice(0, 20);
+    patch.hasOverseasExperience = true;
+  }
+
   const address = splitAddress(first(f, 'address'));
   if (address?.state) {
     patch.currentState = address.state;

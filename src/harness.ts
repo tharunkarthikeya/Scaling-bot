@@ -29,6 +29,9 @@ process.env.SHADOW_MODE = 'true';
 process.env.MOCK_WHATSAPP_MEDIA = 'true';
 process.env.STORAGE_PATH = path.join(os.tmpdir(), 'adira-harness-storage');
 process.env.LOG_LEVEL = process.env.HARNESS_LOG_LEVEL ?? 'warn';
+// Without a key the /api routes are not served at all, and the run could not
+// exercise the one write the CRM makes — setting an application's outcome.
+process.env.ADMIN_API_KEY ??= 'harness-admin-key-0123456789';
 
 const { config } = await import('./config.js');
 const { connectDb, closeDb } = await import('./db/client.js');
@@ -45,6 +48,10 @@ const { stepById } = await import('./conversation/flow.js');
 const { acceptedChoices } = await import('./conversation/render.js');
 
 const WA_ID = '919000000001';
+/** A second number, so the B2B branch cannot disturb the registration above. */
+const B2B_WA_ID = '919000000002';
+/** A third, abandoned mid-registration to exercise the idle-session timeout. */
+const IDLE_WA_ID = '919000000003';
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -118,7 +125,7 @@ const baseUrl = typeof address === 'object' && address ? `http://127.0.0.1:${add
 
 let seq = 0;
 
-function envelope(message: Record<string, unknown>) {
+function envelope(message: Record<string, unknown>, waId = WA_ID) {
   return {
     object: 'whatsapp_business_account',
     entry: [
@@ -129,7 +136,7 @@ function envelope(message: Record<string, unknown>) {
             field: 'messages',
             value: {
               messaging_product: 'whatsapp',
-              contacts: [{ wa_id: WA_ID, profile: { name: 'Asha Kumari' } }],
+              contacts: [{ wa_id: waId, profile: { name: 'Asha Kumari' } }],
               messages: [message],
             },
           },
@@ -139,8 +146,8 @@ function envelope(message: Record<string, unknown>) {
   };
 }
 
-async function postWebhook(message: Record<string, unknown>): Promise<number> {
-  const raw = Buffer.from(JSON.stringify(envelope(message)));
+async function postWebhook(message: Record<string, unknown>, waId = WA_ID): Promise<number> {
+  const raw = Buffer.from(JSON.stringify(envelope(message, waId)));
   const signature =
     'sha256=' + crypto.createHmac('sha256', config.WHATSAPP_APP_SECRET).update(raw).digest('hex');
 
@@ -152,39 +159,53 @@ async function postWebhook(message: Record<string, unknown>): Promise<number> {
   return res.status;
 }
 
-function base(): Record<string, unknown> {
+function base(waId = WA_ID): Record<string, unknown> {
   seq++;
   return {
-    from: WA_ID,
+    from: waId,
     id: `wamid.HARNESS${seq}`,
     timestamp: String(Math.floor(Date.now() / 1000)),
   };
 }
 
-const textMessage = (body: string) => ({ ...base(), type: 'text', text: { body } });
+const textMessage = (body: string, waId = WA_ID) => ({
+  ...base(waId),
+  type: 'text',
+  text: { body },
+});
 
 /** A tapped button or list row — carries the option id, as the real client does. */
-const tapMessage = (id: string, title: string) => ({
-  ...base(),
+const tapMessage = (id: string, title: string, waId = WA_ID) => ({
+  ...base(waId),
   type: 'interactive',
   interactive: { type: 'list_reply', list_reply: { id, title } },
 });
 
-const documentMessage = (filename: string, caption?: string) => ({
-  ...base(),
+const documentMessage = (filename: string, caption?: string, waId = WA_ID) => ({
+  ...base(waId),
   type: 'document',
   document: { id: `MEDIA${seq}`, mime_type: 'application/pdf', filename, ...(caption ? { caption } : {}) },
 });
 
-async function outboundCount(): Promise<number> {
-  return messages().countDocuments({ waId: WA_ID, direction: 'outbound' });
+async function outboundCount(waId = WA_ID): Promise<number> {
+  return messages().countDocuments({ waId, direction: 'outbound' });
+}
+
+/** The last thing the bot said, for assertions about wording. */
+async function lastOutbound(waId = WA_ID): Promise<string> {
+  const row = await messages()
+    .find({ waId, direction: 'outbound' })
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(1)
+    .next();
+  return row?.text ?? '';
 }
 
 /** Waits for the bot to say something new. */
-async function waitForReply(since: number, timeoutMs = 150_000): Promise<boolean> {
+async function waitForReply(since: number, waId = WA_ID, timeoutMs = 150_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if ((await outboundCount()) > since) {
+    if ((await outboundCount(waId)) > since) {
       // Let a turn that sends two messages finish before reading state.
       await new Promise((r) => setTimeout(r, 300));
       return true;
@@ -354,7 +375,178 @@ if (finished?.stage === 'REGISTRATION_COMPLETED') {
     const before = await outboundCount();
     await postWebhook(tapMessage('availability', 'Joining availability'));
     const ok = await waitForReply(before);
+    const stillRegistered =
+      (await candidates().findOne({ waId: WA_ID }))?.stage === 'REGISTRATION_COMPLETED';
     console.log(`  ${ok ? green('ok') : red('TIMEOUT')}  editing one section only`);
+    // §18 and §22: an edit opens a section, it does not un-register anyone.
+    console.log(
+      `  ${stillRegistered ? green('ok') : red('FAIL')}  an edit does not restart registration`,
+    );
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Application tracking, and the one write the CRM makes               */
+/* ------------------------------------------------------------------ */
+
+const registered = await candidates().findOne({ waId: WA_ID });
+let trackingOk = false;
+let statusApiOk = false;
+
+if (registered?.candidateId) {
+  heading('Application tracking (§25)');
+
+  {
+    const before = await outboundCount();
+    // Typed unprompted, mid-menu — it is answered wherever it arrives.
+    await postWebhook(textMessage(registered.candidateId));
+    await waitForReply(before);
+    const said = await lastOutbound();
+    const ok = said.includes(registered.candidateId);
+    trackingOk = ok;
+    console.log(
+      `  ${ok ? green('ok') : red('FAIL')}  an id sent unprompted is answered with its status`,
+    );
+    console.log(dim(`       ${said.split('\n').slice(0, 2).join(' / ')}`));
+  }
+
+  {
+    const res = await fetch(`${baseUrl}/api/candidates/${WA_ID}/application`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-api-key': config.ADMIN_API_KEY! },
+      body: JSON.stringify({ status: 'completed', by: 'harness', note: 'set by the harness' }),
+    });
+    console.log(`  ${res.ok ? green('ok') : red('FAIL')}  staff set the outcome (${res.status})`);
+
+    const unauthorised = await fetch(`${baseUrl}/api/candidates/${WA_ID}/application`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'rejected' }),
+    });
+    const rejected = unauthorised.status === 401;
+    console.log(
+      `  ${rejected ? green('ok') : red('FAIL')}  an unauthenticated write is refused (${unauthorised.status})`,
+    );
+
+    const before = await outboundCount();
+    await postWebhook(textMessage(registered.candidateId!));
+    await waitForReply(before);
+    const said = await lastOutbound();
+    statusApiOk = res.ok && rejected && /Completed|முடிந்தது|पूरा/.test(said);
+    console.log(
+      `  ${statusApiOk ? green('ok') : red('FAIL')}  the candidate is told the new outcome`,
+    );
+    console.log(dim(`       ${said.split('\n').slice(0, 2).join(' / ')}`));
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* The other two things the opening menu can mean                      */
+/* ------------------------------------------------------------------ */
+
+heading('Opening menu: B2B (§2, §24)');
+
+let b2bOk = false;
+{
+  await postWebhook(textMessage('hello, we are a manpower agency', B2B_WA_ID), B2B_WA_ID);
+  await waitForReply(0, B2B_WA_ID);
+
+  const before = await outboundCount(B2B_WA_ID);
+  await postWebhook(tapMessage('b2b', 'B2B enquiry', B2B_WA_ID), B2B_WA_ID);
+  await waitForReply(before, B2B_WA_ID);
+
+  const contact = await candidates().findOne({ waId: B2B_WA_ID });
+  // The point of the branch: a business contact reaches a person without one
+  // personal question being asked and without a consent notice being needed.
+  b2bOk =
+    contact?.stage === 'HUMAN_HANDOFF' &&
+    !contact.consent &&
+    Object.keys(contact.profile ?? {}).length === 0;
+
+  console.log(`  ${b2bOk ? green('ok') : red('FAIL')}  B2B goes straight to staff`);
+  console.log(
+    dim(`       stage=${contact?.stage} profile fields=${Object.keys(contact?.profile ?? {}).length}`),
+  );
+
+  for (const m of await messages().find({ waId: B2B_WA_ID }).sort({ createdAt: 1, _id: 1 }).toArray()) {
+    const who = m.direction === 'inbound' ? '\x1b[36mcontact  \x1b[0m' : '\x1b[35mbot      \x1b[0m';
+    console.log(`  ${who} │ ${(m.text ?? `[${m.type}]`).replace(/\n/g, ' / ')}`);
+  }
+
+  const before2 = await outboundCount(B2B_WA_ID);
+  await postWebhook(textMessage('are you there?', B2B_WA_ID), B2B_WA_ID);
+  // §24: nothing automated runs while staff hold the conversation, so silence
+  // here is the correct outcome rather than a timeout.
+  const spoke = await waitForReply(before2, B2B_WA_ID, 6_000);
+  console.log(`  ${spoke ? red('FAIL') : green('ok')}  the bot stays silent during a handoff`);
+  b2bOk = b2bOk && !spoke;
+}
+
+/* ------------------------------------------------------------------ */
+/* The five-minute idle session                                        */
+/* ------------------------------------------------------------------ */
+
+heading('Idle session and starting over');
+
+let idleOk = false;
+{
+  const { TUNABLES } = await import('./conversation/rules.js');
+  const { endIdleSessions } = await import('./conversation/engine.js');
+
+  await postWebhook(textMessage('hi', IDLE_WA_ID), IDLE_WA_ID);
+  await waitForReply(0, IDLE_WA_ID);
+
+  {
+    const before = await outboundCount(IDLE_WA_ID);
+    await postWebhook(tapMessage('apply', 'Apply for a job', IDLE_WA_ID), IDLE_WA_ID);
+    await waitForReply(before, IDLE_WA_ID);
+  }
+
+  const midway = await candidates().findOne({ waId: IDLE_WA_ID });
+  const stepBefore = midway?.currentStep;
+
+  // Backdated rather than waited out — the timeout is five minutes and the point
+  // is to test the rule, not the clock.
+  const longAgo = new Date(Date.now() - (TUNABLES.sessionTimeoutMinutes + 5) * 60_000);
+  await candidates().updateOne({ waId: IDLE_WA_ID }, { $set: { lastInboundAt: longAgo } });
+
+  const closed = await endIdleSessions();
+  const marked = await candidates().findOne({ waId: IDLE_WA_ID });
+  const sweepOk = closed >= 1 && marked?.sessionEndedAt instanceof Date;
+  console.log(
+    `  ${sweepOk ? green('ok') : red('FAIL')}  the sweep closes an idle session without messaging`,
+  );
+
+  // Nothing was lost by closing it — progress is written as it arrives.
+  const savedOk = marked?.currentStep === stepBefore;
+  console.log(`  ${savedOk ? green('ok') : red('FAIL')}  progress is kept where it stopped`);
+
+  {
+    const before = await outboundCount(IDLE_WA_ID);
+    await postWebhook(textMessage('hello again', IDLE_WA_ID), IDLE_WA_ID);
+    await waitForReply(before, IDLE_WA_ID);
+    const said = await lastOutbound(IDLE_WA_ID);
+    const asked = /not finished|முடியவில்லை|पूरा नहीं/.test(said);
+    console.log(`  ${asked ? green('ok') : red('FAIL')}  the next message is asked continue or restart`);
+    console.log(dim(`       ${said.split('\n')[0]}`));
+    idleOk = sweepOk && savedOk && asked;
+  }
+
+  {
+    const before = await outboundCount(IDLE_WA_ID);
+    await postWebhook(tapMessage('restart', 'Start again', IDLE_WA_ID), IDLE_WA_ID);
+    await waitForReply(before, IDLE_WA_ID);
+
+    const fresh = await candidates().findOne({ waId: IDLE_WA_ID });
+    // Answers go, consent stays: it is a recorded fact, not an answer being
+    // revised, and §4 is satisfied either way.
+    const restarted =
+      Object.keys(fresh?.profile ?? {}).length === 0 && fresh?.sessionEndedAt == null;
+    console.log(`  ${restarted ? green('ok') : red('FAIL')}  "start from first" clears the answers`);
+    console.log(
+      dim(`       stage=${fresh?.stage} step=${fresh?.currentStep} fields=${Object.keys(fresh?.profile ?? {}).length}`),
+    );
+    idleOk = idleOk && restarted;
   }
 }
 
@@ -469,11 +661,15 @@ verdict(
   candidate?.consent?.given ? 'recorded' : 'missing',
 );
 
-// §28 asks for roughly 7–10 questions. More than about 16 means the flow is
-// asking things it should have skipped.
+// §28 asks for roughly 7–10 questions for a typical registration, and this run
+// is not typical: the driver deliberately takes every expensive branch. Europe
+// adds `europe_docs` and three uploads, "Fabrication/Welding" runs two trade
+// packs, and a valid passport adds its expiry — about ten steps a GCC candidate
+// with a clean CV never sees. The ceiling below is for that branch-maximal path;
+// exceeding it means questions are being asked that the CV already answered.
 verdict(
   'question count is reasonable (§28)',
-  questionsAsked > 0 && questionsAsked <= 18,
+  questionsAsked > 0 && questionsAsked <= 20,
   `${questionsAsked} distinct questions`,
 );
 
@@ -497,6 +693,24 @@ verdict(
   anthropicOk ? 'working' : 'unverified — free text would not be understood',
 );
 
+verdict(
+  'application tracking (§25)',
+  trackingOk && statusApiOk,
+  trackingOk && statusApiOk ? 'id → status, and staff can change it' : 'tracking did not work',
+);
+
+verdict(
+  'B2B reaches staff without collecting data (§2, §24)',
+  b2bOk,
+  b2bOk ? 'handed over, no profile written' : 'did not behave as specified',
+);
+
+verdict(
+  'idle session closes and can be resumed',
+  idleOk,
+  idleOk ? 'closed, kept, and restartable' : 'did not behave as specified',
+);
+
 /* ------------------------------------------------------------------ */
 
 await app.close();
@@ -504,4 +718,4 @@ await queue.close();
 await closeDb();
 await mongo.stop();
 console.log('');
-process.exit(completed ? 0 : 1);
+process.exit(completed && trackingOk && statusApiOk && b2bOk && idleOk ? 0 : 1);
