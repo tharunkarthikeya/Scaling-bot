@@ -296,6 +296,13 @@ Do not stretch a category to fit. A wrong category is written into a permanent
 record and decides which follow-up questions they are asked; their own wording,
 kept as a value, costs nothing.
 
+"unrelated" is for a message that is not an answer at all. A reply that names
+what the candidate does, wants, or has worked with is an answer even when no
+offered option covers it and even when it is oddly worded — return it as a
+"value". Telling someone their own answer is off-topic is the worst thing this
+classifier can do: it is confusing, it re-asks a question they just answered,
+and it reads as the bot refusing to listen.
+
 A reply can be brief, misspelled, or lowercase and still be a clear match. "ya",
 "ok", "sari", "haan", "1", and a bare thumbs-up all match a yes-type option when
 one is offered.

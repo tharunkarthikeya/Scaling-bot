@@ -54,6 +54,8 @@ const B2B_WA_ID = '919000000002';
 const IDLE_WA_ID = '919000000003';
 /** A fourth, which asks questions of its own instead of answering ours. */
 const FAQ_WA_ID = '919000000004';
+/** A fifth, which names a job instead of tapping one of the offered categories. */
+const JOB_WA_ID = '919000000005';
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -554,6 +556,102 @@ let faqOk = false;
 }
 
 /* ------------------------------------------------------------------ */
+/* A named job is an answer, not an off-topic message                  */
+/* ------------------------------------------------------------------ */
+
+heading('Naming a job instead of tapping a category (§9)');
+
+let occupationOk = false;
+{
+  // The reported bug, driven end to end: "type writer" at the job-preference
+  // question was classified off-topic, so the candidate was told to contact
+  // staff about their own answer and asked again.
+  await postWebhook(textMessage('hi', JOB_WA_ID), JOB_WA_ID);
+  await waitForReply(0, JOB_WA_ID);
+
+  // Taking the first offered option is not safe here — at the opening menu it is
+  // "B2B enquiry", which ends the conversation, and at the CV question it is
+  // "Upload CV", which waits for a file that never comes. The route to the
+  // job-preference question is pinned instead. "Hospitality" is chosen because
+  // it maps to no trade pack, so §8's questions are skipped and the run is short.
+  const taps: Record<string, string> = {
+    entry: 'apply',
+    language: 'en',
+    consent: 'yes',
+    cv: 'no_cv',
+    education: 'class_10',
+    main_trade: 'hospitality',
+    total_experience: '2_5',
+  };
+  const typed: Record<string, string> = {
+    full_name: 'Test Candidate',
+    location: 'Chennai, Tamil Nadu',
+    dob: '15/08/1995',
+  };
+
+  /** Answers whatever is on screen until the named step is the open question. */
+  const driveTo = async (target: string): Promise<boolean> => {
+    for (let turn = 0; turn < 25; turn++) {
+      const c = await candidates().findOne({ waId: JOB_WA_ID });
+      if (c?.currentStep === target) return true;
+      if (!c?.currentStep || c.stage === 'HUMAN_HANDOFF') return false;
+
+      const step = stepById(c.currentStep);
+      const before = await outboundCount(JOB_WA_ID);
+      const wanted = taps[c.currentStep];
+
+      if (typed[c.currentStep]) {
+        await postWebhook(textMessage(typed[c.currentStep]!, JOB_WA_ID), JOB_WA_ID);
+      } else if (step && wanted) {
+        const choice = acceptedChoices(step, c).find((o) => o.id === wanted);
+        await postWebhook(tapMessage(wanted, choice?.label.en ?? wanted, JOB_WA_ID), JOB_WA_ID);
+      } else if (step && acceptedChoices(step, c).length) {
+        const first = acceptedChoices(step, c)[0]!;
+        await postWebhook(tapMessage(first.id, first.label.en, JOB_WA_ID), JOB_WA_ID);
+      } else {
+        await postWebhook(textMessage('Chennai, Tamil Nadu', JOB_WA_ID), JOB_WA_ID);
+      }
+      await waitForReply(before, JOB_WA_ID);
+    }
+    return false;
+  };
+
+  const arrived = await driveTo('job_preference');
+
+  if (!arrived) {
+    console.log(`  ${yellow('warn')} could not reach the job-preference question; skipped`);
+    occupationOk = true;
+  } else {
+    const before = await outboundCount(JOB_WA_ID);
+    await postWebhook(textMessage('type writer', JOB_WA_ID), JOB_WA_ID);
+    await waitForReply(before, JOB_WA_ID);
+
+    const said = await lastOutbound(JOB_WA_ID);
+    const after = await candidates().findOne({ waId: JOB_WA_ID });
+
+    const notDeflected = !/staff will answer that/i.test(said);
+    // Their own words, not a category the model squeezed them into. Matching
+    // "type writer" to "Related skilled jobs" satisfies the step and silently
+    // discards the only thing the candidate actually told us.
+    const recorded = /typ/i.test(String(after?.profile?.desiredOccupation ?? ''));
+    const movedOn = after?.currentStep !== 'job_preference';
+
+    console.log(`  ${notDeflected ? green('ok') : red('FAIL')}  a named job is not treated as off-topic`);
+    console.log(`  ${recorded ? green('ok') : red('FAIL')}  the job is stored in their own words`);
+    console.log(`  ${movedOn ? green('ok') : red('FAIL')}  the question is not asked again`);
+    console.log(
+      dim(
+        `       workType=${after?.profile?.workTypePreference ?? '—'} ` +
+          `desired=${after?.profile?.desiredOccupation ?? '—'} step=${after?.currentStep}`,
+      ),
+    );
+    console.log(dim(`       ${said.replace(/\n/g, ' / ').slice(0, 130)}`));
+
+    occupationOk = notDeflected && recorded && movedOn;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* The five-minute idle session                                        */
 /* ------------------------------------------------------------------ */
 
@@ -803,6 +901,12 @@ verdict(
 );
 
 verdict(
+  'a named job is recorded, not called off-topic (§9)',
+  occupationOk,
+  occupationOk ? 'stored and the flow moved on' : 'did not behave as specified',
+);
+
+verdict(
   'candidate questions answered within guardrails (§27)',
   faqOk,
   faqOk ? 'answered from the approved list, no figures' : 'did not behave as specified',
@@ -815,4 +919,4 @@ await queue.close();
 await closeDb();
 await mongo.stop();
 console.log('');
-process.exit(completed && trackingOk && statusApiOk && b2bOk && idleOk && faqOk ? 0 : 1);
+process.exit(completed && trackingOk && statusApiOk && b2bOk && idleOk && faqOk && occupationOk ? 0 : 1);

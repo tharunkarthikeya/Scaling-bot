@@ -230,6 +230,45 @@ export function resolveOfferedIds(returned: unknown, choices: Choice[]): string[
 function describeQuestion(step: FlowStep, choices: Choice[]): string {
   const lines = [`Question asked: ${step.prompt.en}`];
 
+  // Work questions get an explicit test before anything else, because the
+  // failure they had was silent and expensive: a candidate answering "type
+  // writer" was told to contact staff about their own answer, and the question
+  // was asked again.
+  if (step.acceptsOccupation) {
+    lines.push(
+      '',
+      'THIS QUESTION IS ABOUT WORK. Before anything else, decide one thing: does',
+      'the reply name a job, trade, skill, tool, machine or workplace?',
+      '',
+      'Count anything a person could be paid to do, however it is written —',
+      '"type writer" (typist), "parota master", "JCB operator", "AC mechanic",',
+      '"loading unloading", "computer work", "tailoring", "driver cum helper".',
+      'Spelling, English and word order will be rough. A trade named in Tamil or',
+      'Hindi, or romanised, counts the same.',
+      '',
+      'If it names work, it is an answer. Never classify it "unrelated".',
+    );
+
+    lines.push(
+      '',
+      step.acceptsOccupation === 'category'
+        ? 'The options offered are categories of work, so a named job belongs inside\n' +
+          'one of them — return that id. Fall back to "value" only when no category\n' +
+          'genuinely covers it.'
+        : 'The options offered are NOT job names — they describe how the work relates\n' +
+          'to what the candidate already does. So a specific job the candidate names\n' +
+          'is never one of them: return it as a "value" in their own words. Choosing\n' +
+          'the nearest-sounding option instead throws away the only thing they told\n' +
+          'us. Return an id only when the reply really is one of those options.',
+    );
+
+    lines.push(
+      '',
+      'Only if it names no work at all — a greeting, a question, small talk — go',
+      'on to the other classifications.',
+    );
+  }
+
   if (choices.length) {
     // Not numbered. A leading "1." reads as the option's identifier, and the
     // model returns "1" instead of the id — which then fails validation and a

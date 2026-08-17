@@ -116,6 +116,29 @@ export interface FlowStep {
   fields?: string[];
   /** Which checklist slot a document step is asking for. */
   document?: string;
+  /**
+   * This question is about work, so a named job, trade or skill is an answer.
+   *
+   * Candidates answer "what work are you looking for?" with "type writer",
+   * "parota master" or "JCB operator" — the thing they actually do — rather
+   * than with one of the broad categories on the screen. Without this the
+   * interpreter reads a specific occupation as off-topic and the candidate is
+   * told to contact staff about their own answer.
+   *
+   * The two modes differ in what the offered options *are*, which decides what
+   * should happen to the job they named:
+   *
+   *   'category'  the options are categories of work, so a named job belongs
+   *               inside one of them. "Hotel cook" is hospitality. Match it.
+   *   'named'     the options are not job names — `job_preference` offers four
+   *               ways work can relate to their current trade — so no option
+   *               covers "type writer" and matching one silently discards what
+   *               they said. Keep their wording as a value instead.
+   *
+   * The step must also be able to record free text; a flag alone only changes
+   * the reading, not what is stored.
+   */
+  acceptsOccupation?: 'category' | 'named';
   /** Offer "Talk to staff" alongside the answers. Always available by typing (§24). */
   allowStaff?: boolean;
   /** Accept a photo, file or voice note as an answer as well as a tap or text. */
@@ -538,6 +561,8 @@ const EXPERIENCE_STEPS: FlowStep[] = [
     },
     input: 'choice',
     choices: TRADE_CHOICES,
+    // The categories here are trades, so a named job belongs inside one.
+    acceptsOccupation: 'category',
     satisfied: (c) => has(p(c).primaryTrade),
     // §9: this is what they *do*, and it is kept apart from what they want next.
     //
@@ -574,6 +599,7 @@ const EXPERIENCE_STEPS: FlowStep[] = [
     },
     input: 'text',
     allowMedia: true,
+    acceptsOccupation: 'named',
     when: (c) => p(c).primaryTrade === 'other',
     satisfied: (c) => has(p(c).currentOccupation),
     apply: (a) => ({ currentOccupation: a.value }),
@@ -664,8 +690,28 @@ const PREFERENCE_STEPS: FlowStep[] = [
       },
       { id: 'different', label: { en: 'Different job', ta: 'வேறு வேலை', hi: 'अलग काम' } },
     ],
+    // The four options are relationships to their current trade, not jobs, so
+    // a job they name has to keep its own wording.
+    acceptsOccupation: 'named',
     satisfied: (c) => has(p(c).workTypePreference),
-    apply: (a) => ({ workTypePreference: a.ids?.[0] }),
+    /**
+     * A tapped category records the category. A named job records the job.
+     *
+     * "Type writer", "welder", "hotel cook" are all answers to this question
+     * that no button covers — the candidate is telling us the work they want,
+     * which is exactly what "Different job" means, and they have already said
+     * which one. Recording both satisfies this step and skips `desired_job`,
+     * because §1 forbids asking for something we were just told.
+     *
+     * Before this, a named job left `workTypePreference` empty, the step
+     * unsatisfied, and the candidate reading "our staff will answer that" about
+     * their own answer.
+     */
+    apply: (a) => {
+      if (a.ids?.length) return { workTypePreference: a.ids[0] };
+      const typed = (a.value ?? a.raw ?? '').trim();
+      return typed ? { workTypePreference: 'different', desiredOccupation: typed } : {};
+    },
     clears: [
       'workTypePreference',
       'relatedAcceptance',
@@ -768,6 +814,7 @@ const PREFERENCE_STEPS: FlowStep[] = [
     },
     input: 'text',
     allowMedia: true,
+    acceptsOccupation: 'named',
     when: (c) => p(c).workTypePreference === 'different',
     // §9: kept apart from currentOccupation. What they want is not what they did.
     satisfied: (c) => has(p(c).desiredOccupation),

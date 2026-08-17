@@ -235,6 +235,16 @@ does not guarantee selection"* still gets through. That one is not hypothetical:
 the first version of the guard blocked it, which would have silenced the exact
 sentence §27 wants said.
 
+**A job the candidate names is an answer, not an off-topic message.** Steps about
+work carry `acceptsOccupation`, and the interpreter is told to test for a named
+job, trade, tool or workplace before anything else. The two modes matter:
+`'category'` on `main_trade`, whose options *are* trades, so "hotel cook" becomes
+hospitality; `'named'` on `job_preference`, whose four options describe how work
+relates to their current trade, so "type writer" is kept as their own wording and
+`desired_job` is skipped rather than asked. Getting this wrong is silent and
+expensive — the candidate is told to contact staff about their own answer, then
+asked the same question again.
+
 **Asking about a fee is not a safeguarding report.** The interpreter escalates to
 a person when a candidate says someone *has asked them for money*, and answers
 normally when they ask *whether there is a fee*. Collapsing the two sent every

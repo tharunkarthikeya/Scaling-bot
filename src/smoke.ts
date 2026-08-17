@@ -757,6 +757,55 @@ await check('the reminder offers continue, later and start from first', () => {
 
 /* ------------------------------------------------------------------ */
 
+console.log('\nnaming a job instead of tapping a category (§9)');
+
+await check('a job named at the preference question is kept in their own words', () => {
+  // The reported bug had two halves. The interpreter calling "type writer"
+  // off-topic was one; this is the other — even once it came back as a value,
+  // the step had nowhere to put it, so it stayed unsatisfied and was re-asked.
+  const step = stepById('job_preference')!;
+  const patch = step.apply!({ value: 'typist', raw: 'type writer' }, {} as never);
+
+  assert.equal(patch.workTypePreference, 'different');
+  assert.equal(patch.desiredOccupation, 'typist');
+});
+
+await check('a tapped category still records the category, not a job', () => {
+  const step = stepById('job_preference')!;
+  const patch = step.apply!({ ids: ['general'], tapped: true }, {} as never);
+
+  assert.equal(patch.workTypePreference, 'general');
+  assert.equal(patch.desiredOccupation, undefined);
+});
+
+await check('naming a job satisfies the step, so it is not asked again', () => {
+  const step = stepById('job_preference')!;
+  const after = { profile: step.apply!({ value: 'typist' }, {} as never) } as never;
+  assert.equal(step.satisfied(after), true);
+});
+
+await check('the job they named skips the question that would ask for it again', () => {
+  // `desired_job` exists to ask "which job?" — §1 forbids asking when they have
+  // just told us, and `desiredOccupation` being set is what prevents it.
+  const desired = stepById('desired_job')!;
+  const after = { profile: { workTypePreference: 'different', desiredOccupation: 'typist' } } as never;
+  assert.equal(desired.when!(after), true);
+  assert.equal(desired.satisfied(after), true);
+});
+
+await check('every work question declares how a named job should be read', () => {
+  for (const id of ['main_trade', 'main_trade_other', 'job_preference', 'desired_job']) {
+    const step = stepById(id)!;
+    assert.ok(step.acceptsOccupation, `${id} does not accept a named occupation`);
+  }
+  // The distinction that matters: only where the options are themselves trades
+  // may a named job be folded into one of them.
+  assert.equal(stepById('main_trade')!.acceptsOccupation, 'category');
+  assert.equal(stepById('job_preference')!.acceptsOccupation, 'named');
+});
+
+/* ------------------------------------------------------------------ */
+
 // The FAQ answer is the one generative thing a candidate reads, so the fence
 // around it is worth pinning. `violatesGuardrails` is what turns "never quote a
 // salary" from a line in a prompt into a property of the system.

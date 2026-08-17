@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { storedDocuments, type OcrField } from '../db/models.js';
 import { readFile } from '../storage/index.js';
+import { withCandidateLock } from '../queue/index.js';
 import { TUNABLES } from '../conversation/rules.js';
 import { requirementFor } from '../conversation/checklist.js';
 import {
@@ -816,11 +817,13 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
       { $set: { 'ocr.status': 'skipped', updatedAt: new Date() } },
     );
     // Nothing to read, so the conversation moves on immediately.
-    await resumeAfterDocument(doc.candidateId, doc.docType, {
-      complete: true,
-      verdict: 'ok',
-      problems: [],
-    });
+    await withCandidateLock(doc.waId, () =>
+      resumeAfterDocument(doc.candidateId, doc.docType, {
+        complete: true,
+        verdict: 'ok',
+        problems: [],
+      }),
+    );
     return;
   }
 
@@ -867,36 +870,49 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
       },
     );
 
-    await markSlotFromOcr(
-      doc.candidateId,
-      doc.docType,
-      !outcome.completeness.complete
-        ? 'incomplete'
-        : outcome.needsReview
-          ? 'needs_review'
-          : 'ocr_done',
-    );
-
-    // §5 — what the document yields becomes profile fields, so the questions it
-    // answers are never asked. Marked unverified; a person confirms it (§27).
-    const patch =
-      extractor === 'resume'
-        ? extractFromCv(outcome.fields, doc.waId).patch
-        : profileFromIdentityDocument(doc.docType, outcome.fields);
-
-    if (Object.keys(patch).length) {
-      await mergeExtractedProfile(
+    // From here on this job writes profile fields and then asks a question off
+    // the back of them, which is the same thing an inbound turn does — so it
+    // takes the same lock. Without it, a candidate who messages while their CV
+    // is being read has two turns running at once: both compute the next
+    // question from a half-written profile, both send one, and whichever
+    // finishes last overwrites `currentStep`. The visible symptom is questions
+    // arriving out of order and an answer recorded against the wrong one.
+    //
+    // The lock is taken *here* rather than around the whole job on purpose:
+    // extraction takes up to 120 seconds, and holding it for that long would
+    // freeze the conversation while the file is read.
+    await withCandidateLock(doc.waId, async () => {
+      await markSlotFromOcr(
         doc.candidateId,
-        patch,
-        extractor === 'resume' ? 'cv' : 'document',
-        outcome.confidence,
+        doc.docType,
+        !outcome.completeness.complete
+          ? 'incomplete'
+          : outcome.needsReview
+            ? 'needs_review'
+            : 'ocr_done',
       );
-    }
 
-    await runIdentityComparison(doc.candidateId);
+      // §5 — what the document yields becomes profile fields, so the questions it
+      // answers are never asked. Marked unverified; a person confirms it (§27).
+      const patch =
+        extractor === 'resume'
+          ? extractFromCv(outcome.fields, doc.waId).patch
+          : profileFromIdentityDocument(doc.docType, outcome.fields);
 
-    // Moves the conversation on: the acknowledgement, or the re-ask (§14).
-    await resumeAfterDocument(doc.candidateId, doc.docType, outcome.completeness);
+      if (Object.keys(patch).length) {
+        await mergeExtractedProfile(
+          doc.candidateId,
+          patch,
+          extractor === 'resume' ? 'cv' : 'document',
+          outcome.confidence,
+        );
+      }
+
+      await runIdentityComparison(doc.candidateId);
+
+      // Moves the conversation on: the acknowledgement, or the re-ask (§14).
+      await resumeAfterDocument(doc.candidateId, doc.docType, outcome.completeness);
+    });
 
     logger.info(
       {
@@ -928,11 +944,13 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
     // The file is on disk; what failed is our reading of it. A failed extraction
     // is a review task, not a reason to make the candidate photograph their
     // passport again — so the upload is acknowledged and staff pick it up.
-    await markSlotFromOcr(doc.candidateId, doc.docType, 'ocr_failed');
-    await resumeAfterDocument(doc.candidateId, doc.docType, {
-      complete: true,
-      verdict: 'ok',
-      problems: ['extraction failed; needs a manual check'],
+    await withCandidateLock(doc.waId, async () => {
+      await markSlotFromOcr(doc.candidateId, doc.docType, 'ocr_failed');
+      await resumeAfterDocument(doc.candidateId, doc.docType, {
+        complete: true,
+        verdict: 'ok',
+        problems: ['extraction failed; needs a manual check'],
+      });
     });
   }
 }
