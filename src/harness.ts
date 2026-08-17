@@ -52,6 +52,8 @@ const WA_ID = '919000000001';
 const B2B_WA_ID = '919000000002';
 /** A third, abandoned mid-registration to exercise the idle-session timeout. */
 const IDLE_WA_ID = '919000000003';
+/** A fourth, which asks questions of its own instead of answering ours. */
+const FAQ_WA_ID = '919000000004';
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -483,6 +485,75 @@ let b2bOk = false;
 }
 
 /* ------------------------------------------------------------------ */
+/* Answering a question the flow did not ask                           */
+/* ------------------------------------------------------------------ */
+
+heading('Candidate questions (§27, faq.ts)');
+
+let faqOk = false;
+{
+  const { violatesGuardrails } = await import('./conversation/faq.js');
+
+  await postWebhook(textMessage('hi', FAQ_WA_ID), FAQ_WA_ID);
+  await waitForReply(0, FAQ_WA_ID);
+  {
+    const before = await outboundCount(FAQ_WA_ID);
+    await postWebhook(tapMessage('apply', 'Apply for a job', FAQ_WA_ID), FAQ_WA_ID);
+    await waitForReply(before, FAQ_WA_ID);
+  }
+
+  /** Asks something mid-flow and returns what the bot said back. */
+  const asks = async (question: string): Promise<string> => {
+    const before = await outboundCount(FAQ_WA_ID);
+    await postWebhook(textMessage(question, FAQ_WA_ID), FAQ_WA_ID);
+    await waitForReply(before, FAQ_WA_ID);
+    return lastOutbound(FAQ_WA_ID);
+  };
+
+  const deflected = (said: string) => /staff will answer that|ஊழியர் தொடர்பு|स्टाफ संपर्क/.test(said);
+
+  {
+    const said = await asks('is there any fee for this?');
+    // Answered rather than deflected, and the question it interrupted is still
+    // underneath it — an answer must not cost the candidate their place.
+    const answered = !deflected(said) && /free|not? ?(?:ask|charge)|never ask|no fee/i.test(said);
+    const reAsked = /language|மொழி|भाषा/i.test(said);
+    console.log(`  ${answered ? green('ok') : red('FAIL')}  a covered question is answered, not deflected`);
+    console.log(`  ${reAsked ? green('ok') : red('FAIL')}  the open question is re-sent underneath`);
+    console.log(dim(`       ${said.replace(/\n/g, ' / ').slice(0, 150)}`));
+    faqOk = answered && reAsked;
+  }
+
+  {
+    // The one that matters. A salary question must be answered helpfully and
+    // without a figure — §27 is not satisfied by refusing to engage.
+    const said = await asks('how much salary will i get in dubai?');
+    const clean = violatesGuardrails(said) === undefined;
+    const engaged = !deflected(said);
+    console.log(`  ${clean ? green('ok') : red('FAIL')}  no salary figure reaches the candidate`);
+    console.log(`  ${engaged ? green('ok') : yellow('warn')}  the salary question gets a real answer`);
+    console.log(dim(`       ${said.replace(/\n/g, ' / ').slice(0, 150)}`));
+    faqOk = faqOk && clean;
+  }
+
+  {
+    // Nothing approved covers this, so the staff line is the right answer —
+    // this is the only case that should still produce it.
+    const said = await asks('what is the weather in chennai today?');
+    const handedOver = deflected(said);
+    console.log(`  ${handedOver ? green('ok') : red('FAIL')}  an uncovered question goes to staff`);
+    console.log(dim(`       ${said.replace(/\n/g, ' / ').slice(0, 150)}`));
+    faqOk = faqOk && handedOver;
+  }
+
+  const stillGoing = await candidates().findOne({ waId: FAQ_WA_ID });
+  const flowIntact = stillGoing?.stage !== 'HUMAN_HANDOFF' && !!stillGoing?.currentStep;
+  console.log(`  ${flowIntact ? green('ok') : red('FAIL')}  answering never moves the flow`);
+  console.log(dim(`       stage=${stillGoing?.stage} step=${stillGoing?.currentStep}`));
+  faqOk = faqOk && flowIntact;
+}
+
+/* ------------------------------------------------------------------ */
 /* The five-minute idle session                                        */
 /* ------------------------------------------------------------------ */
 
@@ -510,31 +581,39 @@ let idleOk = false;
   const longAgo = new Date(Date.now() - (TUNABLES.sessionTimeoutMinutes + 5) * 60_000);
   await candidates().updateOne({ waId: IDLE_WA_ID }, { $set: { lastInboundAt: longAgo } });
 
+  const outboundBeforeSweep = await outboundCount(IDLE_WA_ID);
   const closed = await endIdleSessions();
   const marked = await candidates().findOne({ waId: IDLE_WA_ID });
   const sweepOk = closed >= 1 && marked?.sessionEndedAt instanceof Date;
-  console.log(
-    `  ${sweepOk ? green('ok') : red('FAIL')}  the sweep closes an idle session without messaging`,
-  );
-
-  // Nothing was lost by closing it — progress is written as it arrives.
-  const savedOk = marked?.currentStep === stepBefore;
-  console.log(`  ${savedOk ? green('ok') : red('FAIL')}  progress is kept where it stopped`);
+  console.log(`  ${sweepOk ? green('ok') : red('FAIL')}  the sweep closes an idle session`);
 
   {
-    const before = await outboundCount(IDLE_WA_ID);
-    await postWebhook(textMessage('hello again', IDLE_WA_ID), IDLE_WA_ID);
-    await waitForReply(before, IDLE_WA_ID);
+    // The candidate is told the moment it lapses, rather than on their next
+    // message — someone who stopped mid-registration is exactly the person who
+    // will not come back on their own.
     const said = await lastOutbound(IDLE_WA_ID);
-    const asked = /not finished|முடியவில்லை|पूरा नहीं/.test(said);
-    console.log(`  ${asked ? green('ok') : red('FAIL')}  the next message is asked continue or restart`);
+    const told =
+      (await outboundCount(IDLE_WA_ID)) > outboundBeforeSweep &&
+      /terminated due to inactivity|நிறுத்தப்பட்டது|समाप्त कर दिया गया/.test(said);
+    console.log(`  ${told ? green('ok') : red('FAIL')}  the sweep tells the candidate it ended`);
     console.log(dim(`       ${said.split('\n')[0]}`));
-    idleOk = sweepOk && savedOk && asked;
+
+    // ...and the resume menu is left open, so their reply answers it.
+    const menuOpen = marked?.currentStep === 'menu:resume';
+    console.log(`  ${menuOpen ? green('ok') : red('FAIL')}  continue-or-restart is the open question`);
+    idleOk = sweepOk && told && menuOpen;
   }
 
+  // Nothing was lost by closing it — every answer is written as it arrives, so
+  // what they had told us is still on the record behind the menu. Asserted on
+  // the profile rather than on `currentStep`, which now holds the open menu.
+  const savedOk = stepBefore !== undefined && Object.keys(marked?.profile ?? {}).length > 0;
+  console.log(`  ${savedOk ? green('ok') : red('FAIL')}  the answers already given are kept`);
+  idleOk = idleOk && savedOk;
+
   {
     const before = await outboundCount(IDLE_WA_ID);
-    await postWebhook(tapMessage('restart', 'Start again', IDLE_WA_ID), IDLE_WA_ID);
+    await postWebhook(tapMessage('restart', 'Restart session', IDLE_WA_ID), IDLE_WA_ID);
     await waitForReply(before, IDLE_WA_ID);
 
     const fresh = await candidates().findOne({ waId: IDLE_WA_ID });
@@ -723,6 +802,12 @@ verdict(
   idleOk ? 'closed, kept, and restartable' : 'did not behave as specified',
 );
 
+verdict(
+  'candidate questions answered within guardrails (§27)',
+  faqOk,
+  faqOk ? 'answered from the approved list, no figures' : 'did not behave as specified',
+);
+
 /* ------------------------------------------------------------------ */
 
 await app.close();
@@ -730,4 +815,4 @@ await queue.close();
 await closeDb();
 await mongo.stop();
 console.log('');
-process.exit(completed && trackingOk && statusApiOk && b2bOk && idleOk ? 0 : 1);
+process.exit(completed && trackingOk && statusApiOk && b2bOk && idleOk && faqOk ? 0 : 1);

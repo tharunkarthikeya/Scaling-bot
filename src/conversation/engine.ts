@@ -44,7 +44,7 @@ import {
   type Outbound,
 } from '../whatsapp/client.js';
 import { saveFile } from '../storage/index.js';
-import { queue } from '../queue/index.js';
+import { queue, withCandidateLock } from '../queue/index.js';
 import * as copy from './copy.js';
 import {
   fieldsToClear,
@@ -58,6 +58,7 @@ import {
 } from './flow.js';
 import { attributeInboundDocument, initialSlots, withMissingSlots } from './checklist.js';
 import { detectGlobalCommand, interpret } from './interpret.js';
+import { answerFromFaq } from './faq.js';
 import {
   acceptedChoices,
   choices as renderChoices,
@@ -1303,12 +1304,17 @@ async function restartRegistration(candidate: CandidateDoc): Promise<void> {
 }
 
 /**
- * Closes sessions that have gone quiet, so the CRM can see which registrations
- * were abandoned mid-flow and where.
+ * Closes sessions that have gone quiet and tells the candidate, offering the two
+ * ways out.
  *
- * Sends nothing. The candidate-facing half of this is decided on their next
- * message — see `handleInboundMessage` — which is what makes the behaviour
- * correct even when this sweep has not run.
+ * The message is pushed the moment the session lapses rather than waiting for
+ * the candidate to message again — someone who has stopped mid-registration is
+ * precisely the person who will not come back on their own. `handleInboundMessage`
+ * still carries the same offer for a message that arrives before this sweep
+ * reached them, so the behaviour is correct even after a restart or an outage.
+ *
+ * The session is claimed *before* anything is sent, so a second instance, a
+ * restart, or a slow send cannot produce two of these for one lapse.
  */
 export async function endIdleSessions(limit = 200): Promise<number> {
   const cutoff = new Date(Date.now() - TUNABLES.sessionTimeoutMinutes * 60_000);
@@ -1324,23 +1330,57 @@ export async function endIdleSessions(limit = 200): Promise<number> {
 
   let ended = 0;
 
-  for (const candidate of stale) {
-    const claimed = await candidates().updateOne(
-      { _id: candidate._id, sessionEndedAt: { $exists: false } },
-      { $set: { sessionEndedAt: new Date(), updatedAt: new Date() } },
-    );
-    if (!claimed.modifiedCount) continue;
+  for (const row of stale) {
+    // The same lock the queue holds. Without it this can land between a
+    // candidate's reply and the answer to it — they would be told the session
+    // ended a second after being asked the next question.
+    ended += await withCandidateLock(row.waId, async () => {
+      // Re-read under the lock: they may have replied while we queued behind
+      // their own turn, and the row in hand is a snapshot from before that.
+      const candidate = await candidates().findOne({ _id: row._id });
+      if (!candidate) return 0;
+      if (candidate.sessionEndedAt != null) return 0;
+      if (!RESUMABLE_STAGES.has(candidate.stage)) return 0;
+      if (!sessionTimedOut(candidate.lastInboundAt)) return 0;
 
-    await recordAudit({
-      waId: candidate.waId,
-      candidateId: candidate.candidateId,
-      event: 'session_timed_out',
-      detail: `idle at "${candidate.currentStep ?? 'unknown step'}"`,
+      const claimed = await candidates().updateOne(
+        { _id: candidate._id, sessionEndedAt: { $exists: false } },
+        { $set: { sessionEndedAt: new Date(), updatedAt: new Date() } },
+      );
+      if (!claimed.modifiedCount) return 0;
+
+      await recordAudit({
+        waId: candidate.waId,
+        candidateId: candidate.candidateId,
+        event: 'session_timed_out',
+        detail: `idle at "${candidate.currentStep ?? 'unknown step'}"`,
+      });
+
+      // Backfill for records written before a field or document existed — the
+      // render path reads both.
+      candidate.documents = withMissingSlots(candidate.documents);
+      candidate.profile ??= {};
+      candidate.fieldMeta ??= {};
+
+      // Only an approved template may be sent outside the window, and this is
+      // not one. A candidate five minutes idle is comfortably inside it; the
+      // guard is for the backlog a restart sweeps up, where the alternative is
+      // a message Meta rejects for everyone who went quiet yesterday.
+      if ((candidate.windowExpiresAt?.getTime() ?? 0) > Date.now()) {
+        try {
+          await ask(candidate, copy.SESSION_ENDED, copy.RESUME_CHOICES, MENU.resume);
+        } catch (err) {
+          // The session is closed either way; `handleInboundMessage` still
+          // offers the same choice on their next message.
+          logger.error({ err, waId: candidate.waId }, 'session-ended notice failed to send');
+        }
+      }
+
+      return 1;
     });
-    ended += 1;
   }
 
-  if (ended) logger.info({ ended }, 'idle sessions closed');
+  if (ended) logger.info({ ended }, 'idle sessions closed and candidates told');
   return ended;
 }
 
@@ -1482,10 +1522,13 @@ export async function handleInboundMessage(payload: {
 
   /* ---- the session they were in has expired ---- */
 
-  // Checked here rather than from the sweep, so it is right even if the sweep
-  // has not run. Only reached for a message that is not a file: someone sending
-  // a document knows exactly what they are doing and should not be asked
-  // whether they want to start again.
+  // The sweep normally gets here first and has already pushed the same choice —
+  // in which case `currentStep` is the resume menu and this is skipped. This is
+  // the path for a message that beats the sweep to it, or arrives after a
+  // restart or an outage stopped it running at all.
+  // Only reached for a message that is not a file: someone sending a document
+  // knows exactly what they are doing and should not be asked whether they want
+  // to start again.
   // The `currentStep` guard is what stops this answering itself: once the
   // prompt is on screen it is an ordinary open menu, handled below.
   // `!= null` rather than `!== undefined` because clearing a field through
@@ -1576,11 +1619,29 @@ export async function handleInboundMessage(payload: {
       return;
     }
 
-    // Same rule as a flow question: one message carrying both the apology and
+    // A question asked at a menu is still a question. Answering it here as well
+    // is what stops "is there any fee?" being met with "sorry, I could not use
+    // that as an answer" purely because of where in the conversation it landed.
+    let answer: string | undefined;
+    if (interpretation.kind === 'unrelated') {
+      const answered = await answerFromFaq({
+        question: interpretation.raw,
+        language: candidate.language,
+        languageOther: candidate.languageOther,
+      });
+      if (answered.kind === 'staff') {
+        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        return;
+      }
+      if (answered.kind === 'answered') answer = answered.text;
+    }
+
+    // Same rule as a flow question: one message carrying both the lead line and
     // the menu, not two bubbles for one event.
-    const lead = (
-      await renderMessage(voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.UNCLEAR, candidate)
-    ).body;
+    const lead =
+      answer ??
+      (await renderMessage(voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.UNCLEAR, candidate))
+        .body;
     const shape = await renderChoices(menu.prompt, options, candidate);
     await reply(candidate, { ...shape, body: `${lead}\n\n${shape.body}` }, current);
     return;
@@ -1643,17 +1704,41 @@ export async function handleInboundMessage(payload: {
       );
       return;
 
-    case 'unrelated':
-      // §27 — no promises about jobs, salaries or visas. Answer inside scope
-      // and put the same question back, in one message. Staff is offered here
-      // too: a candidate asking something the bot may not answer is precisely
-      // someone who wants a person.
+    case 'unrelated': {
+      // The candidate asked a question of their own. Answer it where we have an
+      // approved answer, and put the open question back underneath — one
+      // message, so their screen shows an exchange rather than a rebuff.
+      //
+      // §27 survives this: `faq.ts` writes only from the approved list and its
+      // output is guard-checked before it gets here, so no promise about a
+      // salary, a visa or a selection can reach a candidate.
+      const answered = await answerFromFaq({
+        question: interpretation.raw,
+        language: candidate.language,
+        languageOther: candidate.languageOther,
+      });
+
+      if (answered.kind === 'staff') {
+        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        return;
+      }
+
+      if (answered.kind === 'answered') {
+        // No staff button. The question was answered — offering a person on top
+        // of an answer is the reflex this branch exists to stop.
+        await reply(candidate, await renderRetry(step, candidate, answered.text), step.id);
+        return;
+      }
+
+      // Nothing approved covers it. *This* is the doubt case, and the only one
+      // that still sends "our staff will answer that".
       await reply(
         candidate,
         await renderRetry(step, candidate, copy.OUT_OF_SCOPE, { offerStaff: true }),
         step.id,
       );
       return;
+    }
 
     case 'unclear': {
       const count = (candidate.unclearCount ?? 0) + 1;
@@ -1664,12 +1749,13 @@ export async function handleInboundMessage(payload: {
         await handOffToStaff(candidate, `could not understand ${count} replies at "${step.id}"`);
         return;
       }
-      // Only an unclear reply re-asks with a way out attached — the candidate
-      // has just been misunderstood, so the offer to reach a person belongs
-      // here rather than on every question.
+      // The first misread reply is just re-asked. A typo in a city name is not
+      // a reason to offer a human, and a staff button on every retry is what
+      // made the bot feel like it gave up immediately. The offer arrives on the
+      // second failure, one attempt before the handoff does it anyway.
       await reply(
         candidate,
-        await renderRetry(step, candidate, copy.UNCLEAR, { offerStaff: true }),
+        await renderRetry(step, candidate, copy.UNCLEAR, { offerStaff: count > 1 }),
         step.id,
       );
       return;
@@ -1731,7 +1817,7 @@ export async function handleInboundMessage(payload: {
     logger.warn({ waId: candidate.waId, step: step.id, count }, 'answer left the step unsatisfied');
     await reply(
       candidate,
-      await renderRetry(step, candidate, copy.UNCLEAR, { offerStaff: true }),
+      await renderRetry(step, candidate, copy.UNCLEAR, { offerStaff: count > 1 }),
       step.id,
     );
     return;

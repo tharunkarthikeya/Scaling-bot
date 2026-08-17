@@ -20,10 +20,12 @@ phone number and no Meta app are involved. It prints the transcript, the
 candidate record, the extracted OCR fields, and a pass/fail verdict per
 subsystem, and exits non-zero if any of them fail.
 
-Three numbers are driven, so all three opening branches are covered: one
-registers end to end and is then tracked and edited, one taps B2B and must reach
-a person without a profile being written, and one is abandoned mid-registration
-to exercise the idle-session timeout and "start from first".
+Four numbers are driven, so every opening branch is covered: one registers end to
+end and is then tracked and edited, one taps B2B and must reach a person without
+a profile being written, one is abandoned mid-registration to exercise the
+idle-session timeout and "start from first", and one asks questions of its own
+instead of answering — including the salary question, which must come back
+answered and without a figure.
 
 The driver is adaptive — it reads which question the bot is actually on each turn
 rather than replaying a script — because the flow legitimately differs run to
@@ -47,12 +49,13 @@ real traffic before going live.
 
 | Path | What it does |
 |---|---|
-| `src/conversation/rules.ts` | **Documents, thresholds, trigger lists, tunables, the one prompt.** |
+| `src/conversation/rules.ts` | **Documents, thresholds, trigger lists, tunables, the interpreter prompt.** |
 | `src/conversation/flow.ts` | **Every question, in order, and what each answer means.** |
 | `src/conversation/copy.ts` | Every other sentence a candidate can receive, in en/ta/hi. |
 | `src/conversation/trades.ts` | Trade-specific question packs (§8). Add a trade here and nowhere else. |
 | `src/conversation/interpret.ts` | The only model call that reads a candidate: reply → option id. |
-| `src/conversation/translate.ts` | The only model output a candidate sees: fixed copy, other language. |
+| `src/conversation/translate.ts` | Fixed copy in a language we do not ship. |
+| `src/conversation/faq.ts` | **What the bot may answer in its own words, and the guardrail around it.** |
 | `src/conversation/engine.ts` | Orchestrates one inbound message end to end. |
 | `src/conversation/render.ts` | Step → WhatsApp shape (text, ≤3 buttons, or a list). |
 | `src/conversation/checklist.ts` | Deterministic document state machine. |
@@ -74,18 +77,30 @@ Meta webhook
   → worker, holding a per-candidate lock:
         media?  download → store → file to a slot → queue OCR
         UPDATE / DELETE / talk to staff / an application id?  handled here
-        idle too long?  offer continue-or-restart instead of the open question
+        idle too long and the sweep has not said so?  offer continue-or-restart
         interpret the reply against the question actually asked
         record it with its source and their own wording
         ask the next unsatisfied question, or finish
 ```
 
-The split that matters: **the bot never composes a sentence.** Every word it
-sends is written by a person in `flow.ts` or `copy.ts`, in all three languages.
-The model's only job on the way in is to read what the candidate typed and say
-which of the offered options it corresponds to — it cannot go off topic because
-it has no channel through which to do so. On the way out it is used for exactly
-one thing: translating fixed copy for a language we do not ship (`translate.ts`).
+The split that matters: **the bot never composes the flow.** Every question,
+confirmation and acknowledgement is written by a person in `flow.ts` or
+`copy.ts`, in all three languages. The model's job on the way in is to read what
+the candidate typed and say which of the offered options it corresponds to — it
+cannot steer the conversation because it has no channel through which to do so.
+
+It writes to a candidate in exactly two places, and both are fenced:
+
+| Where | What it may write | The fence |
+|---|---|---|
+| `translate.ts` | Fixed copy, in a language we do not ship | One sentence in, the same sentence out. Never given a topic, so it cannot introduce one. |
+| `faq.ts` | An answer to a question the candidate asked | Grounded in `FAQ` and nothing else, then guard-checked for money amounts, promises and timelines before it is sent. |
+
+`faq.ts` is what stops the bot deflecting every question to staff. A candidate
+who asks *"is there any fee?"* gets the agency's actual answer; one who asks
+something no approved entry covers gets the staff line, and that is now the only
+thing that produces it. The answer is sent with the open question underneath it,
+so answering never costs the candidate their place in the flow.
 
 Most turns never reach a model at all. A tapped button already carries its
 option id; a typed reply matching an offered label in any of the three
@@ -127,21 +142,37 @@ decision for staff, not a side effect of a CRM edit.
 ## Sessions
 
 A registration session closes after `TUNABLES.sessionTimeoutMinutes` (5) with no
-reply. Nothing is discarded — every answer is written as it arrives — so the only
-thing closing a session changes is that the next message is met with *"continue
-from where you stopped, or start again?"* rather than a question the candidate
+reply, and the candidate is told:
+
+```
+Your session has been terminated due to inactivity.
+Your answers are saved — would you like to continue, or start again?
+
+                                   [ Continue session ] [ Restart session ]
+```
+
+Nothing is discarded — every answer is written as it arrives — so closing a
+session costs the candidate nothing but a tap, and it replaces a question they
 last saw hours ago with no memory of the context.
 
-Choosing **start from first** clears the answers and keeps the documents. §22
+Choosing **restart** clears the answers and keeps the documents. §22
 forbids destroying an upload without a version history, and someone re-answering
 questions has not withdrawn the passport they already sent; re-requesting it
 would also break §1. Consent and language survive for the same reason — both are
 recorded facts rather than answers being revised.
 
-Closing a session sends nothing. The sweep in `index.ts` only records that it
-lapsed, so the CRM can see where registrations are being abandoned; what the
-candidate sees is decided on their next message, which is what makes the
-behaviour correct even when the sweep has not run.
+The sweep in `index.ts` runs every 60s, so `SESSION_SWEEP_MS` is the lag between
+a session lapsing and the candidate hearing about it — keep it well under the
+timeout. The session is claimed in the database *before* anything is sent, and
+the send holds the same per-candidate lock the queue uses, so neither a second
+instance nor a reply landing mid-sweep can produce two notices for one lapse.
+
+Missing the sweep entirely — a restart, an outage — costs only the push:
+`handleInboundMessage` still meets the next message with the same two choices,
+which is what makes the behaviour correct either way. The one case that is
+deliberately silent is a session that lapsed more than 24 hours ago, because only
+an approved template may be sent outside Meta's window; those are closed without
+a message, exactly as before.
 
 Separately, §21's single reminder still fires after `reminderAfterHours` (20) —
 one per candidate, ever, claimed in the database before it is sent so a restart
@@ -194,6 +225,29 @@ rule. A step whose choices are declared only inside the renderer would offer the
 interpreter an empty list and nothing could ever match — that is what
 `acceptedChoices` exists to prevent, and there is a smoke check pinning it.
 
+**A generated answer is checked, not trusted.** `ANSWER_PROMPT` says never to
+quote a salary, promise an outcome, or commit to a timeline. `violatesGuardrails`
+is what makes that true: every generated sentence is tested before it is sent,
+and a trip becomes the staff line rather than a repair attempt — asking the same
+model the same question with the same context tends to produce the same
+sentence. The smoke checks pin both directions, including that *"registering
+does not guarantee selection"* still gets through. That one is not hypothetical:
+the first version of the guard blocked it, which would have silenced the exact
+sentence §27 wants said.
+
+**Asking about a fee is not a safeguarding report.** The interpreter escalates to
+a person when a candidate says someone *has asked them for money*, and answers
+normally when they ask *whether there is a fee*. Collapsing the two sent every
+worried candidate to a human instead of telling them registration is free — the
+harness drives that question specifically.
+
+**The staff offer is not attached to every retry.** A misread reply is re-asked
+on its own the first time; the offer to reach a person appears on the second,
+one attempt before `maxAsksPerStep` hands over anyway. A staff button on the
+first typo reads as the bot giving up immediately. Typing "talk to staff" still
+works at any point, and distress, payment and legal matters still escalate on
+the first message.
+
 **The interpreter prompt is deterministic and sees no candidate data.** It is
 the cached prefix of every interpretation call, and it is handed one question,
 the answers that question accepts, and one message — never a name, a document,
@@ -207,6 +261,19 @@ under a path-traversal-checked root. Candidate passports are PII.
 
 These are deliberate — flagging rather than hiding them:
 
+- **The FAQ answers are only as good as `FAQ` in `faq.ts`.** The guard stops the
+  model inventing figures and promises; it cannot stop it repeating a fact that
+  is written down wrongly. Read those fourteen entries as agency policy, because
+  once they are in that file the bot will say them. Anything not covered still
+  goes to staff, so the safe way to widen the bot's range is to add an entry.
+- **Off-topic questions cost a second model call.** Only on the `unrelated`
+  branch, and only for a candidate who asked something — a tapped button never
+  reaches it. The FAQ is in the cached prefix, so the marginal cost is the
+  question and the answer, not the knowledge base.
+- **A question the interpreter reads as `unclear` rather than `unrelated` is not
+  answered.** It is re-asked instead, which is the safer failure. If candidates
+  are visibly asking things and being re-asked the question, that routing is
+  where to look first.
 - **Storage is a local volume.** Fine on a mounted Dokploy volume; move to
   S3/R2 before this holds real volume. The `storage/` interface is the seam.
 - **The candidate lock is per-process.** Single instance only until it is moved

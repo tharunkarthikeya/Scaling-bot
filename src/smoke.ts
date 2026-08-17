@@ -44,6 +44,7 @@ import {
 import { acceptedChoices } from './conversation/render.js';
 import { looksLikeApplicationId, normaliseApplicationId } from './conversation/engine.js';
 import { REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
+import { FAQ, violatesGuardrails } from './conversation/faq.js';
 import { inspectUpload } from './ocr/veris.js';
 import type { CandidateDoc, OcrField } from './db/models.js';
 
@@ -752,6 +753,84 @@ await check('the reminder offers continue, later and start from first', () => {
     REMINDER_CHOICES.map((c) => c.id),
     ['continue', 'later', 'restart'],
   );
+});
+
+/* ------------------------------------------------------------------ */
+
+// The FAQ answer is the one generative thing a candidate reads, so the fence
+// around it is worth pinning. `violatesGuardrails` is what turns "never quote a
+// salary" from a line in a prompt into a property of the system.
+console.log('\nanswer guardrails (§27)');
+
+await check('a salary figure is never sent, however it is written', () => {
+  for (const attempt of [
+    'You will get around 45,000 rupees per month.',
+    'The salary is AED 4000.',
+    'Expect ₹50,000 to start.',
+    'They pay about 2 lakh a year.',
+    'The wage is $1,200 monthly.',
+    'Roughly 35000 INR.',
+  ]) {
+    assert.equal(violatesGuardrails(attempt), 'quoted a money amount', attempt);
+  }
+});
+
+await check('an outcome is never promised', () => {
+  for (const attempt of [
+    'Your selection is guaranteed.',
+    'You will definitely get this job.',
+    'We promise you a visa.',
+    '100% placement for welders.',
+  ]) {
+    assert.equal(violatesGuardrails(attempt), 'promised an outcome', attempt);
+  }
+});
+
+await check('a timeline is never committed to', () => {
+  assert.equal(violatesGuardrails('We will call you within 2 weeks.'), 'committed to a timeline');
+  assert.equal(violatesGuardrails('You will travel in three months.'), 'committed to a timeline');
+});
+
+await check('the approved answers themselves all pass the guard', () => {
+  // If an entry cannot be sent as written, the model has been handed a fact it
+  // is forbidden to repeat — which reads to the candidate as the bot dodging.
+  for (const entry of FAQ) {
+    assert.equal(violatesGuardrails(entry.answer), undefined, `${entry.id}: ${entry.answer}`);
+  }
+});
+
+await check('denying a guarantee is allowed — it is the safe sentence', () => {
+  // The guard blocking this was a real bug: "does not guarantee" is precisely
+  // what §27 wants said, and refusing to send it would leave the candidate with
+  // the staff line instead of the honest answer.
+  for (const denial of [
+    'Registering does not guarantee selection.',
+    'We cannot guarantee a job.',
+    'There is no guarantee of placement.',
+    'We never promise you a visa.',
+  ]) {
+    assert.equal(violatesGuardrails(denial), undefined, denial);
+  }
+});
+
+await check('an ordinary answer is not caught by the guard', () => {
+  for (const fine of [
+    'Registering with us is free. We never ask candidates to pay for a job.',
+    'Registration takes about ten minutes and your answers are saved as you go.',
+    'Send UPDATE at any time to change your details.',
+    'Pay depends on the employer and the role, and our staff confirm it before you accept.',
+  ]) {
+    assert.equal(violatesGuardrails(fine), undefined, fine);
+  }
+});
+
+await check('every approved answer is reachable and distinct', () => {
+  const ids = FAQ.map((e) => e.id);
+  assert.equal(new Set(ids).size, ids.length, 'duplicate FAQ id');
+  for (const entry of FAQ) {
+    assert.ok(entry.asks.trim().length > 0, `${entry.id} has no matching hints`);
+    assert.ok(entry.answer.trim().length > 0, `${entry.id} has no answer`);
+  }
 });
 
 /* ------------------------------------------------------------------ */

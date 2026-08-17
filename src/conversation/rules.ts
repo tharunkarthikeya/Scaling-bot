@@ -5,16 +5,23 @@
  *
  * What lives where:
  *
- *   rules.ts   (this file)  documents, thresholds, trigger lists, the one prompt
+ *   rules.ts   (this file)  documents, thresholds, trigger lists, the interpreter prompt
  *   flow.ts                 the questions, in order, and what each answer means
  *   copy.ts                 every other sentence the candidate can receive
  *   trades.ts               trade-specific question packs (§8)
+ *   faq.ts                  what the bot may answer in its own words, and the fence around it
  *
- * The bot never composes a candidate-facing sentence. Every word it sends comes
- * from `flow.ts` or `copy.ts`, already written, in the candidate's language. The
- * model's entire job is to read what the candidate typed and say which of the
- * offered answers it corresponds to. That is why the bot cannot go off-topic:
- * it has no channel through which to do so.
+ * The bot never composes a question, a confirmation, or anything it records an
+ * answer to. Every word of the flow comes from `flow.ts` or `copy.ts`, already
+ * written, in the candidate's language, and the interpreter's entire job is to
+ * read what the candidate typed and say which of the offered answers it
+ * corresponds to.
+ *
+ * There is exactly one exception, and it is deliberately narrow: when a
+ * candidate asks a question of their own, `faq.ts` answers it in the model's
+ * words but only from an approved list, and only after a guardrail check. It
+ * cannot record anything and it cannot move the flow. See that file for why it
+ * is fenced the way it is.
  */
 
 import type { Localised } from './language.js';
@@ -181,6 +188,12 @@ export const TUNABLES = {
   historyTurns: 6,
   /** Ceiling on the interpreter's output. It returns a small JSON object. */
   maxInterpretTokens: 400,
+  /**
+   * Ceiling on a generated FAQ answer (`faq.ts`). One or two WhatsApp sentences
+   * in Tamil or Hindi, which cost noticeably more tokens than the English they
+   * are written from.
+   */
+  maxAnswerTokens: 400,
   /** Stop re-asking a question after this many attempts and hand to staff. */
   maxAsksPerStep: 3,
   /** Stop chasing a document after this many asks. */
@@ -247,9 +260,9 @@ Return exactly one classification by calling the interpret tool:
 - value        the question wanted free text, a date, or a number, and the reply
                supplies it. Return the normalised value and the candidate's exact
                original wording.
-- staff        the candidate is asking for a human, is angry, distressed,
-               reports being asked to pay for a job, or raises a legal, medical
-               or safety matter.
+- staff        the candidate is asking for a human, is angry or distressed, says
+               someone has actually asked them for money, or raises a legal,
+               medical or safety matter.
 - command      the reply is the word UPDATE or DELETE, or plainly asks to change
                or remove their profile.
 - unrelated    the reply has nothing to do with the question and is not any of
@@ -260,6 +273,15 @@ Return exactly one classification by calling the interpret tool:
 Rules:
 
 Only ever return an id that appears in the offered list. Never invent one.
+
+Asking a question is not a reason for "staff". "Is there any fee?", "what salary
+will I get?", "how long does this take?", "which countries do you send to?",
+"when will you call me?" are ordinary questions with settled answers — classify
+them "unrelated" and they will be answered from an approved list. Reserve
+"staff" for someone who says they have been asked to pay, not for someone
+asking whether there is anything to pay. The first is a person in trouble; the
+second is a person who wants to know, and handing them to a human instead of
+answering is what makes a bot useless.
 
 Within that rule, classify rather than reject. Where the offered options are
 broad categories and the candidate names a specific job, skill or thing, decide

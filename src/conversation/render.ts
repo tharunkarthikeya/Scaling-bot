@@ -198,20 +198,25 @@ export async function renderStep(step: FlowStep, candidate: CandidateDoc): Promi
  * one event, and on a phone the question can arrive above the apology. The lead
  * line and the question belong together.
  *
- * `offerStaff` adds a way out to the re-ask itself. A candidate who has just
- * been misunderstood is exactly the one who needs it, and most steps do not
- * carry a staff option of their own. It is skipped when the step is already at
+ * `offerStaff` adds a way out to the re-ask itself. It is deliberately not on
+ * by default: a staff button attached to every misread reply reads as the bot
+ * giving up on the first try. It is skipped when the step is already at
  * WhatsApp's ten-row ceiling — an eleventh row would be dropped by the Graph
  * API anyway, and typing "talk to staff" works at any point regardless.
+ *
+ * `lead` is normally fixed copy. A plain string is accepted for the one caller
+ * that has already resolved its text — `faq.ts` generates its answer directly in
+ * the candidate's language, so there is no `Localised` to select from.
  */
 export async function renderRetry(
   step: FlowStep,
   candidate: CandidateDoc,
-  lead: Localised,
+  lead: Localised | string,
   opts: { offerStaff?: boolean } = {},
 ): Promise<Outbound> {
   const rendered = await renderStep(step, candidate);
-  const body = `${await say(lead, candidate)}\n\n${rendered.body}`;
+  const leadText = typeof lead === 'string' ? lead : await say(lead, candidate);
+  const body = `${leadText}\n\n${rendered.body}`;
 
   if (!opts.offerStaff) return { ...rendered, body };
 

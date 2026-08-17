@@ -15,10 +15,14 @@ const REMINDER_SWEEP_MS = 15 * 60 * 1000;
 /**
  * How often idle registration sessions are closed.
  *
- * Runs against a five-minute timeout, so it has to be frequent. It sends
- * nothing — closing a session only records that it lapsed, which is what lets
- * the CRM see where registrations are being abandoned. What the candidate sees
- * is decided on their next message, so a missed sweep changes nothing for them.
+ * Runs against a five-minute timeout, so it has to be frequent — this interval
+ * is the lag between a session lapsing and the candidate being told, so it must
+ * stay well under the timeout itself.
+ *
+ * Closing a session both records that it lapsed, which is what lets the CRM see
+ * where registrations are being abandoned, and pushes the continue-or-restart
+ * choice. A missed sweep only delays that: the same choice is offered on the
+ * candidate's next message either way.
  */
 const SESSION_SWEEP_MS = 60 * 1000;
 

@@ -399,11 +399,28 @@ export const TRACK_NOT_REGISTERED: Localised = {
 /* ─────────────────────────────────────────────────────────────────────────────
  * Idle sessions
  *
- * A session left open for `TUNABLES.sessionTimeoutMinutes` is closed. Nothing is
- * discarded — every answer is written as it arrives — so the only thing this
- * changes is that the next message is met with a choice rather than with a
- * question the candidate last saw hours ago.
+ * A session left open for `TUNABLES.sessionTimeoutMinutes` is closed and the
+ * candidate is told so, with the two ways out. Nothing is discarded — every
+ * answer is written as it arrives — so closing a session costs the candidate
+ * nothing but a tap.
+ *
+ * Two wordings, one choice. `SESSION_ENDED` is pushed the moment the session
+ * lapses; `RESUME_PROMPT` greets someone whose next message arrives before the
+ * sweep reached them, which still happens after a restart or an outage. Both
+ * offer `RESUME_CHOICES`, so the reply is handled identically either way.
  * ───────────────────────────────────────────────────────────────────────────*/
+
+export const SESSION_ENDED: Localised = {
+  en:
+    'Your session has been terminated due to inactivity.\n' +
+    'Your answers are saved — would you like to continue, or start again?',
+  ta:
+    'செயல்பாடு இல்லாததால் உங்கள் அமர்வு நிறுத்தப்பட்டது.\n' +
+    'உங்கள் பதில்கள் சேமிக்கப்பட்டுள்ளன — தொடரலாமா, அல்லது முதலிலிருந்து தொடங்கலாமா?',
+  hi:
+    'निष्क्रियता के कारण आपका सेशन समाप्त कर दिया गया है।\n' +
+    'आपके जवाब सुरक्षित हैं — क्या आप आगे बढ़ना चाहेंगे, या शुरू से शुरू करना चाहेंगे?',
+};
 
 export const RESUME_PROMPT: Localised = {
   en: 'Welcome back{{name}}. Your registration is saved and not finished. Would you like to continue from where you stopped?',
@@ -412,8 +429,8 @@ export const RESUME_PROMPT: Localised = {
 };
 
 export const RESUME_CHOICES: Choice[] = [
-  { id: 'continue', label: { en: 'Continue', ta: 'தொடரவும்', hi: 'आगे बढ़ें' } },
-  { id: 'restart', label: { en: 'Start again', ta: 'முதலிலிருந்து', hi: 'शुरू से' } },
+  { id: 'continue', label: { en: 'Continue session', ta: 'தொடரவும்', hi: 'आगे बढ़ें' } },
+  { id: 'restart', label: { en: 'Restart session', ta: 'முதலிலிருந்து', hi: 'शुरू से' } },
 ];
 
 export const RESTARTED: Localised = {
