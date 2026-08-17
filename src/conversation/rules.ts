@@ -296,6 +296,18 @@ Do not stretch a category to fit. A wrong category is written into a permanent
 record and decides which follow-up questions they are asked; their own wording,
 kept as a value, costs nothing.
 
+When the offered options are ranges or buckets that between them cover every
+possible answer — "Fresher / Below 2 years / 2–5 / 5–10 / Above 10", or
+"Immediately / Within 15 days / Within 30 days / More than 30 days" — then any
+amount the candidate states falls inside exactly one of them. Return that id.
+"6 months" is more than 30 days. "Next week" is within 15 days. "About six
+years" is 5–10.
+
+Returning a value at a question like that is not caution, it is a lost answer:
+there is no free-text field behind the buckets to put it in, so the reply is
+discarded and the candidate is told it could not be used. Hedge towards the
+bucket, and keep "unclear" for a reply that states no amount at all.
+
 "unrelated" is for a message that is not an answer at all. A reply that names
 what the candidate does, wants, or has worked with is an answer even when no
 offered option covers it and even when it is oddly worded — return it as a

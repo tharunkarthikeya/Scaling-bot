@@ -42,7 +42,13 @@ import {
   type TradeQuestion,
 } from './trades.js';
 import { passportExpiryFlag } from './profile.js';
-import { experienceBand, parseYears } from './cv.js';
+import {
+  availabilityBand,
+  experienceBand,
+  normaliseEducation,
+  parseDaysAway,
+  parseYears,
+} from './cv.js';
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -526,7 +532,14 @@ const PERSONAL_STEPS: FlowStep[] = [
     input: 'choice',
     choices: EDUCATION_CHOICES,
     satisfied: (c) => has(p(c).education),
-    apply: (a) => ({ education: a.ids?.[0] }),
+    // Same shape as `availability`: a tap gives the id, and a typed "BSc" or
+    // "polytechnic diploma" is mapped by the normaliser the CV path already
+    // uses, rather than being lost because it did not arrive as an option.
+    apply: (a) => {
+      if (a.ids?.length) return { education: a.ids[0] };
+      const level = normaliseEducation(a.value ?? a.raw);
+      return level ? { education: level } : {};
+    },
     clears: ['education', 'educationCourse'],
   },
 
@@ -935,7 +948,30 @@ const PREFERENCE_STEPS: FlowStep[] = [
       },
     ],
     satisfied: (c) => has(p(c).availability),
-    apply: (a) => ({ availability: a.ids?.[0] }),
+    /**
+     * A tap records the bucket. A stated period is turned into one.
+     *
+     * "After 6 months", "next week", "in 20 days" are all answers to this
+     * question that the interpreter sometimes returns as words rather than as
+     * an option id — and reading only `ids` threw them away, left the step
+     * unsatisfied, and told the candidate their answer could not be used.
+     *
+     * Their own wording is kept when it lands past 30 days, which both puts it
+     * on the record and satisfies `availability_date` — the follow-up that
+     * exists to ask exactly this (§1).
+     */
+    apply: (a) => {
+      if (a.ids?.length) return { availability: a.ids[0] };
+
+      const typed = (a.value ?? a.raw ?? '').trim();
+      const band = availabilityBand(parseDaysAway(typed));
+      if (!band) return {};
+
+      return {
+        availability: band,
+        ...(band === 'more_than_30' && typed ? { availabilityNote: typed } : {}),
+      };
+    },
     clears: ['availability', 'availabilityNote'],
   },
 

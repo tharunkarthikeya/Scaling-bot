@@ -119,6 +119,74 @@ export function experienceBand(years: number | undefined): string | undefined {
   return 'above_10';
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * How soon they can join (§11)
+ *
+ * The four options are buckets over a continuum, so any stated period lands in
+ * exactly one of them. The interpreter usually picks it; when it hedges and
+ * returns the words instead — "after 6 months" came back as a value, not as
+ * `more_than_30` — this derives the bucket anyway.
+ *
+ * Without it the answer is dropped on the floor: the step records only an option
+ * id, stays unsatisfied, and the candidate is told "I could not use that as an
+ * answer" about a perfectly clear one.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+const NUMBER_WORDS: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  couple: 2, few: 3,
+};
+
+/**
+ * "Ready now" in the three languages, and the romanisations candidates type.
+ *
+ * `immediat\w*` rather than `immediat` — a trailing \b after a prefix never
+ * matches, because the character after it is a word character. That silently
+ * turned "immediately" into an unparsed answer.
+ */
+const IMMEDIATELY =
+  /\b(?:immediat\w*|right now|just now|any ?time|as soon as|asap|today|tomorrow|ready|now|udane|turant)\b|உடனே|உடனடி|अभी|तुरंत/i;
+
+/**
+ * How many days away a joining answer is, or undefined when it names no period.
+ *
+ * "when my visa comes" has no number in it and must stay undefined — that is a
+ * real non-answer and re-asking is the right response.
+ */
+export function parseDaysAway(input: string | undefined): number | undefined {
+  if (!input) return undefined;
+  const text = input.toLowerCase().trim();
+
+  if (IMMEDIATELY.test(text)) return 0;
+  if (/\bnext week\b/.test(text)) return 7;
+  if (/\bnext month\b/.test(text)) return 30;
+
+  const unit = /(\d+|[a-z]+)\s*(day|week|month|year|நாட|வார|மாத|ஆண்ட|दिन|हफ़?्?त|सप्ताह|महीन|माह|साल|वर्ष)/.exec(
+    text,
+  );
+  if (!unit) return undefined;
+
+  const raw = unit[1]!;
+  const n = /^\d+$/.test(raw) ? Number(raw) : NUMBER_WORDS[raw];
+  if (!n || n > 500) return undefined;
+
+  const u = unit[2]!;
+  if (/^(day|நாட|दिन)/.test(u)) return n;
+  if (/^(week|வார|हफ|सप्ता)/.test(u)) return n * 7;
+  if (/^(month|மாத|महीन|माह)/.test(u)) return n * 30;
+  return n * 365;
+}
+
+/** The bucket §11 offers, derived from a stated period so a typed answer lands. */
+export function availabilityBand(days: number | undefined): string | undefined {
+  if (days === undefined) return undefined;
+  if (days <= 1) return 'immediate';
+  if (days <= 15) return 'within_15';
+  if (days <= 30) return 'within_30';
+  return 'more_than_30';
+}
+
 const EDUCATION_PATTERNS: Array<[RegExp, string]> = [
   [/\b(b\.?e\.?|b\.?tech|m\.?tech|b\.?sc|m\.?sc|b\.?com|m\.?com|b\.?a\b|m\.?a\b|mba|bca|mca|degree|graduat|bachelor|master)/i, 'graduate'],
   [/\bdiploma\b/i, 'diploma'],

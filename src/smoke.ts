@@ -34,11 +34,13 @@ import {
   passportExpiryFlag,
 } from './conversation/profile.js';
 import {
+  availabilityBand,
   experienceBand,
   extractFromCv,
   normaliseDate,
   normaliseEducation,
   normaliseMonthYear,
+  parseDaysAway,
   parseYears,
   splitAddress,
 } from './conversation/cv.js';
@@ -926,6 +928,88 @@ await check('a CV with gaps is asked only for the gaps, still in order', () => {
   for (let i = 1; i < indexes.length; i++) {
     assert.ok(indexes[i]! > indexes[i - 1]!, `went backwards at "${order[i]}"`);
   }
+});
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Questions whose options are buckets over a continuum.
+ *
+ * The interpreter usually picks the right bucket, but it sometimes hedges and
+ * returns the candidate's words instead — "after 6 months" came back as a value
+ * rather than as `more_than_30`. A step that reads only `ids` then drops the
+ * answer, stays unsatisfied, and tells the candidate it could not be used.
+ *
+ * These pin the deterministic half, which is the half that does not depend on a
+ * model behaving well on the day.
+ */
+console.log('\nbucketed answers (§7, §11)');
+
+await check('a stated joining period becomes the right bucket', () => {
+  const cases: Array<[string, string]> = [
+    ['after 6 months', 'more_than_30'],
+    ['6 months', 'more_than_30'],
+    ['after 2 months', 'more_than_30'],
+    ['in 20 days', 'within_30'],
+    ['next week', 'within_15'],
+    ['2 weeks', 'within_15'],
+    ['10 days', 'within_15'],
+    ['immediately', 'immediate'],
+    ['ready now', 'immediate'],
+    ['one month', 'within_30'],
+    ['after 1 year', 'more_than_30'],
+  ];
+  for (const [text, expected] of cases) {
+    assert.equal(availabilityBand(parseDaysAway(text)), expected, text);
+  }
+});
+
+await check('an answer naming no period stays unparsed, so it is re-asked', () => {
+  // Correct behaviour, not a gap: "when my visa comes" is not a joining date,
+  // and inventing a bucket for it would write a wrong answer into the record.
+  for (const text of ['when my visa comes', 'not sure', 'after my exams', '']) {
+    assert.equal(parseDaysAway(text), undefined, text);
+  }
+});
+
+await check('the joining question records a typed answer, not just a tap', () => {
+  const step = stepById('availability')!;
+
+  // What the model returned in the reported session.
+  const hedged = step.apply!({ value: 'after 6 months', raw: 'after 6 months' }, {} as never);
+  assert.equal(hedged.availability, 'more_than_30');
+  // Their wording is kept, which also satisfies the follow-up that would ask it.
+  assert.equal(hedged.availabilityNote, 'after 6 months');
+
+  const tapped = step.apply!({ ids: ['within_15'], tapped: true }, {} as never);
+  assert.equal(tapped.availability, 'within_15');
+  assert.equal(tapped.availabilityNote, undefined);
+});
+
+await check('a typed joining answer satisfies the step and skips the follow-up', () => {
+  const step = stepById('availability')!;
+  const after = { profile: step.apply!({ value: 'after 6 months' }, {} as never) } as never;
+  assert.equal(step.satisfied(after), true);
+
+  const followUp = stepById('availability_date')!;
+  assert.equal(followUp.when!(after), true);
+  assert.equal(followUp.satisfied(after), true, 'they already said when — §1 forbids asking again');
+});
+
+await check('a typed qualification is mapped instead of being lost', () => {
+  const step = stepById('education')!;
+  assert.equal(step.apply!({ value: 'BSc Physics' }, {} as never).education, 'graduate');
+  assert.equal(step.apply!({ value: 'polytechnic diploma' }, {} as never).education, 'diploma');
+  assert.equal(step.apply!({ ids: ['iti'], tapped: true }, {} as never).education, 'iti');
+  // Nothing recognisable — re-asked rather than guessed at.
+  assert.deepEqual(step.apply!({ value: 'hello' }, {} as never), {});
+});
+
+await check('an exact experience figure still derives its band (§7)', () => {
+  const step = stepById('total_experience')!;
+  const patch = step.apply!({ value: '6 years', raw: 'about six years' }, {} as never);
+  assert.equal(patch.totalExperienceBand, '5_10');
+  assert.equal(patch.totalExperienceYears, 6);
 });
 
 /* ------------------------------------------------------------------ */
