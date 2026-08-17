@@ -62,6 +62,7 @@ import {
   acceptedChoices,
   choices as renderChoices,
   message as renderMessage,
+  renderRetry,
   renderStep,
 } from './render.js';
 import { ageFrom, buildProfileWrite } from './profile.js';
@@ -855,7 +856,9 @@ async function handleSpecialStep(
       }
 
     case 'language':
-      await setState(candidate, { language: chosen as Language });
+      // `languageChosen` is what marks §3 answered — the engine's own guess
+      // never sets it, so the question is asked exactly once, by choice.
+      await setState(candidate, { language: chosen as Language, languageChosen: true });
       return false;
 
     case 'language_other':
@@ -1393,6 +1396,9 @@ export async function handleInboundMessage(payload: {
       deletion: undefined,
       currentStep: undefined,
       reminderSentAt: undefined,
+      // Starting over means picking a language again, not inheriting the one
+      // attached to a profile that no longer exists.
+      languageChosen: undefined,
     });
   }
 
@@ -1570,8 +1576,13 @@ export async function handleInboundMessage(payload: {
       return;
     }
 
-    await tell(candidate, voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.UNCLEAR);
-    await reply(candidate, await renderChoices(menu.prompt, options, candidate), current);
+    // Same rule as a flow question: one message carrying both the apology and
+    // the menu, not two bubbles for one event.
+    const lead = (
+      await renderMessage(voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.UNCLEAR, candidate)
+    ).body;
+    const shape = await renderChoices(menu.prompt, options, candidate);
+    await reply(candidate, { ...shape, body: `${lead}\n\n${shape.body}` }, current);
     return;
   }
 
@@ -1584,8 +1595,11 @@ export async function handleInboundMessage(payload: {
   }
 
   if (voiceNoteUnread) {
-    await tell(candidate, copy.VOICE_NOT_UNDERSTOOD);
-    await reply(candidate, await renderStep(step, candidate), step.id);
+    await reply(
+      candidate,
+      await renderRetry(step, candidate, copy.VOICE_NOT_UNDERSTOOD, { offerStaff: true }),
+      step.id,
+    );
     return;
   }
 
@@ -1611,10 +1625,9 @@ export async function handleInboundMessage(payload: {
       return;
 
     case 'unrelated':
-      // §27 — no promises about jobs, salaries or visas. Answer inside scope,
-      // then put the same question back.
-      await tell(candidate, copy.OUT_OF_SCOPE);
-      await reply(candidate, await renderStep(step, candidate), step.id);
+      // §27 — no promises about jobs, salaries or visas. Answer inside scope
+      // and put the same question back, in one message.
+      await reply(candidate, await renderRetry(step, candidate, copy.OUT_OF_SCOPE), step.id);
       return;
 
     case 'unclear': {
@@ -1626,8 +1639,14 @@ export async function handleInboundMessage(payload: {
         await handOffToStaff(candidate, `could not understand ${count} replies at "${step.id}"`);
         return;
       }
-      await tell(candidate, copy.UNCLEAR);
-      await reply(candidate, await renderStep(step, candidate), step.id);
+      // Only an unclear reply re-asks with a way out attached — the candidate
+      // has just been misunderstood, so the offer to reach a person belongs
+      // here rather than on every question.
+      await reply(
+        candidate,
+        await renderRetry(step, candidate, copy.UNCLEAR, { offerStaff: true }),
+        step.id,
+      );
       return;
     }
 
@@ -1681,8 +1700,11 @@ export async function handleInboundMessage(payload: {
     }
 
     logger.warn({ waId: candidate.waId, step: step.id, count }, 'answer left the step unsatisfied');
-    await tell(candidate, copy.UNCLEAR);
-    await reply(candidate, await renderStep(step, candidate), step.id);
+    await reply(
+      candidate,
+      await renderRetry(step, candidate, copy.UNCLEAR, { offerStaff: true }),
+      step.id,
+    );
     return;
   }
 

@@ -165,6 +165,16 @@ export interface CandidateProfile {
 
   /* experience */
   primaryTrade?: string;
+  /**
+   * True when `primaryTrade` came from tapping one of the offered categories
+   * rather than from free text or a CV.
+   *
+   * A tapped category is a category, not a description of the work: the label
+   * "Fabrication / Welding" contains the keywords of every pack beneath it, so
+   * matching on it selects all of them at once. Recording where the value came
+   * from is what lets §8 ask the disambiguation question instead of guessing.
+   */
+  tradeFromList?: boolean;
   totalExperienceBand?: string;
   /** Set only when the candidate gives an exact figure; the band is always set. */
   totalExperienceYears?: number;
@@ -280,7 +290,23 @@ export interface CandidateDoc {
     note?: string;
   };
 
+  /**
+   * The language replies are written in.
+   *
+   * Set twice, for two different reasons. The engine guesses it from the script
+   * of the very first message so the welcome arrives in something readable, and
+   * the candidate sets it properly when they answer the language question. Only
+   * the second of those counts as a choice — see `languageChosen`.
+   */
   language?: Language;
+  /**
+   * True once the candidate has actually picked a language (§3).
+   *
+   * Kept apart from `language` because a guess and a choice are not the same
+   * thing. Without this, detecting a language from "hi" would mark §3 answered
+   * and the question would never be asked — which is exactly what it did.
+   */
+  languageChosen?: boolean;
   /** What the candidate typed when they chose "Other" (§3). */
   languageOther?: string;
 

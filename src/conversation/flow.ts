@@ -41,6 +41,7 @@ import {
   resolvePacks,
   type TradeQuestion,
 } from './trades.js';
+import { passportExpiryFlag } from './profile.js';
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -344,8 +345,12 @@ const START_STEPS: FlowStep[] = [
       { id: 'hi', label: { en: 'हिंदी', ta: 'हिंदी', hi: 'हिंदी' } },
       { id: 'other', label: OTHER },
     ],
-    // Language lives on the candidate, not the profile — the engine writes it.
-    satisfied: (c) => has(c.language),
+    // Satisfied by the candidate *choosing*, not by the engine guessing. The
+    // welcome is rendered in a detected language so it arrives readable, but a
+    // guess must not answer §3 on the candidate's behalf — checking
+    // `has(c.language)` here meant anyone whose first message was in Latin
+    // script was silently locked to English and never asked.
+    satisfied: (c) => c.languageChosen === true,
   },
 
   {
@@ -525,11 +530,17 @@ const EXPERIENCE_STEPS: FlowStep[] = [
     choices: TRADE_CHOICES,
     satisfied: (c) => has(p(c).primaryTrade),
     // §9: this is what they *do*, and it is kept apart from what they want next.
-    apply: (a, c) => ({
+    //
+    // The tapped category is deliberately NOT copied into `currentOccupation`.
+    // That field holds the candidate's own wording, and a button title is not
+    // it — writing "Fabrication / Welding" there also fed the category's own
+    // label back into §8's keyword matching, which selected every pack under
+    // the category and skipped the question that exists to choose between them.
+    apply: (a) => ({
       primaryTrade: a.ids?.[0],
-      currentOccupation: p(c).currentOccupation ?? a.raw,
+      tradeFromList: !!a.ids?.length,
     }),
-    clears: ['primaryTrade', 'currentOccupation', 'tradeAnswers', 'tradePacks'],
+    clears: ['primaryTrade', 'tradeFromList', 'currentOccupation', 'tradeAnswers', 'tradePacks'],
   },
 
   {
@@ -939,7 +950,21 @@ const PASSPORT_STEPS: FlowStep[] = [
     },
     input: 'choice',
     choices: YES_NO,
-    when: (c) => p(c).passportStatus === 'expired',
+    /**
+     * Asked of an expired passport, and of a valid one that runs out soon.
+     *
+     * §12 already flags a passport expiring within
+     * `TUNABLES.passportExpiryWarningMonths` for staff; this asks the candidate
+     * about it while we have them. Deliberately not asked of someone whose
+     * passport is good for years — "are you applying for renewal?" against a
+     * 2031 expiry is a question with no answer worth recording.
+     */
+    when: (c) => {
+      if (p(c).passportStatus === 'expired') return true;
+      if (p(c).passportStatus !== 'yes') return false;
+      const flag = passportExpiryFlag(p(c));
+      return !!flag && (flag.expired || flag.expiringSoon);
+    },
     satisfied: (c) => has(p(c).passportRenewalIntent),
     apply: (a) => ({ passportRenewalIntent: a.ids?.[0] }),
     clears: ['passportRenewalIntent'],
@@ -1027,38 +1052,40 @@ const DOCUMENT_STEPS: FlowStep[] = [
     satisfied: (c) => documentSatisfied(c, 'passport'),
   },
 
-  {
-    id: 'aadhaar_upload',
-    section: 'documents',
-    prompt: {
-      en: 'Please send your Aadhaar card—front and back—as a clear image or PDF.',
-      ta: 'உங்கள் ஆதார் அட்டையின் முன் மற்றும் பின் பக்கத்தைத் தெளிவான படமாக அல்லது PDF-ஆக அனுப்பவும்.',
-      hi: 'कृपया अपना आधार कार्ड—आगे और पीछे—साफ़ इमेज या PDF में भेजें।',
-    },
-    input: 'document',
-    document: 'aadhaar',
-    allowMedia: true,
-    allowStaff: true,
-    hiddenChoices: DOCUMENT_FALLBACKS,
-    when: (c) => wantsDocument(c,'aadhaar'),
-    satisfied: (c) => documentSatisfied(c, 'aadhaar'),
-  },
-
+  // Order is passport → PAN → Aadhaar. Passport first because it is the one
+  // document the flow has already been talking about; the two cards follow.
   {
     id: 'pan_upload',
     section: 'documents',
     prompt: {
-      en: 'Please send a clear photo or PDF of your PAN card.',
-      ta: 'உங்கள் PAN அட்டையின் தெளிவான புகைப்படம் அல்லது PDF அனுப்பவும்.',
-      hi: 'कृपया अपने PAN कार्ड की साफ़ फ़ोटो या PDF भेजें।',
+      en: 'Please send your PAN card as a PDF, or as photos of the front and back.',
+      ta: 'உங்கள் PAN அட்டையை PDF ஆகவோ, முன் மற்றும் பின் பக்க புகைப்படங்களாகவோ அனுப்பவும்.',
+      hi: 'कृपया अपना PAN कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
     },
     input: 'document',
     document: 'pan',
     allowMedia: true,
     allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
-    when: (c) => wantsDocument(c,'pan'),
+    when: (c) => wantsDocument(c, 'pan'),
     satisfied: (c) => documentSatisfied(c, 'pan'),
+  },
+
+  {
+    id: 'aadhaar_upload',
+    section: 'documents',
+    prompt: {
+      en: 'Please send your Aadhaar card as a PDF, or as photos of the front and back.',
+      ta: 'உங்கள் ஆதார் அட்டையை PDF ஆகவோ, முன் மற்றும் பின் பக்க புகைப்படங்களாகவோ அனுப்பவும்.',
+      hi: 'कृपया अपना आधार कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
+    },
+    input: 'document',
+    document: 'aadhaar',
+    allowMedia: true,
+    allowStaff: true,
+    hiddenChoices: DOCUMENT_FALLBACKS,
+    when: (c) => wantsDocument(c, 'aadhaar'),
+    satisfied: (c) => documentSatisfied(c, 'aadhaar'),
   },
 ];
 
@@ -1104,6 +1131,10 @@ function disambiguationStep(): FlowStep {
     when: (c) => {
       const trade = p(c).primaryTrade;
       if (!trade || has(p(c).tradePacks)) return false;
+      // A tapped category that covers more than one trade is always asked
+      // about. Selection beats inference: the candidate told us the category
+      // and nothing else, so the only honest way to narrow it is to ask.
+      if (p(c).tradeFromList && disambiguationFor(trade)) return true;
       return resolvePacks(trade, tradeSignals(c)).needsDisambiguation;
     },
     satisfied: (c) => has(p(c).tradePacks),
@@ -1124,6 +1155,11 @@ export function inferTradePacks(c: CandidateDoc): string[] | undefined {
   if (has(p(c).tradePacks)) return undefined;
   const trade = p(c).primaryTrade;
   if (!trade) return undefined;
+
+  // Never infer from keywords when the candidate picked the category from the
+  // list and that category is ambiguous — the disambiguation question owns the
+  // decision, and only the candidate's explicit answer loads a pack.
+  if (p(c).tradeFromList && disambiguationFor(trade)) return undefined;
 
   const { packs, needsDisambiguation } = resolvePacks(trade, tradeSignals(c));
   if (needsDisambiguation) return undefined;

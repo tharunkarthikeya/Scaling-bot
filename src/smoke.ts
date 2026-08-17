@@ -69,6 +69,10 @@ function candidate(overrides: Partial<CandidateDoc> = {}): CandidateDoc {
     history: [],
     documents: initialSlots(),
     language: 'en',
+    // This helper stands for a candidate already partway through registration,
+    // so §3 is behind them. Tests that care about the language question itself
+    // override this.
+    languageChosen: true,
     consent: { given: true, at: new Date(), source: 'whatsapp_chat' },
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -241,6 +245,27 @@ await check('the confirmation offers its buttons to the interpreter too (§18)',
   );
 });
 
+await check('asks the language question even when it guessed one (§3)', () => {
+  // The engine guesses a language from the first message's script so the
+  // welcome is readable. That guess must not answer §3 — it used to, which
+  // silently locked every Latin-script candidate to English.
+  const guessed = candidate({
+    profile: { lookingForOverseasJob: true },
+    consent: undefined,
+    language: 'en',
+    languageChosen: undefined,
+  });
+  assert.equal(nextStep(guessed)?.id, 'language');
+
+  const chosen = candidate({
+    profile: { lookingForOverseasJob: true },
+    consent: undefined,
+    language: 'en',
+    languageChosen: true,
+  });
+  assert.equal(nextStep(chosen)?.id, 'consent');
+});
+
 await check('asks for consent before anything personal (§4)', () => {
   const c = candidate({ profile: { lookingForOverseasJob: true }, consent: undefined });
   assert.equal(nextStep(c)?.id, 'consent');
@@ -350,6 +375,38 @@ await check('a fabricator gets fabrication questions', () => {
     fieldMeta: { primaryTrade: { source: 'chat', raw: 'structural fabrication', at: new Date() } },
   });
   assert.deepEqual(inferTradePacks(c), ['fabricator']);
+});
+
+await check('tapping a category never loads a pack by keyword (§8)', () => {
+  // "Fabrication / Welding" contains the keywords of both packs beneath it, so
+  // keyword matching used to select welder AND fabricator and skip the tie-break
+  // question entirely — three trade questions instead of one.
+  const tapped = candidate({
+    profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding', tradeFromList: true },
+  });
+  assert.equal(inferTradePacks(tapped), undefined, 'must not infer from a tapped category');
+  assert.equal(stepById('trade_disambiguation')!.when!(tapped), true, 'must ask which one');
+
+  // Their own words still decide it — a typed "welder" skips the question.
+  const typed = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      currentOccupation: 'TIG welder',
+    },
+  });
+  assert.deepEqual(inferTradePacks(typed), ['welder']);
+  assert.equal(stepById('trade_disambiguation')!.when!(typed), false);
+});
+
+await check('only the explicit choice loads a pack (§8)', () => {
+  const chosen = candidate({
+    profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding', tradeFromList: true },
+  });
+  const step = stepById('trade_disambiguation')!;
+  assert.deepEqual(step.apply!({ ids: ['welding'] }, chosen).tradePacks, ['welder']);
+  assert.deepEqual(step.apply!({ ids: ['fabrication'] }, chosen).tradePacks, ['fabricator']);
+  assert.deepEqual(step.apply!({ ids: ['both'] }, chosen).tradePacks, ['welder', 'fabricator']);
 });
 
 await check('an ambiguous answer asks one question rather than guessing', () => {

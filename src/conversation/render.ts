@@ -13,6 +13,7 @@ import type { CandidateDoc } from '../db/models.js';
 import type { Outbound } from '../whatsapp/client.js';
 import {
   copyLanguage,
+  WA_LIMITS,
   type Choice,
   type CoreLanguage,
   type Localised,
@@ -187,6 +188,42 @@ export async function renderStep(step: FlowStep, candidate: CandidateDoc): Promi
     const body = parts.join('\n');
     return shape.kind === 'text' ? { kind: 'text', body } : { ...shape, body };
   });
+}
+
+/**
+ * Re-asks a question the candidate's reply did not answer.
+ *
+ * One message, not two. Sending "Sorry, I did not follow that." and then the
+ * question as separate messages puts two bubbles on the candidate's screen for
+ * one event, and on a phone the question can arrive above the apology. The lead
+ * line and the question belong together.
+ *
+ * `offerStaff` adds a way out to the re-ask itself. A candidate who has just
+ * been misunderstood is exactly the one who needs it, and most steps do not
+ * carry a staff option of their own. It is skipped when the step is already at
+ * WhatsApp's ten-row ceiling — an eleventh row would be dropped by the Graph
+ * API anyway, and typing "talk to staff" works at any point regardless.
+ */
+export async function renderRetry(
+  step: FlowStep,
+  candidate: CandidateDoc,
+  lead: Localised,
+  opts: { offerStaff?: boolean } = {},
+): Promise<Outbound> {
+  const rendered = await renderStep(step, candidate);
+  const body = `${await say(lead, candidate)}\n\n${rendered.body}`;
+
+  if (!opts.offerStaff) return { ...rendered, body };
+
+  const options = choicesFor(step, candidate);
+  const roomForStaff =
+    !options.some((o) => o.id === CHOICE_STAFF.id) && options.length < WA_LIMITS.listRows;
+  const withStaff = roomForStaff ? [...options, CHOICE_STAFF] : options;
+
+  if (!withStaff.length) return { kind: 'text', body };
+
+  const shape = await choices({ en: '', ta: '', hi: '' }, withStaff, candidate);
+  return shape.kind === 'text' ? { kind: 'text', body } : { ...shape, body };
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
