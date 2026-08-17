@@ -42,6 +42,7 @@ import {
   type TradeQuestion,
 } from './trades.js';
 import { passportExpiryFlag } from './profile.js';
+import { experienceBand, parseYears } from './cv.js';
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
@@ -570,13 +571,22 @@ const EXPERIENCE_STEPS: FlowStep[] = [
     input: 'choice',
     choices: EXPERIENCE_CHOICES,
     satisfied: (c) => has(p(c).totalExperienceBand),
-    // An exact figure is kept when given; the band is always set, because
-    // matching filters on the band (§7).
+    /**
+     * An exact figure is kept when given; the band is always set, because
+     * matching filters on the band (§7).
+     *
+     * A typed answer counts. "6 years", "six and a half", "72 months" are all
+     * valid answers to this question, and the band is derived from them rather
+     * than discarded — previously anything that did not arrive as a tapped
+     * option left the band empty, the step unsatisfied, and the candidate
+     * asked the same question again.
+     */
     apply: (a) => {
-      const exact = a.value ? Number(a.value) : undefined;
+      const exact = parseYears(a.value) ?? parseYears(a.raw);
+      const band = a.ids?.[0] ?? experienceBand(exact);
       return {
-        totalExperienceBand: a.ids?.[0],
-        ...(Number.isFinite(exact) ? { totalExperienceYears: exact } : {}),
+        totalExperienceBand: band,
+        ...(exact !== undefined ? { totalExperienceYears: exact } : {}),
       };
     },
     clears: ['totalExperienceBand', 'totalExperienceYears'],

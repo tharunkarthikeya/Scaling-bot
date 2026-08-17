@@ -598,10 +598,17 @@ export const OUT_OF_SCOPE: Localised = {
   hi: 'हमारा स्टाफ संपर्क करने पर इसका जवाब देगा। पहले मैं आपका रजिस्ट्रेशन पूरा कर लेता हूँ।',
 };
 
+/**
+ * Sent when a reply could not be recorded as an answer.
+ *
+ * Says what is needed rather than only what went wrong — "I did not follow
+ * that" on its own tells the candidate nothing about what to do next. The
+ * question always follows in the same message, with a way to reach a person.
+ */
 export const UNCLEAR: Localised = {
-  en: 'Sorry, I did not follow that.',
-  ta: 'மன்னிக்கவும், அது புரியவில்லை.',
-  hi: 'माफ़ कीजिए, मैं समझ नहीं पाया।',
+  en: 'Sorry, I could not use that as an answer. Please reply to the question below.',
+  ta: 'மன்னிக்கவும், அதைப் பதிலாகப் பயன்படுத்த முடியவில்லை. கீழே உள்ள கேள்விக்குப் பதிலளிக்கவும்.',
+  hi: 'माफ़ कीजिए, मैं इसे जवाब के रूप में नहीं ले सका। कृपया नीचे दिए गए सवाल का जवाब दें।',
 };
 
 /** Asked when a question has been re-asked too often — a person does better. */

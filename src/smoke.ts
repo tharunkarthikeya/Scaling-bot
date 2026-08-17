@@ -409,6 +409,26 @@ await check('only the explicit choice loads a pack (§8)', () => {
   assert.deepEqual(step.apply!({ ids: ['both'] }, chosen).tradePacks, ['welder', 'fabricator']);
 });
 
+await check('a typed answer is stored, not discarded and re-asked (§7)', () => {
+  const step = stepById('total_experience')!;
+  const c = candidate();
+
+  // Tapped option — unchanged.
+  assert.equal(step.apply!({ ids: ['5_10'] }, c).totalExperienceBand, '5_10');
+
+  // Typed in words. A valid answer the flow used to drop on the floor, leaving
+  // the step unsatisfied so the same question came back.
+  const typed = step.apply!({ value: '6 years', raw: '6 years' }, c);
+  assert.equal(typed.totalExperienceYears, 6);
+  assert.equal(typed.totalExperienceBand, '5_10');
+
+  const months = step.apply!({ value: '18 months', raw: '18 months' }, c);
+  assert.equal(months.totalExperienceBand, 'below_2');
+
+  // Genuinely unusable input still leaves the step unsatisfied, so it re-asks.
+  assert.equal(step.apply!({ value: 'lots', raw: 'lots' }, c).totalExperienceBand, undefined);
+});
+
 await check('an ambiguous answer asks one question rather than guessing', () => {
   const c = candidate({ profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding' } });
   assert.equal(inferTradePacks(c), undefined);

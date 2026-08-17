@@ -1626,8 +1626,14 @@ export async function handleInboundMessage(payload: {
 
     case 'unrelated':
       // §27 — no promises about jobs, salaries or visas. Answer inside scope
-      // and put the same question back, in one message.
-      await reply(candidate, await renderRetry(step, candidate, copy.OUT_OF_SCOPE), step.id);
+      // and put the same question back, in one message. Staff is offered here
+      // too: a candidate asking something the bot may not answer is precisely
+      // someone who wants a person.
+      await reply(
+        candidate,
+        await renderRetry(step, candidate, copy.OUT_OF_SCOPE, { offerStaff: true }),
+        step.id,
+      );
       return;
 
     case 'unclear': {
