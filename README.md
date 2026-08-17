@@ -10,7 +10,19 @@ npm install
 npm run smoke        # offline checks — no Mongo, Redis, or network needed
 npm run harness      # full end-to-end run, no Mongo or Meta needed
 npm run dev          # needs MongoDB reachable at MONGODB_URI
+
+npm run inspect      # what the bot has collected, straight from the database
+npm run reset -- <number>            # what clearing that number would remove
+npm run reset -- <number> --delete   # clear it, so the next message starts fresh
 ```
+
+`reset` is for testing, and it is not the §23 deletion a candidate can ask for —
+that one tombstones the profile and keeps an audit record because a real person
+withdrew consent. This removes the rows outright, including the `processed_events`
+wamid claims: leave those behind and the first message of the next test is
+silently dropped as one of Meta's redeliveries, which looks exactly like the bot
+ignoring you. It prints the database it is pointed at before it does anything,
+and does nothing at all without `--delete`.
 
 `npm run harness` is the one to reach for when you want to know whether the bot
 actually works. It starts a real MongoDB in-process, starts the real server, and

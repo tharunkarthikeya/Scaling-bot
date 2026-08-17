@@ -21,6 +21,7 @@ import {
   inEuropeRussiaBranch,
   nextStep,
   stepById,
+  STEPS,
   TRADE_CHOICES,
 } from './conversation/flow.js';
 import { validateCopy } from './conversation/validate.js';
@@ -753,6 +754,178 @@ await check('the reminder offers continue, later and start from first', () => {
     REMINDER_CHOICES.map((c) => c.id),
     ['continue', 'later', 'restart'],
   );
+});
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * The order the questions come in.
+ *
+ * `nextStep` recomputes from state every turn rather than reading a stored
+ * cursor, which is what makes "never ask twice" and "resume where you stopped"
+ * one mechanism. The property that follows, and the one people actually notice,
+ * is that the conversation can only ever move *forward* through `STEPS`. These
+ * walk the whole flow and assert exactly that.
+ *
+ * A skipped question is not a reordered one, but it looks like one from the
+ * candidate's side — upload a CV that supplies name, city, education and trade,
+ * and the first thing you are asked is your date of birth. So both paths are
+ * walked here: no CV, and a CV with gaps in it.
+ */
+console.log('\nquestion order (§1, §5)');
+
+/** Answers whatever `nextStep` returns, and reports the sequence of step ids. */
+function walkFlow(start: CandidateDoc): { order: string[]; indexes: number[] } {
+  const c: CandidateDoc = structuredClone(start);
+  const order: string[] = [];
+  const indexes: number[] = [];
+
+  for (let turn = 0; turn < 80; turn++) {
+    const step = nextStep(c);
+    if (!step) break;
+
+    order.push(step.id);
+    indexes.push(STEPS.findIndex((s) => s.id === step.id));
+
+    // Answer it, the way the engine would.
+    switch (step.id) {
+      case 'entry':
+        c.profile.lookingForOverseasJob = true;
+        continue;
+      case 'language':
+        c.language = 'en';
+        c.languageChosen = true;
+        continue;
+      case 'consent':
+        c.consent = { given: true, at: new Date(), source: 'whatsapp_chat' };
+        continue;
+      case 'confirm':
+        c.stage = 'REGISTRATION_COMPLETED';
+        continue;
+      default:
+        break;
+    }
+
+    if (step.document) {
+      c.documents[step.document] = {
+        ...c.documents[step.document]!,
+        status: 'received',
+      };
+      continue;
+    }
+
+    // `acceptedChoices`, not `step.choices` — the disambiguation question
+    // resolves its options per candidate at render time, so its declared list
+    // is empty. This is the same accessor the engine hands the interpreter.
+    const offered = acceptedChoices(step, c).filter(
+      (o) => o.id !== 'staff' && o.id !== '__done',
+    );
+
+    const answer =
+      step.input === 'structured'
+        ? { fields: { city: 'Chennai', state: 'Tamil Nadu', country: 'India' } }
+        : step.input === 'date'
+          ? { value: '1995-08-15' }
+          : step.input === 'month_year'
+            ? { value: '03/2031' }
+            : offered.length
+              ? { ids: [offered[0]!.id], tapped: true }
+              : { value: 'something' };
+
+    Object.assign(c.profile, step.apply?.(answer, c) ?? {});
+
+    // A step with no `apply` would never become satisfied and the walk would
+    // spin on it forever — which is itself worth failing on.
+    if (!step.satisfied(c) && (!step.when || step.when(c))) {
+      throw new Error(`step "${step.id}" cannot be satisfied by a normal answer`);
+    }
+  }
+
+  return { order, indexes };
+}
+
+await check('the flow only ever moves forward, never back (no CV)', () => {
+  const fresh = candidate({
+    profile: {},
+    consent: undefined,
+    language: undefined,
+    languageChosen: undefined,
+    stage: 'NEW',
+  });
+
+  const { order, indexes } = walkFlow(fresh);
+
+  for (let i = 1; i < indexes.length; i++) {
+    assert.ok(
+      indexes[i]! > indexes[i - 1]!,
+      `went backwards: "${order[i - 1]}" then "${order[i]}"`,
+    );
+  }
+  assert.ok(order.length > 10, 'the walk did not get through the flow');
+});
+
+await check('the CV is asked for before any personal question', () => {
+  const fresh = candidate({
+    profile: {},
+    consent: undefined,
+    language: undefined,
+    languageChosen: undefined,
+    stage: 'NEW',
+  });
+
+  const { order } = walkFlow(fresh);
+  const cvAt = order.indexOf('cv');
+  const firstPersonal = order.findIndex((id) => stepById(id)?.section === 'personal');
+
+  assert.ok(cvAt >= 0, 'the CV is never asked for');
+  assert.ok(cvAt < firstPersonal, 'a personal question comes before the CV is asked for');
+});
+
+await check('with no CV, every question is asked, in order', () => {
+  const noCv = candidate({
+    profile: { lookingForOverseasJob: true },
+  });
+  noCv.documents.cv!.status = 'unavailable';
+
+  const { order } = walkFlow(noCv);
+
+  // The whole of §6 is asked when nothing has been supplied for it.
+  for (const id of ['full_name', 'location', 'dob', 'education']) {
+    assert.ok(order.includes(id), `${id} was not asked`);
+  }
+  assert.ok(
+    order.indexOf('full_name') < order.indexOf('location'),
+    'name must come before location',
+  );
+  assert.ok(order.indexOf('location') < order.indexOf('dob'), 'location must come before dob');
+  assert.ok(order.indexOf('dob') < order.indexOf('education'), 'dob must come before education');
+});
+
+await check('a CV with gaps is asked only for the gaps, still in order', () => {
+  // Exactly the shape of the reported session: the CV supplied a name, a city
+  // and a qualification, and had no date of birth.
+  const withCv = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      fullName: 'Asha Kumari',
+      currentCity: 'Chennai',
+      currentState: 'Tamil Nadu',
+      education: 'iti',
+      educationCourse: 'Welding',
+    },
+  });
+  withCv.documents.cv!.status = 'ocr_done';
+
+  const { order, indexes } = walkFlow(withCv);
+  const personal = order.filter((id) => stepById(id)?.section === 'personal');
+
+  // The gap is asked; what the CV supplied is not.
+  assert.deepEqual(personal, ['dob'], `expected only dob to be asked, got ${personal.join(', ')}`);
+
+  // And skipping does not disturb the order of everything that remains.
+  for (let i = 1; i < indexes.length; i++) {
+    assert.ok(indexes[i]! > indexes[i - 1]!, `went backwards at "${order[i]}"`);
+  }
 });
 
 /* ------------------------------------------------------------------ */
