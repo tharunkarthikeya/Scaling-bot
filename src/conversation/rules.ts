@@ -196,6 +196,22 @@ export const TUNABLES = {
    */
   reminderAfterHours: 20,
   /**
+   * How long a registration session stays open with no reply.
+   *
+   * Past this the session is closed and the candidate's next message is met with
+   * "continue where you stopped, or start again?" instead of a question they
+   * last saw hours ago with no memory of the context. Nothing is discarded —
+   * progress is written after every answer, so closing a session costs nothing.
+   */
+  sessionTimeoutMinutes: 5,
+  /**
+   * Fewest pages a passport PDF may contain before it is treated as a partial
+   * upload (§14). A single-page PDF is the photo page on its own, which is the
+   * commonest incomplete passport upload by a wide margin. Images are exempt —
+   * a candidate photographing pages one at a time is sending them correctly.
+   */
+  passportMinPdfPages: 2,
+  /**
    * Minimum age the flow will register. Below this the conversation goes to
    * staff rather than continuing — an automated overseas-work registration is
    * not the right thing to run with a minor.

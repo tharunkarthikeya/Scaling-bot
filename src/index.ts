@@ -4,13 +4,23 @@ import { connectDb, closeDb } from './db/client.js';
 import { ensureIndexes } from './db/models.js';
 import { ensureStorageRoot } from './storage/index.js';
 import { queue, withCandidateLock } from './queue/index.js';
-import { handleInboundMessage, sendReminders } from './conversation/engine.js';
+import { endIdleSessions, handleInboundMessage, sendReminders } from './conversation/engine.js';
 import { validateCopy } from './conversation/validate.js';
 import { processOcrJob } from './ocr/veris.js';
 import { buildServer } from './server.js';
 
 /** How often the §21 reminder sweep runs. The claim is per candidate, not per sweep. */
 const REMINDER_SWEEP_MS = 15 * 60 * 1000;
+
+/**
+ * How often idle registration sessions are closed.
+ *
+ * Runs against a five-minute timeout, so it has to be frequent. It sends
+ * nothing — closing a session only records that it lapsed, which is what lets
+ * the CRM see where registrations are being abandoned. What the candidate sees
+ * is decided on their next message, so a missed sweep changes nothing for them.
+ */
+const SESSION_SWEEP_MS = 60 * 1000;
 
 async function main(): Promise<void> {
   // Before anything accepts traffic: a button title one character over Meta's
@@ -46,6 +56,11 @@ async function main(): Promise<void> {
   }, REMINDER_SWEEP_MS);
   reminderSweep.unref();
 
+  const sessionSweep = setInterval(() => {
+    void endIdleSessions().catch((err) => logger.error({ err }, 'session sweep failed'));
+  }, SESSION_SWEEP_MS);
+  sessionSweep.unref();
+
   logger.info(
     {
       port: config.PORT,
@@ -60,6 +75,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
     clearInterval(reminderSweep);
+    clearInterval(sessionSweep);
     try {
       await app.close();
       await queue.close();

@@ -36,6 +36,9 @@ import {
   splitAddress,
 } from './conversation/cv.js';
 import { acceptedChoices } from './conversation/render.js';
+import { looksLikeApplicationId, normaliseApplicationId } from './conversation/engine.js';
+import { REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
+import { inspectUpload } from './ocr/veris.js';
 import type { CandidateDoc, OcrField } from './db/models.js';
 
 let passed = 0;
@@ -211,9 +214,31 @@ await check('text chunking never truncates', () => {
 
 console.log('\nflow (§1 never ask twice, §13 branch gating)');
 
-await check('starts at the opening question', () => {
+await check('starts at the three-option opening menu (§2)', () => {
   const c = candidate({ profile: {}, consent: undefined, language: undefined });
-  assert.equal(nextStep(c)?.id, 'looking_for_job');
+  const step = nextStep(c);
+  assert.equal(step?.id, 'entry');
+  assert.deepEqual(
+    step!.choices!.map((o) => o.id),
+    ['b2b', 'track', 'apply'],
+  );
+});
+
+await check('the opening menu offers no duplicate ids to the interpreter', () => {
+  const step = stepById('entry')!;
+  const ids = [...(step.choices ?? []), ...(step.hiddenChoices ?? [])].map((o) => o.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+await check('the confirmation offers its buttons to the interpreter too (§18)', () => {
+  // Declared only inside the renderer, these were sent to the candidate but
+  // never offered to the interpreter — so a tapped "Yes, correct" matched
+  // nothing and registration could not complete.
+  const c = candidate({ currentStep: 'confirm' });
+  assert.deepEqual(
+    acceptedChoices(stepById('confirm')!, c).map((o) => o.id),
+    ['correct', 'edit', 'staff'],
+  );
 });
 
 await check('asks for consent before anything personal (§4)', () => {
@@ -586,6 +611,125 @@ await check('a caption naming a document beats the question being asked', () => 
 await check('an uncaptioned file goes to the document we asked for', () => {
   const c = candidate({ currentStep: 'aadhaar_upload' });
   assert.equal(attributeInboundDocument(c, { expecting: 'aadhaar' }), 'aadhaar');
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\napplication tracking');
+
+await check('an id is recognised however the candidate types it', () => {
+  assert.equal(normaliseApplicationId('ADR-00042'), 'ADR-00042');
+  assert.equal(normaliseApplicationId('adr 42'), 'ADR-00042');
+  assert.equal(normaliseApplicationId('  42 '), 'ADR-00042');
+  assert.equal(normaliseApplicationId('no digits here'), undefined);
+});
+
+await check('a bare number is never mistaken for an application id', () => {
+  // "2" is how a candidate picks the second row of a list. Reading it as an
+  // application id would hijack every numbered answer in the flow.
+  assert.equal(looksLikeApplicationId('2'), false);
+  assert.equal(looksLikeApplicationId('yes'), false);
+  assert.equal(looksLikeApplicationId('ADR-00042'), true);
+  assert.equal(looksLikeApplicationId('my id is adr 42'), true);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nidle sessions (§21)');
+
+await check('the resume prompt offers continue and start again', () => {
+  assert.deepEqual(
+    RESUME_CHOICES.map((c) => c.id),
+    ['continue', 'restart'],
+  );
+});
+
+await check('the reminder offers continue, later and start from first', () => {
+  assert.deepEqual(
+    REMINDER_CHOICES.map((c) => c.id),
+    ['continue', 'later', 'restart'],
+  );
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nupload inspection (§14)');
+
+const pdf = (body: string, terminated = true) =>
+  Buffer.from(`%PDF-1.4\n${body}\n${terminated ? '%%EOF' : ''}`, 'latin1');
+
+await check('a truncated PDF is rejected before a 120-second extraction', () => {
+  const result = inspectUpload(pdf('/Type /Page ', false), 'application/pdf');
+  assert.equal(result.readable, false);
+  assert.match(result.problem!, /incomplete/);
+});
+
+await check('a file that is not a PDF at all is rejected', () => {
+  const result = inspectUpload(Buffer.from('this is not a pdf'), 'application/pdf');
+  assert.equal(result.readable, false);
+});
+
+await check('pages are counted when the PDF is uncompressed', () => {
+  const result = inspectUpload(pdf('/Type /Page  /Type /Page  /Type /Pages '), 'application/pdf');
+  assert.equal(result.readable, true);
+  // /Type /Pages is the page *tree*, not a page. Counting it would inflate every
+  // document by one and mask a single-page upload.
+  assert.equal(result.pages, 2);
+});
+
+await check('an uncountable PDF reports no opinion rather than zero pages', () => {
+  const result = inspectUpload(pdf('compressed object streams hide page objects'), 'application/pdf');
+  assert.equal(result.readable, true);
+  assert.equal(result.pages, undefined);
+});
+
+await check('an image is passed through without a page verdict', () => {
+  const result = inspectUpload(Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg');
+  assert.equal(result.readable, true);
+  assert.equal(result.pages, undefined);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nwider CV extraction (§5)');
+
+await check('employment history is read and kept apart from the current job (§9)', () => {
+  const fields: OcrField[] = [
+    { key: 'designation', value: 'TIG Welder', confidence: null },
+    { key: 'previous_designation', value: 'Helper', confidence: null },
+    { key: 'previous_designation', value: 'TIG Welder', confidence: null },
+    { key: 'employer', value: 'Larsen & Toubro', confidence: null },
+    { key: 'employer', value: 'Godrej', confidence: null },
+    { key: 'certification', value: 'ASNT Level II', confidence: null },
+    { key: 'machinery', value: 'VMC', confidence: null },
+    { key: 'phone', value: '919000000000', confidence: null },
+    { key: 'phone', value: '918888888888', confidence: null },
+  ];
+
+  const { patch } = extractFromCv(fields, '919000000000');
+
+  assert.equal(patch.currentOccupation, 'TIG Welder');
+  // The current title is filtered out, so the same job never appears as both.
+  assert.deepEqual(patch.previousOccupations, ['Helper']);
+  assert.deepEqual(patch.employers, ['Larsen & Toubro', 'Godrej']);
+  assert.deepEqual(patch.certifications, ['ASNT Level II']);
+  assert.deepEqual(patch.machinery, ['VMC']);
+  assert.equal(patch.mobileNumber, '919000000000');
+  assert.equal(patch.alternateNumber, '918888888888');
+  assert.equal(patch.desiredOccupation, undefined);
+});
+
+await check('machinery on the CV picks the trade pack without asking (§8)', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      machinery: ['TIG', 'MIG'],
+    },
+  });
+  // Two packs serve fabrication_welding, so without a signal this would ask a
+  // disambiguation question. The CV already answered it.
+  assert.deepEqual(inferTradePacks(c), ['welder']);
 });
 
 /* ------------------------------------------------------------------ */

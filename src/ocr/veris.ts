@@ -84,6 +84,48 @@ function pushField(
   fields.push({ key, value: String(value), confidence, ...extra });
 }
 
+/**
+ * Pulls a list of strings out of whatever shape a payload key arrived in.
+ *
+ * The resume extractor's published schema pins down the flat fields and little
+ * else, so employment history, certifications and machinery are read
+ * defensively: an array of strings, an array of objects under any of several
+ * plausible keys, or one comma-separated string all give the same answer, and
+ * an absent or unrecognised key gives an empty list rather than an error.
+ */
+function stringsFrom(value: unknown, ...keys: string[]): string[] {
+  if (!value) return [];
+
+  if (typeof value === 'string') {
+    return value
+      .split(/[,;|\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  if (!Array.isArray(value)) return [];
+
+  const out: string[] = [];
+  for (const row of value) {
+    if (typeof row === 'string') {
+      if (row.trim()) out.push(row.trim());
+      continue;
+    }
+    if (!row || typeof row !== 'object') continue;
+    for (const key of keys) {
+      const found = (row as Record<string, unknown>)[key];
+      if (typeof found === 'string' && found.trim()) {
+        out.push(found.trim());
+        break;
+      }
+    }
+  }
+
+  // A CV can repeat an employer across several roles; the profile wants the
+  // list of places they worked, not one entry per line on the page.
+  return [...new Set(out)];
+}
+
 /** ExtractedField is shared by the passport and document responses. */
 function fromExtractedFields(raw: any): OcrField[] {
   if (!Array.isArray(raw)) return [];
@@ -160,7 +202,83 @@ function identifyDocument(
 /** Below this much text, any verdict about document type is guesswork. */
 const MIN_TEXT_TO_JUDGE = 40;
 
-function normalisePassport(payload: any): OcrOutcome {
+/* ------------------------------------------------------------------ */
+/* What the file itself says, before it is sent anywhere               */
+/* ------------------------------------------------------------------ */
+
+export interface UploadInspection {
+  /** False when the file is not a document that will open at all. */
+  readable: boolean;
+  /** Page count, when it can be established. Undefined means "could not tell". */
+  pages?: number;
+  /** Plain-language problem, when `readable` is false. */
+  problem?: string;
+}
+
+const PDF_MAGIC = '%PDF-';
+
+/**
+ * Reads what the upload can be asked without an extractor: does it open, and
+ * how many pages does it have.
+ *
+ * Worth doing before OCR rather than after. A truncated PDF costs a 120-second
+ * extraction timeout to discover otherwise, and the candidate waits all of it
+ * to be told something that was knowable the moment the bytes landed.
+ *
+ * Page counting is best-effort by design. PDF 1.5 and later can hide page
+ * objects inside compressed object streams, where this finds none — and finding
+ * none is reported as `undefined`, never as zero. A wrong "you only sent one
+ * page" told to someone who sent twelve is worse than not checking.
+ */
+export function inspectUpload(buffer: Buffer, mimeType: string): UploadInspection {
+  if (!buffer.byteLength) return { readable: false, problem: 'the file was empty' };
+
+  const head = buffer.subarray(0, 5).toString('latin1');
+  const claimsPdf = mimeType.toLowerCase().includes('pdf');
+
+  if (!claimsPdf && head !== PDF_MAGIC) {
+    // An image. Nothing to open and nothing to count — the extractor's own
+    // verdict is the only thing that can speak to it.
+    return { readable: true };
+  }
+
+  if (head !== PDF_MAGIC) {
+    return { readable: false, problem: 'the file does not open as a PDF' };
+  }
+
+  // Every PDF ends with %%EOF. Its absence means the upload was cut short,
+  // which is what a file sent on a weak mobile signal looks like.
+  const tail = buffer.subarray(Math.max(0, buffer.byteLength - 4096)).toString('latin1');
+  if (!tail.includes('%%EOF')) {
+    return { readable: false, problem: 'the PDF is incomplete and will not open' };
+  }
+
+  const pageObjects = (buffer.toString('latin1').match(/\/Type\s*\/Page[^sA-Za-z]/g) ?? []).length;
+
+  return { readable: true, ...(pageObjects > 0 ? { pages: pageObjects } : {}) };
+}
+
+/**
+ * Pages §14 wants a documentation officer to have laid eyes on.
+ *
+ * Recorded as review notes, never as problems. The passport extractor reads the
+ * photo page; a marker not appearing means the extractor did not report it,
+ * which is not the same as the page not having been sent. Re-asking on that
+ * basis would have the bot chasing candidates who sent a complete booklet.
+ */
+const PASSPORT_PAGE_MARKERS: Array<[string, RegExp]> = [
+  ['observation page', /\bobservation/i],
+  ['ECR/ECNR endorsement', /\bec[rn]r\b|emigration\s+check/i],
+  ['visa page', /\bvisas?\b/i],
+  ['entry/exit stamp', /\b(immigration|arrival|departure)\b/i],
+  ['previous passport reference', /(previous|old)\s+passport/i],
+];
+
+function normalisePassport(
+  payload: any,
+  _docType?: string,
+  inspection?: UploadInspection,
+): OcrOutcome {
   const fields: OcrField[] = [];
   const reasons: string[] = [];
 
@@ -192,13 +310,31 @@ function normalisePassport(payload: any): OcrOutcome {
   }
   for (const w of payload?.warnings ?? []) reasons.push(String(w));
 
+  // §14 also asks for the visa pages, the entry and exit stamps, the observation
+  // page, any previous-passport reference and the ECR/ECNR endorsement — and
+  // for corners visible, no fingers over the text and no glare. None of those
+  // are things this extractor answers. What can be done is tell the reviewer
+  // which of them appear in the text that did come back, so a person opening
+  // the review queue starts from something rather than from nothing.
+  const haystack = textOf(fields);
+  const detected = PASSPORT_PAGE_MARKERS.filter(([, p]) => p.test(haystack)).map(([name]) => name);
+
+  reasons.push(
+    detected.length
+      ? `pages detected: ${detected.join(', ')} — confirm the full booklet against §14`
+      : 'only the photo page could be identified — confirm the full booklet against §14',
+  );
+
   return {
     raw: payload,
     fields,
     confidence: overall,
-    needsReview: reasons.length > 0,
+    // Always true for a passport, and deliberately so. The §14 checklist is a
+    // page-by-page human judgement; the honest position is that every passport
+    // is a review task, not that a clean MRZ read means the booklet is complete.
+    needsReview: true,
     reviewReasons: reasons,
-    completeness: passportCompleteness(payload, mrz, overall),
+    completeness: passportCompleteness(payload, mrz, overall, inspection),
   };
 }
 
@@ -217,10 +353,34 @@ function passportCompleteness(
   payload: any,
   mrz: any,
   overall: number | null,
+  inspection?: UploadInspection,
 ): OcrOutcome['completeness'] {
   const problems: string[] = [];
   const missingPages: number[] = [];
   let verdict: CompletenessVerdict = 'ok';
+
+  // The file itself. A PDF that will not open is not a bad scan and saying "send
+  // a clearer photo" about one is useless advice.
+  if (inspection && !inspection.readable) {
+    return {
+      complete: false,
+      verdict: 'empty',
+      problems: [inspection.problem ?? 'the file could not be opened'],
+    };
+  }
+
+  // §14 wants the whole booklet in one PDF. A one-page PDF is the photo page on
+  // its own, which is far and away the commonest incomplete passport upload.
+  // Only applied when the pages were actually countable — see `inspectUpload`.
+  if (
+    inspection?.pages !== undefined &&
+    inspection.pages < TUNABLES.passportMinPdfPages
+  ) {
+    problems.push(
+      `only ${inspection.pages} page was included — §14 asks for every page, including the blank ones`,
+    );
+    verdict = 'pages';
+  }
 
   if (!mrz?.passport_number && !payload?.fields?.length) {
     // No MRZ band, no printed bio fields, nothing. Either the photo is unusable
@@ -329,6 +489,62 @@ function normaliseResume(payload: any): OcrOutcome {
     pushField(fields, 'skills', skills.join(', '), null, { category: 'resume' });
   }
 
+  // Employment history. Every employer the CV names and every job title it
+  // lists, kept apart from `designation` — §9 is explicit that what someone did
+  // before is not what they do now, and the two must never merge.
+  const history =
+    payload?.experience ??
+    payload?.work_experience ??
+    payload?.employment ??
+    payload?.experiences ??
+    payload?.employment_history;
+
+  for (const employer of stringsFrom(
+    history,
+    'company',
+    'company_name',
+    'employer',
+    'employer_name',
+    'organisation',
+    'organization',
+  )) {
+    pushField(fields, 'employer', employer, null, { category: 'experience' });
+  }
+
+  for (const title of stringsFrom(
+    history,
+    'title',
+    'designation',
+    'role',
+    'job_title',
+    'position',
+  )) {
+    pushField(fields, 'previous_designation', title, null, { category: 'experience' });
+  }
+
+  for (const cert of stringsFrom(
+    payload?.certifications ?? payload?.certificates ?? payload?.licenses,
+    'name',
+    'title',
+    'certification',
+    'certificate',
+  )) {
+    pushField(fields, 'certification', cert, null, { category: 'resume' });
+  }
+
+  // Machinery and processes — a welder's TIG and MIG, an operator's VMC and
+  // lathe. Worth reading off the CV because §8's trade questions ask for
+  // exactly this, and anything already on the page need not be asked (§1).
+  for (const machine of stringsFrom(
+    payload?.machinery ?? payload?.equipment ?? payload?.machines ?? payload?.processes,
+    'name',
+    'machine',
+    'process',
+    'equipment',
+  )) {
+    pushField(fields, 'machinery', machine, null, { category: 'resume' });
+  }
+
   const reasons: string[] = ['resume extractor returns no confidence scores'];
   if (!payload?.name) reasons.push('no candidate name extracted');
   for (const w of payload?.warnings ?? []) reasons.push(String(w));
@@ -434,7 +650,9 @@ function normaliseDocument(payload: any, docType?: string): OcrOutcome {
   };
 }
 
-const NORMALISERS: Record<Extractor, (payload: any, docType?: string) => OcrOutcome> = {
+type Normaliser = (payload: any, docType?: string, inspection?: UploadInspection) => OcrOutcome;
+
+const NORMALISERS: Record<Extractor, Normaliser> = {
   passport: normalisePassport,
   resume: normaliseResume,
   document: normaliseDocument,
@@ -453,6 +671,24 @@ export async function runOcr(params: {
   docType?: string;
 }): Promise<OcrOutcome> {
   const route = ROUTES[params.extractor];
+
+  // Asked of the bytes before anything is sent anywhere. A file that will not
+  // open cannot be extracted, and discovering that here costs milliseconds
+  // instead of the full 120-second extraction timeout.
+  const inspection = inspectUpload(params.buffer, params.mimeType);
+
+  if (!inspection.readable) {
+    const problem = inspection.problem ?? 'the file could not be opened';
+    logger.warn({ extractor: params.extractor, problem }, 'upload rejected before extraction');
+    return {
+      raw: { unreadable: problem },
+      fields: [],
+      confidence: null,
+      needsReview: true,
+      reviewReasons: [problem],
+      completeness: { complete: false, verdict: 'empty', problems: [problem] },
+    };
+  }
 
   const form = new FormData();
   form.append(
@@ -478,7 +714,7 @@ export async function runOcr(params: {
       throw new Error(`${params.extractor} extract failed with ${res.status}: ${text.slice(0, 400)}`);
     }
 
-    return NORMALISERS[params.extractor](JSON.parse(text), params.docType);
+    return NORMALISERS[params.extractor](JSON.parse(text), params.docType, inspection);
   } finally {
     clearTimeout(timer);
   }

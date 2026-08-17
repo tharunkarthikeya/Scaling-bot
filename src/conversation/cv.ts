@@ -280,11 +280,19 @@ export function extractFromCv(ocrFields: OcrField[], ownPhone?: string): CvExtra
   const email = f.email?.find((e) => e.includes('@'));
   if (email) patch.email = email;
 
+  // The number printed on the CV. Usually the one they are messaging from, and
+  // recorded either way — a CV carrying a different number is worth a staff
+  // member seeing rather than silently discarding.
+  const phones = (f.phone ?? []).filter((p) => p.replace(/\D/g, '').length >= 10);
+  const mobile = phones[0];
+  if (mobile) patch.mobileNumber = mobile;
+
   // A second number, only when it is genuinely different from the one they are
-  // messaging from.
-  const alternate = (f.phone ?? []).find((phone) => {
+  // messaging from and from the one recorded just above.
+  const alternate = phones.find((phone) => {
+    if (phone === mobile) return false;
     const digits = phone.replace(/\D/g, '');
-    return digits.length >= 10 && !!ownPhone && !ownPhone.endsWith(digits.slice(-10));
+    return !ownPhone || !ownPhone.endsWith(digits.slice(-10));
   });
   if (alternate) patch.alternateNumber = alternate;
 
@@ -340,6 +348,24 @@ export function extractFromCv(ocrFields: OcrField[], ownPhone?: string): CvExtra
       .filter((s) => s.length > 1)
       .slice(0, 40);
   }
+
+  /* Employment history.
+   *
+   * §9 keeps three occupations apart and this is the third of them: the jobs
+   * they held before. It is never merged into `currentOccupation` — which the
+   * CV's `designation` line supplies — and never into `desiredOccupation`,
+   * which only the candidate can answer. The current title is filtered out so
+   * the same job does not appear as both. */
+  const previousTitles = (f.previous_designation ?? []).filter((title) => title !== designation);
+  if (previousTitles.length) patch.previousOccupations = previousTitles.slice(0, 20);
+
+  if (f.employer?.length) patch.employers = f.employer.slice(0, 20);
+
+  // Certifications and machinery also feed `tradeSignals`, so a CV naming TIG
+  // or a VMC picks the right §8 question pack without the candidate being asked
+  // which of two trades is theirs.
+  if (f.certification?.length) patch.certifications = f.certification.slice(0, 20);
+  if (f.machinery?.length) patch.machinery = f.machinery.slice(0, 30);
 
   // Recorded, but the candidate is still asked whether their passport is valid
   // (§12). A passport number on a CV written three years ago says nothing about

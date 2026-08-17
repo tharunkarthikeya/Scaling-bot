@@ -49,18 +49,48 @@ export const CHOICE_DONE: Choice = { id: '__done', label: DONE };
  * ───────────────────────────────────────────────────────────────────────────*/
 
 export const WELCOME: Localised = {
-  en: 'Hi! Welcome to Adira Enterprises 👋\nAre you looking for an overseas job?',
-  ta: 'வணக்கம்! அதிரா என்டர்பிரைசஸ்-க்கு வரவேற்கிறோம் 👋\nவெளிநாட்டு வேலை தேடுகிறீர்களா?',
-  hi: 'नमस्ते! अदिरा एंटरप्राइजेज में आपका स्वागत है 👋\nक्या आप विदेश में नौकरी ढूंढ रहे हैं?',
+  en: 'Hi! Welcome to Adira Enterprises 👋\nHow can we help you today?',
+  ta: 'வணக்கம்! அதிரா என்டர்பிரைசஸ்-க்கு வரவேற்கிறோம் 👋\nஇன்று நாங்கள் எப்படி உதவலாம்?',
+  hi: 'नमस्ते! अदिरा एंटरप्राइजेज में आपका स्वागत है 👋\nहम आपकी क्या मदद कर सकते हैं?',
 };
 
-export const WELCOME_CHOICES: Choice[] = [{ id: 'yes', label: YES }, CHOICE_STAFF];
+/**
+ * The three things anyone messaging this number can want (§2).
+ *
+ * Everything downstream hangs off this one tap. "Apply" opens registration,
+ * "Track" reads a decision staff have already recorded, and "B2B" is not a
+ * candidate at all and goes straight to a person — so the bot never collects
+ * personal data from someone who came to talk business.
+ */
+export const ENTRY_CHOICES: Choice[] = [
+  { id: 'b2b', label: { en: 'B2B enquiry', ta: 'B2B விசாரணை', hi: 'B2B पूछताछ' } },
+  {
+    id: 'track',
+    label: { en: 'Track application', ta: 'விண்ணப்ப நிலை', hi: 'आवेदन ट्रैक करें' },
+  },
+  {
+    id: 'apply',
+    label: { en: 'Apply for a job', ta: 'வேலை விண்ணப்பம்', hi: 'नौकरी के लिए आवेदन' },
+  },
+];
 
-/** When they answer No to the opening question. Nothing personal has been collected yet. */
+/** Kept for the interpreter: someone who types "no" at the opening menu. */
 export const NOT_LOOKING: Localised = {
   en: 'No problem. Message us any time if you start looking for overseas work.',
   ta: 'பரவாயில்லை. வெளிநாட்டு வேலை தேட விரும்பினால் எப்போது வேண்டுமானாலும் எங்களுக்கு அனுப்புங்கள்.',
   hi: 'कोई बात नहीं। जब भी आप विदेश में काम ढूंढना शुरू करें, हमें मैसेज करें।',
+};
+
+/**
+ * B2B (§2).
+ *
+ * A business contact is not a candidate: no consent notice, no profile, no
+ * questions. The bot's whole job here is to stop and fetch a person.
+ */
+export const B2B_HANDOFF: Localised = {
+  en: 'Thank you for your interest in working with Adira Enterprises. I am passing you to our business team — they will reply here shortly.',
+  ta: 'அதிரா என்டர்பிரைசஸுடன் இணைந்து பணியாற்ற ஆர்வம் காட்டியதற்கு நன்றி. உங்களை எங்கள் வணிகக் குழுவிடம் இணைக்கிறேன் — விரைவில் இங்கே பதிலளிப்பார்கள்.',
+  hi: 'अदिरा एंटरप्राइजेज के साथ काम करने में रुचि दिखाने के लिए धन्यवाद। मैं आपको हमारी बिज़नेस टीम से जोड़ रहा हूँ — वे जल्द ही यहीं जवाब देंगे।',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -286,20 +316,110 @@ export const EDIT_CHOICES: Choice[] = [
 
 export const COMPLETED: Localised = {
   en:
-    'Registration completed ✅\nCandidate ID: {{candidateId}}\n\n' +
+    'Registration completed ✅\nApplication ID: {{candidateId}}\n\n' +
+    'Thank you for registering with Adira Enterprises. Please keep this ID — ' +
+    'send it to us any time to check your application status.\n\n' +
     'We will contact you when a suitable vacancy matches your profile. ' +
     'Registration does not guarantee selection.\n\n' +
     'Reply UPDATE to change your details or DELETE to remove your profile.',
   ta:
     'பதிவு முடிந்தது ✅\nவிண்ணப்ப எண்: {{candidateId}}\n\n' +
+    'அதிரா என்டர்பிரைசஸில் பதிவு செய்ததற்கு நன்றி. இந்த எண்ணை வைத்திருங்கள் — ' +
+    'உங்கள் விண்ணப்ப நிலையை அறிய எப்போது வேண்டுமானாலும் இதை அனுப்பலாம்.\n\n' +
     'உங்கள் விவரங்களுக்குப் பொருந்தும் வேலை வரும்போது தொடர்பு கொள்வோம். ' +
     'பதிவு செய்தால் வேலை உறுதி என்று அர்த்தம் இல்லை.\n\n' +
     'விவரங்களை மாற்ற UPDATE என்றும், சுயவிவரத்தை நீக்க DELETE என்றும் அனுப்பவும்.',
   hi:
-    'रजिस्ट्रेशन पूरा हुआ ✅\nकैंडिडेट ID: {{candidateId}}\n\n' +
+    'रजिस्ट्रेशन पूरा हुआ ✅\nएप्लिकेशन ID: {{candidateId}}\n\n' +
+    'अदिरा एंटरप्राइजेज में रजिस्टर करने के लिए धन्यवाद। यह ID संभालकर रखें — ' +
+    'अपने आवेदन की स्थिति जानने के लिए इसे कभी भी हमें भेज सकते हैं।\n\n' +
     'आपकी प्रोफ़ाइल से मेल खाती वैकेंसी आने पर हम आपसे संपर्क करेंगे। ' +
     'रजिस्ट्रेशन चयन की गारंटी नहीं है।\n\n' +
     'जानकारी बदलने के लिए UPDATE और प्रोफ़ाइल हटाने के लिए DELETE भेजें।',
+};
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Application tracking
+ *
+ * Reports a decision staff have already recorded, and nothing else. The bot has
+ * no view on anyone's prospects and §27 forbids it inventing one — so there are
+ * exactly three things it can say, one per stored status, plus "I could not find
+ * that".
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export const TRACK_ASK_ID: Localised = {
+  en: 'Please type your Application ID.\nExample: ADR-00042',
+  ta: 'உங்கள் விண்ணப்ப எண்ணைத் தட்டச்சு செய்யவும்.\nஎடுத்துக்காட்டு: ADR-00042',
+  hi: 'कृपया अपनी एप्लिकेशन ID टाइप करें।\nउदाहरण: ADR-00042',
+};
+
+export const TRACK_PENDING: Localised = {
+  en: 'Application ID: {{candidateId}}\nStatus: In progress ⏳\n\nYour profile is with our team. We will message you here as soon as there is an update.',
+  ta: 'விண்ணப்ப எண்: {{candidateId}}\nநிலை: பரிசீலனையில் ⏳\n\nஉங்கள் விவரங்கள் எங்கள் குழுவிடம் உள்ளன. புதிய தகவல் வந்தவுடன் இங்கேயே தெரிவிப்போம்.',
+  hi: 'एप्लिकेशन ID: {{candidateId}}\nस्थिति: प्रक्रिया में ⏳\n\nआपकी प्रोफ़ाइल हमारी टीम के पास है। कोई अपडेट आते ही हम आपको यहीं मैसेज करेंगे।',
+};
+
+export const TRACK_COMPLETED: Localised = {
+  en: 'Application ID: {{candidateId}}\nStatus: Completed ✅\n\nOur staff will contact you about the next steps.',
+  ta: 'விண்ணப்ப எண்: {{candidateId}}\nநிலை: முடிந்தது ✅\n\nஅடுத்த கட்டங்கள் குறித்து எங்கள் ஊழியர் தொடர்பு கொள்வார்கள்.',
+  hi: 'एप्लिकेशन ID: {{candidateId}}\nस्थिति: पूरा हुआ ✅\n\nअगले चरणों के बारे में हमारा स्टाफ आपसे संपर्क करेगा।',
+};
+
+/**
+ * Plain, and not unkind. A candidate is told the outcome once and told their
+ * profile stays on file, because it does — §23 deletion is the only thing that
+ * removes it, and that is their decision, not ours.
+ */
+export const TRACK_REJECTED: Localised = {
+  en: 'Application ID: {{candidateId}}\nStatus: Not proceeding\n\nWe are not able to take this application forward. Your profile stays with us for future vacancies, and we will be in touch if something suitable comes up.',
+  ta: 'விண்ணப்ப எண்: {{candidateId}}\nநிலை: தொடரவில்லை\n\nஇந்த விண்ணப்பத்தை எங்களால் தொடர முடியவில்லை. உங்கள் விவரங்கள் எதிர்கால வாய்ப்புகளுக்காக எங்களிடம் இருக்கும்; பொருத்தமானது வந்தால் தொடர்பு கொள்வோம்.',
+  hi: 'एप्लिकेशन ID: {{candidateId}}\nस्थिति: आगे नहीं बढ़ रहे\n\nहम इस आवेदन को आगे नहीं बढ़ा पा रहे हैं। आपकी प्रोफ़ाइल भविष्य की वैकेंसी के लिए हमारे पास रहेगी, और कुछ उपयुक्त आने पर हम संपर्क करेंगे।',
+};
+
+/**
+ * No application with that id belongs to this number.
+ *
+ * Deliberately does not distinguish "no such id" from "that id is someone
+ * else's" — an application id is short and guessable, and confirming that one
+ * exists would leak another candidate's record to anyone who typed it.
+ */
+export const TRACK_NOT_FOUND: Localised = {
+  en: 'I could not find an application with that ID for this number. Please check the ID, or tap below to talk to our staff.',
+  ta: 'இந்த எண்ணுக்கு அந்த விண்ணப்ப எண்ணில் எதுவும் கிடைக்கவில்லை. எண்ணைச் சரிபார்க்கவும், அல்லது ஊழியருடன் பேச கீழே தட்டவும்.',
+  hi: 'इस नंबर के लिए उस ID से कोई आवेदन नहीं मिला। कृपया ID जाँच लें, या स्टाफ से बात करने के लिए नीचे टैप करें।',
+};
+
+/** They asked to track before finishing registration — there is no id yet. */
+export const TRACK_NOT_REGISTERED: Localised = {
+  en: 'You do not have an Application ID yet — your registration is not finished. Shall we continue from where you stopped?',
+  ta: 'உங்களுக்கு இன்னும் விண்ணப்ப எண் இல்லை — பதிவு முடியவில்லை. நிறுத்திய இடத்திலிருந்து தொடரலாமா?',
+  hi: 'आपके पास अभी एप्लिकेशन ID नहीं है — आपका रजिस्ट्रेशन पूरा नहीं हुआ है। क्या हम वहीं से आगे बढ़ें जहाँ रुके थे?',
+};
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Idle sessions
+ *
+ * A session left open for `TUNABLES.sessionTimeoutMinutes` is closed. Nothing is
+ * discarded — every answer is written as it arrives — so the only thing this
+ * changes is that the next message is met with a choice rather than with a
+ * question the candidate last saw hours ago.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export const RESUME_PROMPT: Localised = {
+  en: 'Welcome back{{name}}. Your registration is saved and not finished. Would you like to continue from where you stopped?',
+  ta: 'மீண்டும் வரவேற்கிறோம்{{name}}. உங்கள் பதிவு சேமிக்கப்பட்டுள்ளது, முடியவில்லை. நிறுத்திய இடத்திலிருந்து தொடரலாமா?',
+  hi: 'वापस स्वागत है{{name}}। आपका रजिस्ट्रेशन सेव है और अधूरा है। क्या आप वहीं से आगे बढ़ना चाहेंगे जहाँ रुके थे?',
+};
+
+export const RESUME_CHOICES: Choice[] = [
+  { id: 'continue', label: { en: 'Continue', ta: 'தொடரவும்', hi: 'आगे बढ़ें' } },
+  { id: 'restart', label: { en: 'Start again', ta: 'முதலிலிருந்து', hi: 'शुरू से' } },
+];
+
+export const RESTARTED: Localised = {
+  en: 'Starting again from the beginning.',
+  ta: 'முதலிலிருந்து மீண்டும் தொடங்குகிறோம்.',
+  hi: 'शुरुआत से फिर से शुरू कर रहे हैं।',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -307,9 +427,9 @@ export const COMPLETED: Localised = {
  * ───────────────────────────────────────────────────────────────────────────*/
 
 export const RETURNING: Localised = {
-  en: 'Welcome back, {{name}}. Your Candidate ID is {{candidateId}}. What would you like to do?',
+  en: 'Welcome back, {{name}}. Your Application ID is {{candidateId}}. What would you like to do?',
   ta: 'மீண்டும் வரவேற்கிறோம், {{name}}. உங்கள் விண்ணப்ப எண் {{candidateId}}. என்ன செய்ய விரும்புகிறீர்கள்?',
-  hi: 'वापस स्वागत है, {{name}}। आपकी कैंडिडेट ID {{candidateId}} है। आप क्या करना चाहेंगे?',
+  hi: 'वापस स्वागत है, {{name}}। आपकी एप्लिकेशन ID {{candidateId}} है। आप क्या करना चाहेंगे?',
 };
 
 /** Same message for a returning candidate whose registration never completed. */
@@ -320,6 +440,10 @@ export const RETURNING_NO_ID: Localised = {
 };
 
 export const RETURNING_CHOICES: Choice[] = [
+  {
+    id: 'track',
+    label: { en: 'Track application', ta: 'விண்ணப்ப நிலை', hi: 'आवेदन ट्रैक करें' },
+  },
   {
     id: 'check_jobs',
     label: { en: 'Check suitable jobs', ta: 'வேலை வாய்ப்புகள்', hi: 'उपयुक्त नौकरियाँ' },
@@ -356,10 +480,15 @@ export const REMINDER: Localised = {
   hi: 'नमस्ते {{name}}, आपकी अदिरा जॉब प्रोफ़ाइल अधूरी है। क्या आप वहीं से आगे बढ़ना चाहेंगे जहाँ रुके थे?',
 };
 
+/**
+ * Three buttons, as §21 specifies. "Not interested" is not among them — a
+ * fourth option would push this into a list, and someone who wants out can say
+ * so in words or send DELETE, both of which are understood anywhere (§23).
+ */
 export const REMINDER_CHOICES: Choice[] = [
   { id: 'continue', label: { en: 'Continue', ta: 'தொடரவும்', hi: 'आगे बढ़ें' } },
   { id: 'later', label: { en: 'Later', ta: 'பிறகு', hi: 'बाद में' } },
-  { id: 'not_interested', label: { en: 'Not interested', ta: 'வேண்டாம்', hi: 'रुचि नहीं' } },
+  { id: 'restart', label: { en: 'Start from first', ta: 'முதலிலிருந்து', hi: 'शुरू से' } },
 ];
 
 export const REMINDER_LATER: Localised = {

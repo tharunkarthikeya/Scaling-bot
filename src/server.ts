@@ -4,7 +4,15 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
-import { claimEvent, messages, candidates, storedDocuments } from './db/models.js';
+import {
+  claimEvent,
+  messages,
+  candidates,
+  storedDocuments,
+  recordAudit,
+  APPLICATION_STATUSES,
+  type ApplicationStatus,
+} from './db/models.js';
 import { queue } from './queue/index.js';
 import { markAsRead } from './whatsapp/client.js';
 
@@ -164,6 +172,60 @@ export async function buildServer(): Promise<FastifyInstance> {
       ]);
 
       return { candidate, documents, transcript };
+    });
+
+    /**
+     * Sets the application outcome the candidate is told when they track (§25).
+     *
+     * This is the only write in the API, and it exists because the decision is
+     * the agency's, not the bot's — the bot seeds `pending` at registration and
+     * never touches it again. Every change is recorded in the audit trail with
+     * whoever made it.
+     */
+    app.patch('/api/candidates/:waId/application', async (req, res) => {
+      const { waId } = req.params as { waId: string };
+      const body = (req.body ?? {}) as { status?: string; note?: string; by?: string };
+
+      if (!APPLICATION_STATUSES.includes(body.status as ApplicationStatus)) {
+        return res.code(400).send({
+          error: `status must be one of: ${APPLICATION_STATUSES.join(', ')}`,
+        });
+      }
+
+      const status = body.status as ApplicationStatus;
+      const now = new Date();
+
+      const result = await candidates().findOneAndUpdate(
+        { waId },
+        {
+          $set: {
+            application: {
+              status,
+              updatedAt: now,
+              ...(body.by ? { updatedBy: body.by } : {}),
+              ...(body.note ? { note: body.note } : {}),
+            },
+            updatedAt: now,
+          },
+        },
+        { returnDocument: 'after' },
+      );
+
+      if (!result) return res.code(404).send({ error: 'not found' });
+
+      await recordAudit({
+        waId,
+        candidateId: result.candidateId,
+        event: 'application_status_changed',
+        detail: `${status}${body.by ? ` by ${body.by}` : ''}`,
+      });
+
+      logger.info({ waId, status, by: body.by }, 'application status set');
+
+      // The candidate is not messaged. They are told when they ask — pushing an
+      // outcome unprompted is a decision for staff, not a side effect of a
+      // CRM edit.
+      return { waId, candidateId: result.candidateId, application: result.application };
     });
 
     /** The review queue: documents whose extraction a human must confirm. */

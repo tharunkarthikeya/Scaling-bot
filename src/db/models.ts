@@ -60,6 +60,22 @@ export const CANDIDATE_STATUSES = [
 
 export type CandidateStatus = (typeof CANDIDATE_STATUSES)[number];
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Application outcome
+ *
+ * What a candidate is told when they ask to track their application. Distinct
+ * from both stage and status: those describe where the conversation and the
+ * record are, this is the decision staff have taken on the application itself.
+ *
+ * The bot never sets anything but the initial `pending`. Everything after that
+ * is an admin decision made in the CRM — the bot has no authority to tell anyone
+ * they were selected or rejected (§27).
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export const APPLICATION_STATUSES = ['pending', 'completed', 'rejected'] as const;
+
+export type ApplicationStatus = (typeof APPLICATION_STATUSES)[number];
+
 /** Statuses the bot is allowed to set on its own. Everything else is staff-only (§27). */
 export const BOT_SETTABLE_STATUSES: ReadonlySet<CandidateStatus> = new Set<CandidateStatus>([
   'new_enquiry',
@@ -128,6 +144,11 @@ export interface CandidateProfile {
   /** ISO yyyy-mm-dd. Stored normalised; the candidate always types DD/MM/YYYY. */
   dateOfBirth?: string;
   email?: string;
+  /**
+   * The number on the CV. Usually the same as `waId`, and kept anyway — a CV
+   * that gives a different number is worth a staff member seeing.
+   */
+  mobileNumber?: string;
   alternateNumber?: string;
   nationality?: string;
   fatherName?: string;
@@ -235,8 +256,29 @@ export interface CandidateDoc {
   phone: string;
   profileName?: string;
 
-  /** Human-facing id, assigned once registration completes (§19). */
+  /**
+   * Human-facing id, assigned once registration completes (§19). Shown to the
+   * candidate as their Application ID and typed back at us to track progress,
+   * so it stays short and unambiguous — see `nextCandidateId`.
+   */
   candidateId?: string;
+
+  /** Which of the three opening options they chose (§2). */
+  enquiry?: 'apply' | 'b2b' | 'track';
+
+  /**
+   * The decision staff have recorded on the application. Absent until
+   * registration completes, when the bot seeds it as `pending` and stops
+   * touching it — every later change is an admin action through the CRM.
+   */
+  application?: {
+    status: ApplicationStatus;
+    updatedAt: Date;
+    /** Staff identifier from the CRM, for the audit trail. */
+    updatedBy?: string;
+    /** Internal note. Never shown to the candidate. */
+    note?: string;
+  };
 
   language?: Language;
   /** What the candidate typed when they chose "Other" (§3). */
@@ -284,6 +326,17 @@ export interface CandidateDoc {
   lastOutboundAt?: Date;
   /** §21 allows exactly one reminder. This is what enforces "exactly one". */
   reminderSentAt?: Date;
+
+  /**
+   * When the idle session was closed.
+   *
+   * A candidate who goes quiet mid-registration has their session ended after
+   * `TUNABLES.sessionTimeoutMinutes`. Nothing is lost — progress is written after
+   * every answer — but the next message is greeted with "continue where you
+   * stopped, or start again?" rather than silently resuming a conversation the
+   * candidate has forgotten the context of.
+   */
+  sessionEndedAt?: Date;
 
   completedAt?: Date;
   /** §23. The record is tombstoned, not dropped — a minimum audit trail survives. */
@@ -393,7 +446,10 @@ export interface AuditEventDoc {
     | 'handoff_requested'
     | 'handoff_returned'
     | 'registration_completed'
-    | 'reminder_sent';
+    | 'registration_restarted'
+    | 'reminder_sent'
+    | 'session_timed_out'
+    | 'application_status_changed';
   detail?: string;
   at: Date;
 }
@@ -448,6 +504,11 @@ export async function ensureIndexes(): Promise<void> {
     { key: { windowExpiresAt: 1 }, name: 'windowExpiresAt' },
     // Drives the §21 reminder sweep: incomplete, gone quiet, not yet reminded.
     { key: { reminderSentAt: 1, lastInboundAt: 1 }, name: 'reminder_sweep' },
+    // Drives the idle-session sweep, which runs far more often than the reminder
+    // one — every minute against a five-minute timeout.
+    { key: { sessionEndedAt: 1, lastInboundAt: 1 }, name: 'session_sweep' },
+    // The CRM's application board reads off this.
+    { key: { 'application.status': 1, updatedAt: -1 }, name: 'application_status' },
     // Matching filters on these together often enough to earn a compound index.
     {
       key: { 'profile.primaryTrade': 1, 'profile.countryPreference': 1, status: 1 },
@@ -518,12 +579,22 @@ export async function recordAudit(
  * the phone to staff, so they have to be short and unambiguous. findOneAndUpdate
  * with $inc is atomic, so two concurrent completions cannot collide.
  */
-export async function nextCandidateId(prefix = 'ADR'): Promise<string> {
+/**
+ * Prefix on every human-facing id. Shared with the tracking flow, which has to
+ * rebuild an id from whatever the candidate types — "42", "adr 42", "ADR-00042"
+ * are all the same application.
+ */
+export const CANDIDATE_ID_PREFIX = 'ADR';
+
+/** Digits in the sequence part of an id. The tracking flow pads to this. */
+export const CANDIDATE_ID_DIGITS = 5;
+
+export async function nextCandidateId(prefix = CANDIDATE_ID_PREFIX): Promise<string> {
   const result = await counters().findOneAndUpdate(
     { _id: 'candidateId' },
     { $inc: { seq: 1 } },
     { upsert: true, returnDocument: 'after' },
   );
   const seq = result?.seq ?? 1;
-  return `${prefix}-${String(seq).padStart(5, '0')}`;
+  return `${prefix}-${String(seq).padStart(CANDIDATE_ID_DIGITS, '0')}`;
 }

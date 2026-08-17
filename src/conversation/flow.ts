@@ -21,7 +21,14 @@
 
 import type { CandidateDoc, CandidateProfile } from '../db/models.js';
 import type { Choice, Localised } from './language.js';
-import { CHOICE_STAFF, OTHER, render } from './copy.js';
+import {
+  CHOICE_STAFF,
+  CONFIRM_CHOICES,
+  ENTRY_CHOICES,
+  OTHER,
+  WELCOME,
+  render,
+} from './copy.js';
 import {
   DOCUMENTS,
   EUROPE_RUSSIA_COUNTRIES,
@@ -177,8 +184,12 @@ export function tradeSignals(c: CandidateDoc): Array<string | undefined> {
   return [
     meta.primaryTrade?.raw,
     p(c).currentOccupation,
+    (p(c).previousOccupations ?? []).join(' '),
     (p(c).skills ?? []).join(' '),
     (p(c).certifications ?? []).join(' '),
+    // Names the actual kit — TIG, MIG, VMC, forklift — which is often the only
+    // thing on a CV that separates a welder from a fabricator.
+    (p(c).machinery ?? []).join(' '),
     c.profileName,
   ];
 }
@@ -295,20 +306,27 @@ const DOCUMENT_FALLBACKS: Choice[] = [
 
 const START_STEPS: FlowStep[] = [
   {
-    id: 'looking_for_job',
+    // The opening menu (§2). Three taps, three destinations: a business contact
+    // goes to a person without a single personal question being asked, someone
+    // with an application id is read a decision staff already made, and everyone
+    // else starts registering. The engine acts on the first two in
+    // `handleSpecialStep`; only "apply" falls through into the flow below.
+    id: 'entry',
     section: 'start',
-    prompt: {
-      en: 'Hi! Welcome to Adira Enterprises 👋\nAre you looking for an overseas job?',
-      ta: 'வணக்கம்! அதிரா என்டர்பிரைசஸ்-க்கு வரவேற்கிறோம் 👋\nவெளிநாட்டு வேலை தேடுகிறீர்களா?',
-      hi: 'नमस्ते! अदिरा एंटरप्राइजेज में आपका स्वागत है 👋\nक्या आप विदेश में नौकरी ढूंढ रहे हैं?',
-    },
+    prompt: WELCOME,
     input: 'choice',
-    choices: [{ id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ' } }, CHOICE_STAFF],
-    // Offered to the interpreter but not shown. §2 specifies two buttons; a
-    // candidate who types "no" should still be understood the first time.
-    hiddenChoices: [{ id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं' } }],
+    choices: ENTRY_CHOICES,
+    // Offered to the interpreter but never rendered. Three buttons is the whole
+    // design; these exist so someone who declines in words, or asks for a
+    // person, is understood the first time. Every id here is absent from
+    // `choices` above — a duplicate would be numbered twice in the list the
+    // interpreter sees and break "2 means the second option".
+    hiddenChoices: [
+      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं' } },
+      CHOICE_STAFF,
+    ],
     satisfied: (c) => p(c).lookingForOverseasJob === true,
-    apply: (a) => ({ lookingForOverseasJob: a.ids?.[0] === 'yes' }),
+    apply: (a) => ({ lookingForOverseasJob: a.ids?.[0] === 'apply' }),
   },
 
   {
@@ -1125,10 +1143,14 @@ const CONFIRM_STEP: FlowStep = {
   id: 'confirm',
   section: 'confirm',
   // The body is built from the candidate's own answers, so the prompt here is
-  // only the closing question — see `renderSummary` in the engine.
+  // only the closing question — see `renderConfirmation` in render.ts.
   prompt: { en: 'Is this correct?', ta: 'இது சரியா?', hi: 'क्या यह सही है?' },
   input: 'choice',
-  choices: [],
+  // These have to be declared here, not only inside `renderConfirmation`. The
+  // step's choices are what the interpreter is offered, and with an empty list
+  // no answer could ever match — not even a tapped button, whose id is checked
+  // against this list before it is trusted. Registration could not complete.
+  choices: CONFIRM_CHOICES,
   satisfied: (c) => c.stage === 'REGISTRATION_COMPLETED',
 };
 

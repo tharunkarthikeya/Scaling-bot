@@ -20,6 +20,7 @@ import {
 import {
   CHOICE_DONE,
   CHOICE_STAFF,
+  CONFIRM_CHOICES,
   CONFIRM_HEADER,
   CONFIRM_LABELS,
   CONFIRM_QUESTION,
@@ -327,7 +328,6 @@ export async function renderConfirmation(candidate: CandidateDoc): Promise<Outbo
     await say(CONFIRM_QUESTION, candidate),
   ].join('\n');
 
-  const { CONFIRM_CHOICES } = await import('./copy.js');
   const shape = await choices({ en: '', ta: '', hi: '' }, CONFIRM_CHOICES, candidate);
   return shape.kind === 'text' ? { kind: 'text', body } : { ...shape, body };
 }

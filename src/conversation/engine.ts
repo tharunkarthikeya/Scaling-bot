@@ -28,6 +28,9 @@ import {
   nextCandidateId,
   recordAudit,
   storedDocuments,
+  CANDIDATE_ID_DIGITS,
+  CANDIDATE_ID_PREFIX,
+  type ApplicationStatus,
   type CandidateDoc,
   type CandidateStatus,
   type ConversationStage,
@@ -81,9 +84,11 @@ const MENU = {
   edit: 'menu:edit',
   delete: 'menu:delete',
   reminder: 'menu:reminder',
+  resume: 'menu:resume',
   jobs: 'menu:jobs',
   certificate: 'ask:certificate',
   contact: 'ask:contact',
+  trackId: 'ask:track_id',
 } as const;
 
 /** Suffix marking the free-text follow-up to an "Other" choice. */
@@ -338,11 +343,17 @@ async function askNextQuestion(candidate: CandidateDoc): Promise<void> {
 
   await reply(candidate, await renderStep(step, candidate), step.id);
 
-  const patch: Partial<CandidateDoc> = {
-    currentStep: step.id,
-    stage: STAGE_BY_SECTION[step.section],
-    status: statusForStage(STAGE_BY_SECTION[step.section], candidate.status),
-  };
+  const patch: Partial<CandidateDoc> = { currentStep: step.id };
+
+  // Stage tracks how far registration got, and a registered candidate editing
+  // one section has not become unregistered. §18 and §22 both say an edit opens
+  // the chosen section and does not restart registration — letting the stage
+  // fall back to JOB_PREFERENCE_PENDING would restart it as far as every CRM
+  // screen and every sweep is concerned.
+  if (!candidate.completedAt) {
+    patch.stage = STAGE_BY_SECTION[step.section];
+    patch.status = statusForStage(STAGE_BY_SECTION[step.section], candidate.status);
+  }
 
   // A half-finished multi-select left behind would have the next question's taps
   // land on the previous one.
@@ -369,9 +380,19 @@ async function askNextQuestion(candidate: CandidateDoc): Promise<void> {
  * Endings
  * ───────────────────────────────────────────────────────────────────────────*/
 
-/** §24. Everything automated stops until staff hand the conversation back. */
-async function handOffToStaff(candidate: CandidateDoc, reason: string): Promise<void> {
-  await tell(candidate, copy.STAFF_HANDOFF);
+/**
+ * §24. Everything automated stops until staff hand the conversation back.
+ *
+ * `announce: false` is for callers that have already said something better
+ * suited to the situation — the B2B greeting, for one. The handoff itself is
+ * identical either way; only the sentence differs.
+ */
+async function handOffToStaff(
+  candidate: CandidateDoc,
+  reason: string,
+  options: { announce?: boolean } = {},
+): Promise<void> {
+  if (options.announce !== false) await tell(candidate, copy.STAFF_HANDOFF);
   await setState(candidate, {
     stage: 'HUMAN_HANDOFF',
     humanHandoff: { reason, at: new Date() },
@@ -408,20 +429,121 @@ export async function returnConversationToBot(waId: string): Promise<boolean> {
 
 async function completeRegistration(candidate: CandidateDoc): Promise<void> {
   const candidateId = candidate.candidateId ?? (await nextCandidateId());
+  const now = new Date();
 
   await setState(candidate, {
     candidateId,
     stage: 'REGISTRATION_COMPLETED',
     status: BOT_OWNED.has(candidate.status) ? 'profile_registered' : candidate.status,
-    completedAt: candidate.completedAt ?? new Date(),
+    completedAt: candidate.completedAt ?? now,
+    // Seeded once and never touched again by the bot. Everything after this is
+    // an admin decision in the CRM — the bot has no authority to move an
+    // application to completed or rejected (§27).
+    application: candidate.application ?? { status: 'pending', updatedAt: now },
     currentStep: undefined,
     editQueue: [],
     unclearCount: 0,
+    // The conversation is finished. A later message opens the returning menu
+    // (§20) rather than resuming a registration that has nothing left to ask.
+    sessionEndedAt: now,
   });
 
   await tell(candidate, copy.COMPLETED, { candidateId });
   await recordAudit({ waId: candidate.waId, candidateId, event: 'registration_completed' });
   logger.info({ waId: candidate.waId, candidateId }, 'registration completed');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Application tracking
+ *
+ * Reads back a decision staff recorded in the CRM. The bot contributes nothing
+ * to it — it seeds `pending` at completion and from then on only reports.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+const TRACK_COPY: Record<ApplicationStatus, Localised> = {
+  pending: copy.TRACK_PENDING,
+  completed: copy.TRACK_COMPLETED,
+  rejected: copy.TRACK_REJECTED,
+};
+
+/**
+ * Rebuilds an application id from whatever the candidate typed.
+ *
+ * They read these out over the phone and type them back from memory, so
+ * "ADR-00042", "adr 42" and "42" all have to reach the same record. Only the
+ * digits are load-bearing; the prefix is reattached here.
+ */
+export function normaliseApplicationId(typed: string): string | undefined {
+  const digits = /(\d{1,10})/.exec(typed.replace(/\s+/g, ''));
+  if (!digits) return undefined;
+  return `${CANDIDATE_ID_PREFIX}-${digits[1]!.padStart(CANDIDATE_ID_DIGITS, '0')}`;
+}
+
+/**
+ * Whether a message is someone quoting their application id at us.
+ *
+ * The prefix is required. A bare number is how candidates pick an option from a
+ * list — "2" means the second row — and treating that as an application id
+ * would hijack every numbered answer in the flow.
+ */
+const APPLICATION_ID_PATTERN = new RegExp(`\\b${CANDIDATE_ID_PREFIX}[\\s-]?\\d{1,10}\\b`, 'i');
+
+export function looksLikeApplicationId(text: string | undefined): boolean {
+  return !!text && APPLICATION_ID_PATTERN.test(text);
+}
+
+async function reportApplicationStatus(
+  candidate: CandidateDoc,
+  record: CandidateDoc,
+): Promise<void> {
+  const status: ApplicationStatus = record.application?.status ?? 'pending';
+  await tell(candidate, TRACK_COPY[status], { candidateId: record.candidateId });
+  await setState(candidate, { currentStep: undefined });
+  logger.info({ waId: candidate.waId, candidateId: record.candidateId, status }, 'status reported');
+}
+
+/**
+ * Starts the tracking flow.
+ *
+ * A candidate already registered on this number needs no id — we know which
+ * record is theirs. Anyone else is asked for one.
+ */
+async function startTracking(candidate: CandidateDoc): Promise<void> {
+  if (candidate.candidateId) {
+    await reportApplicationStatus(candidate, candidate);
+    return;
+  }
+  await tell(candidate, copy.TRACK_ASK_ID);
+  await setState(candidate, { currentStep: MENU.trackId });
+}
+
+/**
+ * Looks up an id the candidate typed.
+ *
+ * Scoped to the number that sent it. Ids are short and sequential, so answering
+ * for any id at all would hand one candidate's status — and the fact that their
+ * record exists — to anyone who guessed a number (§27). A miss is reported the
+ * same way whether the id is unknown or belongs to somebody else.
+ */
+async function lookUpApplication(candidate: CandidateDoc, typed: string): Promise<void> {
+  const id = normaliseApplicationId(typed);
+  const record = id
+    ? await candidates().findOne({ candidateId: id, waId: candidate.waId })
+    : null;
+
+  if (record) {
+    await reportApplicationStatus(candidate, record);
+    return;
+  }
+
+  // Their own registration simply is not finished. Saying "not found" would be
+  // technically true and useless — offer to carry on instead.
+  if (!candidate.candidateId) {
+    await ask(candidate, copy.TRACK_NOT_REGISTERED, copy.RESUME_CHOICES, MENU.resume);
+    return;
+  }
+
+  await ask(candidate, copy.TRACK_NOT_FOUND, [copy.CHOICE_STAFF], MENU.trackId);
 }
 
 /**
@@ -692,13 +814,34 @@ async function handleSpecialStep(
   const chosen = answer.ids?.[0];
 
   switch (step.id) {
-    case 'looking_for_job':
-      if (chosen === 'no') {
-        await tell(candidate, copy.NOT_LOOKING);
-        await setState(candidate, { status: 'not_interested', currentStep: undefined });
-        return true;
+    // The opening menu (§2). Two of the three answers end the turn here and
+    // never reach the registration flow at all.
+    case 'entry':
+      switch (chosen) {
+        case 'b2b':
+          // Not a candidate. No consent notice, no profile, no questions — the
+          // bot's entire job is to stop and fetch a person.
+          await setState(candidate, { enquiry: 'b2b' });
+          await tell(candidate, copy.B2B_HANDOFF);
+          await handOffToStaff(candidate, 'B2B enquiry from the opening menu', {
+            announce: false,
+          });
+          return true;
+
+        case 'track':
+          await setState(candidate, { enquiry: 'track' });
+          await startTracking(candidate);
+          return true;
+
+        case 'no':
+          await tell(candidate, copy.NOT_LOOKING);
+          await setState(candidate, { status: 'not_interested', currentStep: undefined });
+          return true;
+
+        default:
+          await setState(candidate, { enquiry: 'apply' });
+          return false;
       }
-      return false;
 
     case 'language':
       await setState(candidate, { language: chosen as Language });
@@ -890,6 +1033,7 @@ const MENU_CHOICES: Record<string, Choice[]> = {
   [MENU.edit]: copy.EDIT_CHOICES,
   [MENU.delete]: copy.DELETE_CHOICES,
   [MENU.reminder]: copy.REMINDER_CHOICES,
+  [MENU.resume]: copy.RESUME_CHOICES,
   [MENU.jobs]: [
     { id: 'yes', label: copy.YES },
     { id: 'no', label: copy.NO },
@@ -902,6 +1046,7 @@ const MENU_PROMPTS: Record<string, Localised> = {
   [MENU.edit]: copy.EDIT_PROMPT,
   [MENU.delete]: copy.DELETE_CONFIRM,
   [MENU.reminder]: copy.REMINDER,
+  [MENU.resume]: copy.RESUME_PROMPT,
   [MENU.jobs]: copy.JOBS_ANSWER,
 };
 
@@ -971,6 +1116,9 @@ async function handleMenuAnswer(
   switch (menu) {
     case MENU.returning:
       switch (choiceId) {
+        case 'track':
+          await startTracking(candidate);
+          return;
         case 'check_jobs':
           // §27 forbids describing anyone's prospects, so this offers a person
           // rather than an answer.
@@ -1025,11 +1173,18 @@ async function handleMenuAnswer(
       }
       return;
 
+    // §21's reminder and the idle-session prompt offer the same three things,
+    // so they answer to the same code. Only the wording that opened them differs.
     case MENU.reminder:
+    case MENU.resume:
       switch (choiceId) {
         case 'continue':
+          await reopenSession(candidate);
           await setState(candidate, { currentStep: undefined, unclearCount: 0 });
           await askNextQuestion(candidate);
+          return;
+        case 'restart':
+          await restartRegistration(candidate);
           return;
         case 'not_interested':
           await tell(candidate, copy.REMINDER_NOT_INTERESTED);
@@ -1044,6 +1199,135 @@ async function handleMenuAnswer(
     default:
       await askNextQuestion(candidate);
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Idle sessions and starting over
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * Stages a half-finished registration can be sitting in.
+ *
+ * Deliberately not the same list as the §21 reminder sweep: this one includes
+ * LANGUAGE_PENDING, because someone who tapped "Apply" and then went quiet at
+ * the language question has an open session worth closing, even though §21 does
+ * not want them chased with a reminder.
+ */
+const RESUMABLE_STAGES: ReadonlySet<ConversationStage> = new Set<ConversationStage>([
+  'LANGUAGE_PENDING',
+  'CONSENT_PENDING',
+  'CV_PENDING',
+  'BASIC_DETAILS_PENDING',
+  'JOB_PREFERENCE_PENDING',
+  'DOCUMENTS_PENDING',
+  'CONFIRMATION_PENDING',
+]);
+
+function sessionTimedOut(lastInboundAt: Date | undefined, now = new Date()): boolean {
+  if (!lastInboundAt) return false;
+  return now.getTime() - lastInboundAt.getTime() > TUNABLES.sessionTimeoutMinutes * 60_000;
+}
+
+/**
+ * Reopens a closed session.
+ *
+ * `$unset` rather than setting the field to undefined: through `$set` that
+ * writes a BSON null, which still satisfies `$exists`, and the sweep would
+ * never close this candidate's session again.
+ */
+async function reopenSession(candidate: CandidateDoc): Promise<void> {
+  await candidates().updateOne(
+    { _id: candidate._id },
+    { $unset: { sessionEndedAt: '' }, $set: { updatedAt: new Date() } },
+  );
+  candidate.sessionEndedAt = undefined;
+}
+
+/**
+ * Starts the questions again from the top.
+ *
+ * Answers go; documents stay. §22 forbids destroying an upload without a
+ * version history, and someone re-answering the questions has not withdrawn the
+ * passport they already sent — re-requesting it would also break §1, which says
+ * never to ask for something already on file. Consent and language survive for
+ * the same reason: both are recorded facts, not answers being revised.
+ */
+async function restartRegistration(candidate: CandidateDoc): Promise<void> {
+  await recordAudit({
+    waId: candidate.waId,
+    candidateId: candidate.candidateId,
+    event: 'registration_restarted',
+    detail: 'candidate chose to start from the beginning',
+  });
+
+  // $unset, not $set to {} — a stale `currentStep` left behind would have the
+  // next tap answer the question they abandoned.
+  await candidates().updateOne(
+    { _id: candidate._id },
+    { $unset: { currentStep: '', pendingMulti: '', sessionEndedAt: '' } },
+  );
+
+  await setState(candidate, {
+    stage: 'NEW',
+    status: BOT_OWNED.has(candidate.status) ? 'new_enquiry' : candidate.status,
+    profile: {},
+    fieldMeta: {},
+    editQueue: [],
+    unclearCount: 0,
+  });
+
+  Object.assign(candidate, {
+    currentStep: undefined,
+    pendingMulti: undefined,
+    sessionEndedAt: undefined,
+  });
+
+  logger.info({ waId: candidate.waId }, 'registration restarted at the candidate’s request');
+
+  await tell(candidate, copy.RESTARTED);
+  await askNextQuestion(candidate);
+}
+
+/**
+ * Closes sessions that have gone quiet, so the CRM can see which registrations
+ * were abandoned mid-flow and where.
+ *
+ * Sends nothing. The candidate-facing half of this is decided on their next
+ * message — see `handleInboundMessage` — which is what makes the behaviour
+ * correct even when this sweep has not run.
+ */
+export async function endIdleSessions(limit = 200): Promise<number> {
+  const cutoff = new Date(Date.now() - TUNABLES.sessionTimeoutMinutes * 60_000);
+
+  const stale = await candidates()
+    .find({
+      sessionEndedAt: { $exists: false },
+      lastInboundAt: { $lt: cutoff },
+      stage: { $in: [...RESUMABLE_STAGES] },
+    })
+    .limit(limit)
+    .toArray();
+
+  let ended = 0;
+
+  for (const candidate of stale) {
+    const claimed = await candidates().updateOne(
+      { _id: candidate._id, sessionEndedAt: { $exists: false } },
+      { $set: { sessionEndedAt: new Date(), updatedAt: new Date() } },
+    );
+    if (!claimed.modifiedCount) continue;
+
+    await recordAudit({
+      waId: candidate.waId,
+      candidateId: candidate.candidateId,
+      event: 'session_timed_out',
+      detail: `idle at "${candidate.currentStep ?? 'unknown step'}"`,
+    });
+    ended += 1;
+  }
+
+  if (ended) logger.info({ ended }, 'idle sessions closed');
+  return ended;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1066,6 +1350,10 @@ export async function handleInboundMessage(payload: {
     phone: msg.waId,
     profileName: payload.profileName,
   });
+
+  // Read before it is overwritten: the gap since their last message is what
+  // decides whether the session they were in is still open.
+  const previousInboundAt = candidate.lastInboundAt;
 
   const now = new Date();
   await setState(candidate, {
@@ -1140,6 +1428,15 @@ export async function handleInboundMessage(payload: {
     return;
   }
 
+  // An application id sent unprompted, at any point in the conversation. It is
+  // only ever one question — "where has my application got to?" — and it is
+  // answered wherever it arrives rather than being read as an answer to
+  // whatever was last asked.
+  if (looksLikeApplicationId(text)) {
+    await lookUpApplication(candidate, text);
+    return;
+  }
+
   /* ---- a registered candidate coming back (§20) ---- */
 
   if (candidate.stage === 'REGISTRATION_COMPLETED' && !candidate.currentStep) {
@@ -1163,6 +1460,28 @@ export async function handleInboundMessage(payload: {
   }
   if (ingested.docType) {
     await acknowledgeDocument(candidate, ingested.docType);
+    return;
+  }
+
+  /* ---- the session they were in has expired ---- */
+
+  // Checked here rather than from the sweep, so it is right even if the sweep
+  // has not run. Only reached for a message that is not a file: someone sending
+  // a document knows exactly what they are doing and should not be asked
+  // whether they want to start again.
+  // The `currentStep` guard is what stops this answering itself: once the
+  // prompt is on screen it is an ordinary open menu, handled below.
+  // `!= null` rather than `!== undefined` because clearing a field through
+  // `$set` writes BSON null, not absence.
+  if (
+    candidate.currentStep !== MENU.resume &&
+    RESUMABLE_STAGES.has(candidate.stage) &&
+    (candidate.sessionEndedAt != null || sessionTimedOut(previousInboundAt, now))
+  ) {
+    const name = candidate.profile?.fullName ?? candidate.profileName ?? '';
+    await ask(candidate, copy.RESUME_PROMPT, copy.RESUME_CHOICES, MENU.resume, {
+      name: name ? `, ${name}` : '',
+    });
     return;
   }
 
@@ -1190,6 +1509,15 @@ export async function handleInboundMessage(payload: {
       return;
     }
     await tell(candidate, voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.CONTACT_PROMPT);
+    return;
+  }
+
+  if (current === MENU.trackId) {
+    if (!text.trim()) {
+      await tell(candidate, voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.TRACK_ASK_ID);
+      return;
+    }
+    await lookUpApplication(candidate, text.trim());
     return;
   }
 

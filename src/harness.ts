@@ -254,7 +254,7 @@ async function answerCurrentQuestion(): Promise<Record<string, unknown> | undefi
     // Prefer an answer that keeps the run going through the interesting
     // branches: a real trade, Europe (so the document branch runs), a passport.
     const preferred: Record<string, string> = {
-      looking_for_job: 'yes',
+      entry: 'apply',
       language: 'en',
       consent: 'yes',
       cv: 'upload_cv',
@@ -435,9 +435,24 @@ function verdict(label: string, ok: boolean, detail: string) {
 
 const inbound = transcript.filter((m) => m.direction === 'inbound').length;
 const outbound = transcript.filter((m) => m.direction === 'outbound').length;
-const completed = candidate?.stage === 'REGISTRATION_COMPLETED';
+
+// `completedAt`, not the live stage. The run deliberately carries on into an
+// UPDATE afterwards, and reading the stage at the end would report a completed
+// registration as unfinished just because a section was reopened.
+const completed = !!candidate?.completedAt;
+
+// Only the questions asked to get to registration. Everything after
+// `completedAt` belongs to the §20 and §22 paths the run also exercises, and
+// counting those against §28's 7–10 guidance measures the wrong thing.
 const questionsAsked = new Set(
-  transcript.filter((m) => m.direction === 'outbound' && m.step).map((m) => m.step),
+  transcript
+    .filter(
+      (m) =>
+        m.direction === 'outbound' &&
+        m.step &&
+        (!candidate?.completedAt || m.createdAt <= candidate.completedAt),
+    )
+    .map((m) => m.step),
 ).size;
 
 verdict('signature verification', true, 'working');

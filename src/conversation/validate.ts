@@ -83,6 +83,11 @@ function checkMessage(where: string, text: Localised): void {
   assertFits(where, text, 4096);
 }
 
+/** Copy that is sent with buttons or a list, so it shares the interactive body. */
+function checkInteractive(where: string, text: Localised): void {
+  assertFits(where, text, WA_LIMITS.body);
+}
+
 /**
  * Runs every check. Called from `index.ts` and the harness before anything
  * accepts traffic.
@@ -94,7 +99,8 @@ export function validateCopy(): void {
 
   // Menus are rendered by the same code path as steps, so they get the same
   // treatment — the interpreter never sees them, but the candidate does.
-  checkChoices('welcome', copy.WELCOME_CHOICES);
+  checkChoices('opening menu', copy.ENTRY_CHOICES);
+  checkChoices('resume prompt', copy.RESUME_CHOICES);
   checkChoices('confirmation', copy.CONFIRM_CHOICES);
   checkChoices('edit menu', copy.EDIT_CHOICES);
   checkChoices('returning menu', copy.RETURNING_CHOICES);
@@ -126,5 +132,18 @@ export function validateCopy(): void {
   checkMessage('consent declined', copy.CONSENT_DECLINED);
   checkMessage('identity mismatch', copy.IDENTITY_MISMATCH);
   checkMessage('staff handoff', copy.STAFF_HANDOFF);
+  checkMessage('b2b handoff', copy.B2B_HANDOFF);
   checkMessage('deleted', copy.DELETED);
+  checkMessage('restarted', copy.RESTARTED);
+
+  // Tracking (§25). The three status replies are plain messages; the two that
+  // offer a way out are sent with options and share the interactive body.
+  checkMessage('track: ask for id', copy.TRACK_ASK_ID);
+  checkMessage('track: pending', copy.TRACK_PENDING);
+  checkMessage('track: completed', copy.TRACK_COMPLETED);
+  checkMessage('track: rejected', copy.TRACK_REJECTED);
+  checkInteractive('track: not found', copy.TRACK_NOT_FOUND);
+  checkInteractive('track: not registered', copy.TRACK_NOT_REGISTERED);
+  checkInteractive('resume prompt', copy.RESUME_PROMPT);
+  checkInteractive('reminder', copy.REMINDER);
 }
