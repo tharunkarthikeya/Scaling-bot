@@ -80,6 +80,14 @@ export async function buildServer(): Promise<FastifyInstance> {
         wamid: msg.wamid,
         type: msg.type === 'interactive' ? 'interactive' : msg.type,
         text: msg.text,
+        // The tapped option id and the message it came from. Both are parsed
+        // from the webhook and both must be persisted: the worker reads this
+        // row back, so anything dropped here is invisible to the engine. Without
+        // `replyId` every tap is handled as if the candidate had typed the
+        // button's title, which only works while the title matches a label we
+        // ship — not once a label is translated at send time.
+        ...(msg.replyId ? { replyId: msg.replyId } : {}),
+        ...(msg.contextWamid ? { contextWamid: msg.contextWamid } : {}),
         mediaId: msg.media?.id,
         filename: msg.media?.filename,
         mimeType: msg.media?.mimeType,

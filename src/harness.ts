@@ -673,6 +673,18 @@ verdict(
   `${questionsAsked} distinct questions`,
 );
 
+// The worker reads inbound rows back out of Mongo, so anything the webhook
+// handler forgets to persist is invisible to the engine. `replyId` was dropped
+// for a long time and nothing noticed: taps still worked, but only because the
+// button's title happened to match a label we ship.
+const taps = transcript.filter((m) => m.direction === 'inbound' && m.type === 'interactive');
+const tapsWithId = taps.filter((m) => !!m.replyId).length;
+verdict(
+  'button taps keep their option id',
+  taps.length > 0 && tapsWithId === taps.length,
+  `${tapsWithId}/${taps.length} taps carry replyId`,
+);
+
 const cvDoc = docs.find((d) => d.docType === 'cv');
 verdict(
   'CV stored and extracted',

@@ -605,6 +605,21 @@ export const OUT_OF_SCOPE: Localised = {
  * that" on its own tells the candidate nothing about what to do next. The
  * question always follows in the same message, with a way to reach a person.
  */
+/**
+ * Sent when a candidate taps a button from an earlier question.
+ *
+ * WhatsApp leaves every interactive message tappable forever — scrolling back
+ * and pressing an old option is easy to do by accident. Those taps must not be
+ * scored against whatever question is open now: several steps offer a "Yes",
+ * so a stale tap can otherwise be recorded as an answer to a question it was
+ * never about.
+ */
+export const OPTION_EXPIRED: Localised = {
+  en: 'That option belonged to an earlier question and is no longer active. Here is where we are now.',
+  ta: 'அந்த விருப்பம் முந்தைய கேள்விக்கானது, இப்போது செயலில் இல்லை. நாம் இப்போது இருக்கும் இடம் இதோ.',
+  hi: 'वह विकल्प पिछले सवाल का था और अब सक्रिय नहीं है। हम अभी यहाँ हैं।',
+};
+
 export const UNCLEAR: Localised = {
   en: 'Sorry, I could not use that as an answer. Please reply to the question below.',
   ta: 'மன்னிக்கவும், அதைப் பதிலாகப் பயன்படுத்த முடியவில்லை. கீழே உள்ள கேள்விக்குப் பதிலளிக்கவும்.',

@@ -1594,6 +1594,25 @@ export async function handleInboundMessage(payload: {
     return;
   }
 
+  // A tap that belongs to an earlier question answers that question, not this
+  // one. WhatsApp keeps every button live in the history, and several steps
+  // offer the same ids — "yes" appears on the passport, welding-certificate and
+  // training questions — so a stale tap can be recorded against a question it
+  // was never about. Meta tells us which message the button came from; if that
+  // message asked something else, the tap is refused and the open question is
+  // put back.
+  if (msg.replyId && msg.contextWamid) {
+    const asked = await messages().findOne({ wamid: msg.contextWamid, direction: 'outbound' });
+    if (asked?.step && asked.step !== step.id) {
+      logger.info(
+        { waId: candidate.waId, tapped: msg.replyId, from: asked.step, now: step.id },
+        'ignored a tap on an expired option',
+      );
+      await reply(candidate, await renderRetry(step, candidate, copy.OPTION_EXPIRED), step.id);
+      return;
+    }
+  }
+
   if (voiceNoteUnread) {
     await reply(
       candidate,

@@ -146,4 +146,5 @@ export function validateCopy(): void {
   checkInteractive('track: not registered', copy.TRACK_NOT_REGISTERED);
   checkInteractive('resume prompt', copy.RESUME_PROMPT);
   checkInteractive('reminder', copy.REMINDER);
+  checkInteractive('expired option', copy.OPTION_EXPIRED);
 }

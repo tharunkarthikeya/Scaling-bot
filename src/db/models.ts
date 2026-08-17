@@ -382,6 +382,14 @@ export interface MessageDoc {
   text?: string;
   /** For an interactive reply, the stable option id the candidate tapped. */
   replyId?: string;
+  /**
+   * The message this one is a reply to, as Meta reports it.
+   *
+   * For a tapped button it is the wamid of the message that offered it, which
+   * is the only way to tell whether the candidate answered the question on
+   * screen or scrolled back and tapped one from four questions ago.
+   */
+  contextWamid?: string;
   mediaId?: string;
   filename?: string;
   mimeType?: string;
