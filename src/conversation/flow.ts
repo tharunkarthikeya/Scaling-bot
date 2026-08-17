@@ -87,6 +87,15 @@ export interface Answer {
   fields?: Record<string, string>;
   /** Exactly what the candidate typed or said. Preserved alongside the standardised value (§27). */
   raw?: string;
+  /**
+   * True when the ids came from the candidate tapping an offered option.
+   *
+   * A tap and a model-classified sentence both arrive as ids, but they are not
+   * the same evidence: tapping "Fabrication / Welding" says only which category
+   * they are in, while typing "TIG welder" says what they actually do. §8 needs
+   * to tell them apart to know whether it may narrow a category on its own.
+   */
+  tapped?: boolean;
 }
 
 export interface FlowStep {
@@ -537,10 +546,21 @@ const EXPERIENCE_STEPS: FlowStep[] = [
     // it — writing "Fabrication / Welding" there also fed the category's own
     // label back into §8's keyword matching, which selected every pack under
     // the category and skipped the question that exists to choose between them.
-    apply: (a) => ({
-      primaryTrade: a.ids?.[0],
-      tradeFromList: !!a.ids?.length,
-    }),
+    /**
+     * A tapped category records the category. A typed answer records what they
+     * actually said.
+     *
+     * "Parota master", "JCB operator", "hotel cleaner" are all valid answers to
+     * this question that no button covers. The interpreter maps them to the
+     * category that does cover them; when nothing does, the answer is still
+     * kept in the candidate's own words under `other` (§27) rather than being
+     * discarded and the question asked again.
+     */
+    apply: (a) => {
+      if (a.ids?.length) return { primaryTrade: a.ids[0], tradeFromList: !!a.tapped };
+      const typed = (a.value ?? a.raw ?? '').trim();
+      return typed ? { primaryTrade: 'other', currentOccupation: typed } : {};
+    },
     clears: ['primaryTrade', 'tradeFromList', 'currentOccupation', 'tradeAnswers', 'tradePacks'],
   },
 

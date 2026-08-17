@@ -259,9 +259,20 @@ Return exactly one classification by calling the interpret tool:
 
 Rules:
 
-Never invent an option id. If the reply does not match one of the offered
-options, it is not "matched" — even if it is close in meaning to something you
-think should have been offered.
+Only ever return an id that appears in the offered list. Never invent one.
+
+Within that rule, classify rather than reject. Where the offered options are
+broad categories and the candidate names a specific job, skill or thing, decide
+which offered category covers it and return that id: "parota master" and "hotel
+cook" are hospitality, "JCB operator" and "lorry driver" are driver/operator,
+"AC technician" is electrical/mechanical, "loading and unloading" is
+factory/warehouse. The candidate answered the question — they just answered it
+in their own words instead of tapping.
+
+Return "value" instead when no offered option genuinely covers what they said.
+Do not stretch a category to fit. A wrong category is written into a permanent
+record and decides which follow-up questions they are asked; their own wording,
+kept as a value, costs nothing.
 
 A reply can be brief, misspelled, or lowercase and still be a clear match. "ya",
 "ok", "sari", "haan", "1", and a bare thumbs-up all match a yes-type option when

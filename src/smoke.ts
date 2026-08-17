@@ -16,9 +16,15 @@ import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import { chunkText } from './whatsapp/client.js';
 import { attributeInboundDocument, initialSlots } from './conversation/checklist.js';
-import { inferTradePacks, inEuropeRussiaBranch, nextStep, stepById } from './conversation/flow.js';
+import {
+  inferTradePacks,
+  inEuropeRussiaBranch,
+  nextStep,
+  stepById,
+  TRADE_CHOICES,
+} from './conversation/flow.js';
 import { validateCopy } from './conversation/validate.js';
-import { interpret } from './conversation/interpret.js';
+import { interpret, resolveOfferedIds } from './conversation/interpret.js';
 import {
   ageFrom,
   buildProfileWrite,
@@ -484,6 +490,26 @@ await check('a number picks the option at that position', async () => {
   });
   assert.equal(result.kind, 'matched');
   assert.deepEqual(result.kind === 'matched' && result.ids, ['iti']);
+});
+
+await check('an answer given as a position is recovered, not discarded', () => {
+  // The model classifies correctly and then answers with the option's place in
+  // the list ("6") instead of its id ("hospitality"). Discarding that turned
+  // every correct free-text answer to a choice question into "unclear".
+  assert.deepEqual(resolveOfferedIds(['hospitality'], TRADE_CHOICES), ['hospitality']);
+  assert.deepEqual(resolveOfferedIds(['6'], TRADE_CHOICES), ['hospitality']);
+  assert.deepEqual(resolveOfferedIds([6], TRADE_CHOICES), ['hospitality']);
+  assert.deepEqual(resolveOfferedIds(['1'], TRADE_CHOICES), ['fabrication_welding']);
+});
+
+await check('a position outside the offered list is still refused', () => {
+  // Recovery resolves against the offered list only — it cannot widen what the
+  // model is allowed to choose.
+  assert.deepEqual(resolveOfferedIds(['0'], TRADE_CHOICES), []);
+  assert.deepEqual(resolveOfferedIds([String(TRADE_CHOICES.length + 1)], TRADE_CHOICES), []);
+  assert.deepEqual(resolveOfferedIds(['doctor'], TRADE_CHOICES), []);
+  assert.deepEqual(resolveOfferedIds(['1.5'], TRADE_CHOICES), []);
+  assert.deepEqual(resolveOfferedIds(undefined, TRADE_CHOICES), []);
 });
 
 await check('DELETE is recognised anywhere, in any case', async () => {

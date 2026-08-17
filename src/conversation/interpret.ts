@@ -194,12 +194,48 @@ const INTERPRET_TOOL: Anthropic.Tool = {
   },
 };
 
+/**
+ * Turns what the model returned into ids that were genuinely offered.
+ *
+ * Two jobs. It drops anything that was not on the list — the prompt forbids
+ * inventing ids, and this is what makes that a guarantee rather than a rule.
+ * And it recovers a bare position: models classify the reply correctly and then
+ * answer with the option's place in the list rather than its id. Discarding
+ * that turned a right answer into "unclear" and re-asked a question the
+ * candidate had already answered — silently, for every free-text reply to every
+ * choice question.
+ *
+ * A position is resolved against the same offered list, so this cannot widen
+ * what the model is able to choose.
+ */
+export function resolveOfferedIds(returned: unknown, choices: Choice[]): string[] {
+  const valid = new Set(choices.map((c) => c.id));
+
+  return (Array.isArray(returned) ? returned : [])
+    .map(String)
+    .map((id) => {
+      if (valid.has(id)) return id;
+
+      const position = Number(id);
+      if (Number.isInteger(position) && position >= 1 && position <= choices.length) {
+        const recovered = choices[position - 1]!.id;
+        logger.debug({ returned: id, recovered }, 'interpreter answered with a position');
+        return recovered;
+      }
+      return undefined;
+    })
+    .filter((id): id is string => id !== undefined);
+}
+
 function describeQuestion(step: FlowStep, choices: Choice[]): string {
   const lines = [`Question asked: ${step.prompt.en}`];
 
   if (choices.length) {
-    lines.push('', 'Options offered (id — what it means):');
-    choices.forEach((c, i) => lines.push(`  ${i + 1}. ${c.id} — ${c.label.en}`));
+    // Not numbered. A leading "1." reads as the option's identifier, and the
+    // model returns "1" instead of the id — which then fails validation and a
+    // correctly classified answer is thrown away as unclear.
+    lines.push('', 'Options offered. Return the id exactly as written on the left:');
+    choices.forEach((c) => lines.push(`  ${c.id}  =  ${c.label.en}`));
     lines.push(
       '',
       step.input === 'multi_choice'
@@ -251,8 +287,6 @@ export async function interpret(params: InterpretParams): Promise<Interpretation
   const raw = params.text.trim();
   if (!raw) return { kind: 'unclear', raw };
 
-  const validIds = new Set(params.choices.map((c) => c.id));
-
   try {
     const response = await client.messages.create({
       model: config.CLAUDE_MODEL,
@@ -290,11 +324,7 @@ export async function interpret(params: InterpretParams): Promise<Interpretation
 
     switch (input.classification) {
       case 'matched': {
-        // Drop anything that was not actually offered. The prompt forbids
-        // inventing ids; this is what makes that a guarantee rather than a rule.
-        const ids = (Array.isArray(input.option_ids) ? input.option_ids : [])
-          .map(String)
-          .filter((id) => validIds.has(id));
+        const ids = resolveOfferedIds(input.option_ids, params.choices);
         if (!ids.length) return { kind: 'unclear', raw };
         return {
           kind: 'matched',

@@ -985,7 +985,7 @@ async function accumulateMultiSelect(
   // Tapped Done without choosing anything — ask again rather than record nothing.
   if (!pending.length) return 'waiting';
 
-  const answer: Answer = { ids: pending, raw: pending.join(', ') };
+  const answer: Answer = { ids: pending, raw: pending.join(', '), tapped: wasTapped };
 
   if (await handleSpecialStep(candidate, step, answer)) return 'handled';
   await recordAnswer(candidate, step, answer);
@@ -1675,12 +1675,16 @@ export async function handleInboundMessage(payload: {
     }
     if (outcome === 'handled') return;
   } else {
+    // `tapped` distinguishes an option the candidate actually pressed from one
+    // the interpreter chose on their behalf. Both arrive as ids; only the first
+    // is a statement that they are in that category and nothing more.
+    const tapped = !!msg.replyId;
     const answer: Answer =
       interpretation.kind === 'matched'
-        ? { ids: interpretation.ids, raw: interpretation.raw }
+        ? { ids: interpretation.ids, raw: interpretation.raw, tapped }
         : interpretation.kind === 'structured'
-          ? { fields: interpretation.fields, raw: interpretation.raw }
-          : { value: interpretation.value, raw: interpretation.raw };
+          ? { fields: interpretation.fields, raw: interpretation.raw, tapped }
+          : { value: interpretation.value, raw: interpretation.raw, tapped };
 
     if (await handleSpecialStep(candidate, step, answer)) return;
     await recordAnswer(candidate, step, answer);
