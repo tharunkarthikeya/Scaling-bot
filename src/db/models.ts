@@ -1,6 +1,7 @@
-import type { Collection, ObjectId } from 'mongodb';
+import { ObjectId, type Collection } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../logger.js';
+import { DOCUMENTS, TUNABLES } from '../conversation/rules.js';
 import type { Language } from '../conversation/language.js';
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -395,8 +396,15 @@ export interface CandidateDoc {
   updatedAt: Date;
 }
 
+/**
+ * One message, inbound or outbound.
+ *
+ * Stored inside the session it belongs to rather than as a row of its own —
+ * see `SessionDoc`. Everything here is what it always was; only where it lives
+ * has changed, and `at` is the old `createdAt` under the name it reads better
+ * as inside a list of turns.
+ */
 export interface MessageDoc {
-  _id?: ObjectId;
   waId: string;
   direction: 'inbound' | 'outbound';
   /** Meta's message id. Unique per direction; used for inbound idempotency. */
@@ -421,7 +429,41 @@ export interface MessageDoc {
   /** Set on outbound rows when SHADOW_MODE suppressed the actual send. */
   shadowed?: boolean;
   error?: string;
-  createdAt: Date;
+  at: Date;
+}
+
+/**
+ * One sitting: everything said between a candidate and the bot in one go.
+ *
+ * A message per document made `messages` unreadable — hundreds of rows per
+ * candidate, in delivery order, with a conversation reconstructable only by
+ * sorting and squinting. A session document *is* the transcript: open one and
+ * read it top to bottom.
+ *
+ * A sitting ends the way §21's session does, after
+ * `TUNABLES.sessionTimeoutMinutes` of silence, and `appendTurn` decides that
+ * from the gap rather than from the candidate's state — so the log stays
+ * correct even when the idle sweep never ran, which a restart or an outage can
+ * cause. `closeOpenSession` is called from the places the app knows a sitting
+ * ended, so `endedAt` reflects what happened rather than only what lapsed.
+ *
+ * `open` exists because MongoDB's partial indexes cannot filter on a missing
+ * field. It is what makes "at most one open session per candidate" an index
+ * rather than a convention, and it is unset — not set false — when a session
+ * closes, so the partial index stops covering the row.
+ */
+export interface SessionDoc {
+  _id?: ObjectId;
+  waId: string;
+  /** Present only while the session is open. See the note above. */
+  open?: true;
+  startedAt: Date;
+  /** When the last turn landed. What the next turn is measured against. */
+  lastAt: Date;
+  /** Set when the sitting ends. */
+  endedAt?: Date;
+  turnCount: number;
+  turns: MessageDoc[];
 }
 
 export interface OcrField {
@@ -437,12 +479,41 @@ export interface OcrField {
   source?: string;
 }
 
-export interface StoredDocumentDoc {
-  _id?: ObjectId;
-  candidateId: ObjectId;
-  waId: string;
-  /** Slot key, e.g. 'cv' | 'passport' | 'aadhaar' | 'pan'. */
-  docType: string;
+/** What an extractor made of one upload. Unchanged by the regrouping. */
+export interface UploadOcr {
+  status: 'queued' | 'running' | 'done' | 'failed' | 'skipped';
+  extractor?: 'passport' | 'resume' | 'document';
+  startedAt?: Date;
+  finishedAt?: Date;
+  error?: string;
+  /** Raw payload, kept verbatim so extraction can be re-derived without re-OCRing. */
+  raw?: unknown;
+  /** Field-level extraction with provenance. The CRM reads this, not `raw`. */
+  fields?: OcrField[];
+  confidence?: number | null;
+  needsReview?: boolean;
+  reviewReasons?: string[];
+  /** Document-completeness verdict (§14). Separate from extraction confidence. */
+  completeness?: {
+    complete: boolean;
+    /** Plain-language problems to quote back to the candidate. */
+    problems: string[];
+    /** Page numbers to re-request, when the extractor can tell us. */
+    missingPages?: number[];
+    /** On `wrong_document`: which document the upload appears to be, if known. */
+    looksLike?: string;
+  };
+}
+
+/**
+ * One file a candidate sent.
+ *
+ * `uploadId` is its own, and it is what the OCR job carries — the row's `_id`
+ * used to serve that purpose, and an upload inside an array has no `_id` of its
+ * own to use.
+ */
+export interface DocumentUpload {
+  uploadId: ObjectId;
   mediaId: string;
   storageKey: string;
   mimeType: string;
@@ -452,30 +523,53 @@ export interface StoredDocumentDoc {
   caption?: string;
   /** Set when a later upload replaced this one. Old versions are kept (§22). */
   supersededAt?: Date;
-  ocr?: {
-    status: 'queued' | 'running' | 'done' | 'failed' | 'skipped';
-    extractor?: 'passport' | 'resume' | 'document';
-    startedAt?: Date;
-    finishedAt?: Date;
-    error?: string;
-    /** Raw payload, kept verbatim so extraction can be re-derived without re-OCRing. */
-    raw?: unknown;
-    /** Field-level extraction with provenance. The CRM reads this, not `raw`. */
-    fields?: OcrField[];
-    confidence?: number | null;
-    needsReview?: boolean;
-    reviewReasons?: string[];
-    /** Document-completeness verdict (§14). Separate from extraction confidence. */
-    completeness?: {
-      complete: boolean;
-      /** Plain-language problems to quote back to the candidate. */
-      problems: string[];
-      /** Page numbers to re-request, when the extractor can tell us. */
-      missingPages?: number[];
-    };
-  };
+  ocr?: UploadOcr;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** Every version of one kind of document, oldest first. */
+export interface DocumentSection {
+  uploads: DocumentUpload[];
+}
+
+/**
+ * Everything one candidate has sent, grouped by what it is.
+ *
+ * A row per upload made this collection unreadable: a candidate who re-sent a
+ * blurred passport twice had five rows across three kinds of document, and
+ * telling which was current meant sorting on `supersededAt`. One record per
+ * candidate, one section per kind, and the current version of anything is the
+ * last entry in its section.
+ *
+ * The sections are the document kinds in `rules.ts` and nothing else. A kind
+ * with no uploads has no section at all rather than an empty one, so what is
+ * present is what was sent.
+ *
+ * Nothing is ever removed. §22 forbids destroying a superseded upload — a
+ * candidate who sends a better scan of their passport has not withdrawn the
+ * first one — so a replacement is a `supersededAt` on the old entry and a new
+ * entry after it.
+ */
+export interface CandidateDocumentsDoc {
+  _id?: ObjectId;
+  waId: string;
+  candidateId: ObjectId;
+  cv?: DocumentSection;
+  passport?: DocumentSection;
+  aadhaar?: DocumentSection;
+  pan?: DocumentSection;
+  driving_licence?: DocumentSection;
+  certificate?: DocumentSection;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** An upload with the candidate and kind it belongs to, for callers that flatten. */
+export interface LocatedUpload extends DocumentUpload {
+  waId: string;
+  candidateId: ObjectId;
+  docType: string;
 }
 
 /** Inbound webhook dedupe. Meta retries deliveries; without this, candidates get asked twice. */
@@ -513,9 +607,9 @@ export interface AuditEventDoc {
 
 export const candidates = (): Collection<CandidateDoc> =>
   getDb().collection<CandidateDoc>('candidates');
-export const messages = (): Collection<MessageDoc> => getDb().collection<MessageDoc>('messages');
-export const storedDocuments = (): Collection<StoredDocumentDoc> =>
-  getDb().collection<StoredDocumentDoc>('documents');
+export const messages = (): Collection<SessionDoc> => getDb().collection<SessionDoc>('messages');
+export const storedDocuments = (): Collection<CandidateDocumentsDoc> =>
+  getDb().collection<CandidateDocumentsDoc>('documents');
 export const processedEvents = (): Collection<ProcessedEventDoc> =>
   getDb().collection<ProcessedEventDoc>('processed_events');
 export const auditEvents = (): Collection<AuditEventDoc> =>
@@ -574,25 +668,34 @@ export async function ensureIndexes(): Promise<void> {
   ]);
 
   await createIndexes(messages(), [
-    { key: { waId: 1, createdAt: -1 }, name: 'waId_createdAt' },
-    // Partial, not sparse. Outbound rows can legitimately carry no wamid —
-    // shadow mode, a send that failed, a Meta response without an id — and a
-    // sparse index still indexes an explicit null, so the second such row
-    // collides with the first and the reply is lost.
+    { key: { waId: 1, startedAt: -1 }, name: 'waId_startedAt' },
+    // At most one open sitting per candidate, enforced rather than assumed —
+    // two open sessions would split one conversation across two documents and
+    // neither would read as a transcript. Partial on `open` because MongoDB
+    // cannot build a partial index on a field being absent.
     {
-      key: { wamid: 1 },
+      key: { waId: 1 },
       unique: true,
-      name: 'wamid_unique',
-      partialFilterExpression: { wamid: { $type: 'string' } },
+      name: 'one_open_session',
+      partialFilterExpression: { open: true },
     },
+    // Both wamid lookups go through this: the worker reading back the message
+    // it was queued for, and the stale-tap guard asking which question an
+    // outbound message posed. Multikey over the turns array.
+    { key: { 'turns.wamid': 1 }, name: 'turns_wamid' },
   ]);
 
+  // One record per candidate, so the sections are addressable by waId alone and
+  // a second record for the same person cannot exist.
   await createIndexes(storedDocuments(), [
-    { key: { candidateId: 1, docType: 1, createdAt: -1 }, name: 'candidate_docType' },
-    { key: { 'ocr.status': 1, createdAt: 1 }, name: 'ocr_status' },
-    // The CRM's review queue reads off this.
-    { key: { 'ocr.needsReview': 1, createdAt: 1 }, name: 'ocr_needsReview' },
-    { key: { sha256: 1 }, name: 'sha256' },
+    { key: { waId: 1 }, unique: true, name: 'waId_unique' },
+    { key: { candidateId: 1 }, name: 'candidateId' },
+    // The CRM's review queue reads across sections, so it needs one index per
+    // kind — a multikey index cannot span sibling fields.
+    ...DOCUMENTS.map((d) => ({
+      key: { [`${d.id}.uploads.ocr.needsReview`]: 1 },
+      name: `${d.id}_needsReview`,
+    })),
   ]);
 
   await createIndexes(processedEvents(), [
@@ -607,6 +710,254 @@ export async function ensureIndexes(): Promise<void> {
   ]);
 
   logger.info('mongodb indexes ensured');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Sessions
+ *
+ * The only four things anything outside this file does with the transcript:
+ * add a turn, find a turn by its wamid, record that a send failed, and close
+ * the sitting. Keeping them here is what lets the storage shape change without
+ * the engine knowing it did.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** How long a sitting may go quiet before the next message starts a new one. */
+const SESSION_GAP_MS = TUNABLES.sessionTimeoutMinutes * 60_000;
+
+/**
+ * Appends one message to the candidate's open session, starting one if needed.
+ *
+ * The upsert and the unique partial index do the concurrency work between them:
+ * two turns arriving at once either both append to the same session, or one
+ * loses the insert race with a duplicate-key error and retries into the session
+ * the other just created.
+ */
+export async function appendTurn(turn: MessageDoc): Promise<void> {
+  const at = turn.at;
+
+  // A sitting that went quiet for longer than the timeout is over, whether or
+  // not the sweep noticed. Closing it here keeps the transcript honest.
+  await messages().updateOne(
+    { waId: turn.waId, open: true, lastAt: { $lt: new Date(at.getTime() - SESSION_GAP_MS) } },
+    { $set: { endedAt: at }, $unset: { open: '' } },
+  );
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await messages().updateOne(
+        { waId: turn.waId, open: true },
+        {
+          $push: { turns: turn },
+          $inc: { turnCount: 1 },
+          $set: { lastAt: at },
+          $setOnInsert: { waId: turn.waId, open: true, startedAt: at },
+        },
+        { upsert: true },
+      );
+      return;
+    } catch (err) {
+      // Two turns raced to open the same session. The other one won; append to it.
+      if ((err as { code?: number }).code !== 11000 || attempt === 1) throw err;
+    }
+  }
+}
+
+/** One turn, found by the id Meta gave it. */
+export async function findTurn(
+  wamid: string,
+  direction: 'inbound' | 'outbound',
+): Promise<MessageDoc | undefined> {
+  const session = await messages().findOne(
+    { turns: { $elemMatch: { wamid, direction } } },
+    { projection: { turns: { $elemMatch: { wamid, direction } } } },
+  );
+  return session?.turns?.[0];
+}
+
+/** Records that Meta could not deliver an outbound message. */
+export async function markTurnFailed(wamid: string, error: string): Promise<void> {
+  await messages().updateOne(
+    { turns: { $elemMatch: { wamid, direction: 'outbound' } } },
+    { $set: { 'turns.$[turn].error': error } },
+    { arrayFilters: [{ 'turn.wamid': wamid, 'turn.direction': 'outbound' }] },
+  );
+}
+
+/**
+ * Ends the open sitting, if there is one.
+ *
+ * Called where the app knows a session finished — the idle sweep, a restart, a
+ * completed registration — so `endedAt` says when rather than being inferred
+ * from the next message that happens to arrive.
+ */
+export async function closeOpenSession(waId: string, at = new Date()): Promise<void> {
+  await messages().updateOne(
+    { waId, open: true },
+    { $set: { endedAt: at }, $unset: { open: '' } },
+  );
+}
+
+/**
+ * Every turn with this candidate, across every sitting, in order.
+ *
+ * The flat view, for callers that want the conversation rather than the
+ * sittings it happened to be split into — the harness printing a transcript,
+ * and anything counting what the bot said.
+ */
+export async function turnsFor(waId: string): Promise<MessageDoc[]> {
+  const sessions = await messages().find({ waId }).sort({ startedAt: 1 }).toArray();
+  return sessions.flatMap((session) => session.turns ?? []);
+}
+
+/** Every sitting with this candidate, oldest first. The transcript. */
+export async function sessionsFor(waId: string, limit = 50): Promise<SessionDoc[]> {
+  return messages().find({ waId }).sort({ startedAt: 1 }).limit(limit).toArray();
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Documents
+ *
+ * Every read and write of a candidate's files goes through these five, so the
+ * section-per-kind layout stays here rather than spreading into the engine and
+ * the OCR worker as string paths.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** Kinds that may be stored, from `rules.ts`. Guards a dynamic field path. */
+function sectionFor(docType: string): string {
+  if (!DOCUMENTS.some((d) => d.id === docType)) {
+    throw new Error(`unknown document kind "${docType}"`);
+  }
+  return docType;
+}
+
+/**
+ * Files one upload into its section, superseding whatever it replaces.
+ *
+ * The previous current version is marked rather than removed (§22), so the
+ * section is a history and the last entry is what counts now.
+ */
+export async function addUpload(params: {
+  waId: string;
+  candidateId: ObjectId;
+  docType: string;
+  upload: Omit<DocumentUpload, 'uploadId' | 'createdAt' | 'updatedAt'>;
+}): Promise<ObjectId> {
+  const section = sectionFor(params.docType);
+  const now = new Date();
+  const uploadId = new ObjectId();
+
+  // Everything already in this section is now a previous version.
+  //
+  // Guarded on the section existing: MongoDB refuses an `arrayFilters` update
+  // when the path is absent — "the path must exist in the document in order to
+  // apply array updates" — so the first upload of a kind would throw rather
+  // than supersede the nothing that is there.
+  await storedDocuments().updateOne(
+    { waId: params.waId, [`${section}.uploads.0`]: { $exists: true } },
+    { $set: { [`${section}.uploads.$[current].supersededAt`]: now } },
+    { arrayFilters: [{ 'current.supersededAt': { $exists: false } }] },
+  );
+
+  await storedDocuments().updateOne(
+    { waId: params.waId },
+    {
+      $push: { [`${section}.uploads`]: { ...params.upload, uploadId, createdAt: now, updatedAt: now } },
+      $set: { candidateId: params.candidateId, updatedAt: now },
+      $setOnInsert: { waId: params.waId, createdAt: now },
+    },
+    { upsert: true },
+  );
+
+  return uploadId;
+}
+
+/** One upload, by the id the OCR job carries. */
+export async function findUpload(
+  waId: string,
+  docType: string,
+  uploadId: ObjectId,
+): Promise<DocumentUpload | undefined> {
+  const section = sectionFor(docType);
+  const record = await storedDocuments().findOne(
+    { waId },
+    { projection: { [`${section}.uploads`]: 1 } },
+  );
+  return (record as unknown as Record<string, DocumentSection | undefined> | null)?.[
+    section
+  ]?.uploads?.find(
+    (u) => u.uploadId.equals(uploadId),
+  );
+}
+
+/** Writes fields onto one upload, addressed within its section. */
+export async function updateUpload(
+  waId: string,
+  docType: string,
+  uploadId: ObjectId,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const section = sectionFor(docType);
+  const now = new Date();
+  const set: Record<string, unknown> = { updatedAt: now, [`${section}.uploads.$[u].updatedAt`]: now };
+  for (const [key, value] of Object.entries(patch)) {
+    set[`${section}.uploads.$[u].${key}`] = value;
+  }
+
+  await storedDocuments().updateOne(
+    { waId, [`${section}.uploads.0`]: { $exists: true } },
+    { $set: set },
+    { arrayFilters: [{ 'u.uploadId': uploadId }] },
+  );
+}
+
+/**
+ * Marks every current upload in every section as superseded (§23).
+ *
+ * One update per section rather than one across all of them, because an
+ * `arrayFilters` update throws on a section the candidate never sent anything
+ * for — and most candidates have several of those.
+ */
+export async function supersedeAllUploads(waId: string, at = new Date()): Promise<void> {
+  for (const requirement of DOCUMENTS) {
+    await storedDocuments().updateOne(
+      { waId, [`${requirement.id}.uploads.0`]: { $exists: true } },
+      {
+        $set: { updatedAt: at, [`${requirement.id}.uploads.$[current].supersededAt`]: at },
+      },
+      { arrayFilters: [{ 'current.supersededAt': { $exists: false } }] },
+    );
+  }
+}
+
+/** Everything one candidate has sent, as stored. */
+export async function documentsFor(waId: string): Promise<CandidateDocumentsDoc | null> {
+  return storedDocuments().findOne({ waId });
+}
+
+/**
+ * Every upload for a candidate as one flat list, newest last.
+ *
+ * For callers that want the files rather than the filing — the CRM listing, the
+ * inspector, the harness.
+ */
+export async function uploadsFor(waId: string): Promise<LocatedUpload[]> {
+  const record = await storedDocuments().findOne({ waId });
+  if (!record) return [];
+  return flattenUploads(record);
+}
+
+/** The same flattening, for a record already in hand. */
+export function flattenUploads(record: CandidateDocumentsDoc): LocatedUpload[] {
+  const out: LocatedUpload[] = [];
+  for (const requirement of DOCUMENTS) {
+    const section = (record as unknown as Record<string, DocumentSection | undefined>)[
+      requirement.id
+    ];
+    for (const upload of section?.uploads ?? []) {
+      out.push({ ...upload, waId: record.waId, candidateId: record.candidateId, docType: requirement.id });
+    }
+  }
+  return out.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 }
 
 /**

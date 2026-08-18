@@ -5,10 +5,14 @@ import { logger } from './logger.js';
 import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import {
+  appendTurn,
   claimEvent,
-  messages,
+  markTurnFailed,
+  sessionsFor,
   candidates,
   storedDocuments,
+  uploadsFor,
+  flattenUploads,
   recordAudit,
   APPLICATION_STATUSES,
   type ApplicationStatus,
@@ -20,6 +24,19 @@ declare module 'fastify' {
   interface FastifyRequest {
     rawBody?: Buffer;
   }
+}
+
+/**
+ * Strips the raw extractor payload from every upload.
+ *
+ * It is the largest thing in the record by far and nothing reading these
+ * endpoints wants it — the structured fields carry the same information with
+ * provenance attached.
+ */
+function withoutRawOcr<T extends { ocr?: { raw?: unknown } }>(uploads: T[]): T[] {
+  return uploads.map((upload) =>
+    upload.ocr ? { ...upload, ocr: { ...upload.ocr, raw: undefined } } : upload,
+  );
 }
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -74,7 +91,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         continue;
       }
 
-      await messages().insertOne({
+      await appendTurn({
         waId: msg.waId,
         direction: 'inbound',
         wamid: msg.wamid,
@@ -91,7 +108,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         mediaId: msg.media?.id,
         filename: msg.media?.filename,
         mimeType: msg.media?.mimeType,
-        createdAt: msg.timestamp,
+        at: msg.timestamp,
       });
 
       await queue.enqueue('inbound_message', {
@@ -109,10 +126,7 @@ export async function buildServer(): Promise<FastifyInstance> {
           { wamid: status.wamid, waId: status.waId, reason: status.errorTitle },
           'outbound message failed',
         );
-        await messages().updateOne(
-          { wamid: status.wamid },
-          { $set: { error: status.errorTitle ?? 'delivery failed' } },
-        );
+        await markTurnFailed(status.wamid, status.errorTitle ?? 'delivery failed');
       }
     }
 
@@ -170,13 +184,11 @@ export async function buildServer(): Promise<FastifyInstance> {
       if (!candidate) return res.code(404).send({ error: 'not found' });
 
       const [transcript, documents] = await Promise.all([
-        messages().find({ waId }).sort({ createdAt: 1, _id: 1 }).limit(500).toArray(),
-        // Drop the raw OCR payload — it is large and the structured fields
-        // are what a reader actually wants.
-        storedDocuments()
-          .find({ waId }, { projection: { 'ocr.raw': 0 } })
-          .sort({ createdAt: 1 })
-          .toArray(),
+        // Sittings, oldest first. Each one reads as a transcript on its own.
+        sessionsFor(waId),
+        // Flat and oldest first, with the raw OCR payload dropped — it is large
+        // and the structured fields are what a reader actually wants.
+        uploadsFor(waId).then(withoutRawOcr),
       ]);
 
       return { candidate, documents, transcript };
@@ -239,15 +251,22 @@ export async function buildServer(): Promise<FastifyInstance> {
     /** The review queue: documents whose extraction a human must confirm. */
     app.get('/api/documents', async (req) => {
       const q = req.query as { needsReview?: string; waId?: string; limit?: string };
-      const filter: Record<string, unknown> = {};
-      if (q.needsReview === 'true') filter['ocr.needsReview'] = true;
-      if (q.waId) filter.waId = q.waId;
+      const limit = Math.min(Number(q.limit) || 50, 200);
 
-      const rows = await storedDocuments()
-        .find(filter, { projection: { 'ocr.raw': 0 } })
-        .sort({ createdAt: -1 })
-        .limit(Math.min(Number(q.limit) || 50, 200))
+      // One record per candidate now, so the review queue is assembled from the
+      // sections rather than read straight off matching rows.
+      const records = await storedDocuments()
+        .find(q.waId ? { waId: q.waId } : {})
+        .sort({ updatedAt: -1 })
+        .limit(limit)
         .toArray();
+
+      let uploads = records.flatMap(flattenUploads);
+      if (q.needsReview === 'true') uploads = uploads.filter((u) => u.ocr?.needsReview);
+
+      const rows = withoutRawOcr(uploads)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, limit);
 
       return { count: rows.length, documents: rows };
     });

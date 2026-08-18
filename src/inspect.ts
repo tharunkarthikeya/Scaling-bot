@@ -38,7 +38,9 @@ process.env.MONGODB_URI = mongo.getUri();
 process.env.MONGODB_DB = 'mountroad_wa_bot';
 
 const { connectDb, closeDb } = await import('./db/client.js');
-const { candidates, storedDocuments } = await import('./db/models.js');
+const { candidates, storedDocuments, uploadsFor, flattenUploads } = await import(
+  './db/models.js'
+);
 
 await connectDb();
 
@@ -57,10 +59,12 @@ function fieldTable(fields: Array<{ key: string; value: string; confidence: numb
 }
 
 if (reviewOnly) {
-  const docs = await storedDocuments()
-    .find({ 'ocr.needsReview': true })
-    .sort({ createdAt: -1 })
-    .toArray();
+  // Assembled from the sections: the flag lives on an upload, and uploads live
+  // inside one record per candidate.
+  const docs = (await storedDocuments().find({}).toArray())
+    .flatMap(flattenUploads)
+    .filter((u) => u.ocr?.needsReview)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   console.log(`\n${B}Documents awaiting review: ${docs.length}${R}\n`);
   for (const d of docs) {
@@ -102,7 +106,7 @@ if (reviewOnly) {
       console.log(`    ${id.padEnd(20)} ${slot.status}  ${D}asked ${slot.askedCount}x${R}`);
     }
 
-    const docs = await storedDocuments().find({ waId: waIdArg }).sort({ createdAt: 1 }).toArray();
+    const docs = await uploadsFor(waIdArg);
     console.log(`\n  ${B}documents (${docs.length})${R}`);
     for (const d of docs) {
       const ok = d.ocr?.status === 'done';
@@ -121,7 +125,7 @@ if (reviewOnly) {
   const rows = await candidates().find({}).sort({ updatedAt: -1 }).limit(50).toArray();
   console.log(`\n${B}Candidates: ${rows.length}${R}\n`);
   for (const c of rows) {
-    const docCount = await storedDocuments().countDocuments({ waId: c.waId });
+    const docCount = (await uploadsFor(c.waId)).length;
     console.log(
       `  ${c.waId.padEnd(16)} ${(c.candidateId ?? '—').padEnd(11)} ` +
         `${(c.profileName ?? '').padEnd(16)} ${c.stage.padEnd(24)} ` +

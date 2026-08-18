@@ -1,7 +1,14 @@
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { storedDocuments, type OcrField } from '../db/models.js';
+import {
+  documentsFor,
+  findUpload,
+  flattenUploads,
+  storedDocuments,
+  updateUpload,
+  type OcrField,
+} from '../db/models.js';
 import { readFile } from '../storage/index.js';
 import { withCandidateLock } from '../queue/index.js';
 import { TUNABLES } from '../conversation/rules.js';
@@ -860,13 +867,17 @@ export async function ocrHealth(): Promise<{ ok: boolean; detail: string }> {
  * difference raises a flag for the documentation team and nothing else.
  */
 async function runIdentityComparison(candidateId: ObjectId): Promise<void> {
-  const docs = await storedDocuments()
-    .find({ candidateId, supersededAt: { $exists: false } })
-    .toArray();
+  const record = await storedDocuments().findOne({ candidateId });
+  if (!record) return;
+
+  // The current version of each kind — a superseded upload is a previous
+  // answer, and comparing against it would flag a difference the candidate has
+  // already corrected.
+  const current = flattenUploads(record).filter((u) => !u.supersededAt);
 
   const sources: Record<string, { name?: string; dateOfBirth?: string; fatherName?: string }> = {};
 
-  for (const doc of docs) {
+  for (const doc of current) {
     const fields = doc.ocr?.fields;
     if (!fields?.length) continue;
     sources[doc.docType] =
@@ -903,24 +914,33 @@ function profileFromIdentityDocument(
   return patch;
 }
 
-export async function processOcrJob(payload: { documentId: string }): Promise<void> {
-  const _id = new ObjectId(payload.documentId);
-  const doc = await storedDocuments().findOne({ _id });
+export async function processOcrJob(payload: {
+  waId: string;
+  docType: string;
+  uploadId: string;
+}): Promise<void> {
+  const { waId, docType } = payload;
+  const uploadId = new ObjectId(payload.uploadId);
+  const doc = await findUpload(waId, docType, uploadId);
 
   if (!doc) {
-    logger.warn({ documentId: payload.documentId }, 'ocr job for unknown document');
+    logger.warn(payload, 'ocr job for unknown upload');
     return;
   }
 
-  const extractor = requirementFor(doc.docType)?.ocr;
+  const record = await documentsFor(waId);
+  const candidateId = record?.candidateId;
+  if (!candidateId) {
+    logger.warn(payload, 'ocr job for an upload with no candidate');
+    return;
+  }
+
+  const extractor = requirementFor(docType)?.ocr;
   if (!extractor || extractor === 'none') {
-    await storedDocuments().updateOne(
-      { _id },
-      { $set: { 'ocr.status': 'skipped', updatedAt: new Date() } },
-    );
+    await updateUpload(waId, docType, uploadId, { 'ocr.status': 'skipped' });
     // Nothing to read, so the conversation moves on immediately.
-    await withCandidateLock(doc.waId, () =>
-      resumeAfterDocument(doc.candidateId, doc.docType, {
+    await withCandidateLock(waId, () =>
+      resumeAfterDocument(candidateId, docType, {
         complete: true,
         verdict: 'ok',
         problems: [],
@@ -929,17 +949,11 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
     return;
   }
 
-  await storedDocuments().updateOne(
-    { _id },
-    {
-      $set: {
-        'ocr.status': 'running',
-        'ocr.extractor': extractor,
-        'ocr.startedAt': new Date(),
-        updatedAt: new Date(),
-      },
-    },
-  );
+  await updateUpload(waId, docType, uploadId, {
+    'ocr.status': 'running',
+    'ocr.extractor': extractor,
+    'ocr.startedAt': new Date(),
+  });
 
   try {
     const buffer = await readFile(doc.storageKey);
@@ -948,29 +962,23 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
       buffer,
       mimeType: doc.mimeType,
       filename: doc.originalFilename ?? doc.storageKey.split('/').pop() ?? 'upload',
-      docType: doc.docType,
+      docType,
     });
 
-    await storedDocuments().updateOne(
-      { _id },
-      {
-        $set: {
-          ocr: {
-            status: 'done',
-            extractor,
-            startedAt: doc.ocr?.startedAt,
-            finishedAt: new Date(),
-            raw: outcome.raw,
-            fields: outcome.fields,
-            confidence: outcome.confidence,
-            needsReview: outcome.needsReview,
-            reviewReasons: outcome.reviewReasons,
-            completeness: outcome.completeness,
-          },
-          updatedAt: new Date(),
-        },
+    await updateUpload(waId, docType, uploadId, {
+      ocr: {
+        status: 'done',
+        extractor,
+        startedAt: doc.ocr?.startedAt,
+        finishedAt: new Date(),
+        raw: outcome.raw,
+        fields: outcome.fields,
+        confidence: outcome.confidence,
+        needsReview: outcome.needsReview,
+        reviewReasons: outcome.reviewReasons,
+        completeness: outcome.completeness,
       },
-    );
+    });
 
     // From here on this job writes profile fields and then asks a question off
     // the back of them, which is the same thing an inbound turn does — so it
@@ -983,10 +991,10 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
     // The lock is taken *here* rather than around the whole job on purpose:
     // extraction takes up to 120 seconds, and holding it for that long would
     // freeze the conversation while the file is read.
-    await withCandidateLock(doc.waId, async () => {
+    await withCandidateLock(waId, async () => {
       await markSlotFromOcr(
-        doc.candidateId,
-        doc.docType,
+        candidateId,
+        docType,
         !outcome.completeness.complete
           ? 'incomplete'
           : outcome.needsReview
@@ -998,8 +1006,8 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
       // answers are never asked. Marked unverified; a person confirms it (§27).
       const patch =
         extractor === 'resume'
-          ? extractFromCv(outcome.fields, doc.waId).patch
-          : profileFromIdentityDocument(doc.docType, outcome.fields);
+          ? extractFromCv(outcome.fields, waId).patch
+          : profileFromIdentityDocument(docType, outcome.fields);
 
       // Nothing is written from a file that is not the document it was filed
       // as. Whatever an Aadhaar card yields under the resume extractor is not
@@ -1008,23 +1016,22 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
 
       if (trustworthy && Object.keys(patch).length) {
         await mergeExtractedProfile(
-          doc.candidateId,
+          candidateId,
           patch,
           extractor === 'resume' ? 'cv' : 'document',
           outcome.confidence,
         );
       }
 
-      await runIdentityComparison(doc.candidateId);
+      await runIdentityComparison(candidateId);
 
       // Moves the conversation on: the acknowledgement, or the re-ask (§14).
-      await resumeAfterDocument(doc.candidateId, doc.docType, outcome.completeness);
+      await resumeAfterDocument(candidateId, docType, outcome.completeness);
     });
 
     logger.info(
       {
-        documentId: payload.documentId,
-        docType: doc.docType,
+        ...payload,
         extractor,
         fields: outcome.fields.length,
         confidence: outcome.confidence,
@@ -1034,26 +1041,20 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
       'ocr complete',
     );
   } catch (err) {
-    logger.error({ err, documentId: payload.documentId }, 'ocr failed');
-    await storedDocuments().updateOne(
-      { _id },
-      {
-        $set: {
-          'ocr.status': 'failed',
-          'ocr.finishedAt': new Date(),
-          'ocr.error': err instanceof Error ? err.message : String(err),
-          'ocr.needsReview': true,
-          updatedAt: new Date(),
-        },
-      },
-    );
+    logger.error({ err, ...payload }, 'ocr failed');
+    await updateUpload(waId, docType, uploadId, {
+      'ocr.status': 'failed',
+      'ocr.finishedAt': new Date(),
+      'ocr.error': err instanceof Error ? err.message : String(err),
+      'ocr.needsReview': true,
+    });
 
     // The file is on disk; what failed is our reading of it. A failed extraction
     // is a review task, not a reason to make the candidate photograph their
     // passport again — so the upload is acknowledged and staff pick it up.
-    await withCandidateLock(doc.waId, async () => {
-      await markSlotFromOcr(doc.candidateId, doc.docType, 'ocr_failed');
-      await resumeAfterDocument(doc.candidateId, doc.docType, {
+    await withCandidateLock(waId, async () => {
+      await markSlotFromOcr(candidateId, docType, 'ocr_failed');
+      await resumeAfterDocument(candidateId, docType, {
         complete: true,
         verdict: 'ok',
         problems: ['extraction failed; needs a manual check'],

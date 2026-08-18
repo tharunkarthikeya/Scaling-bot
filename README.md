@@ -78,7 +78,7 @@ real traffic before going live.
 | `src/whatsapp/` | Signature check, webhook parsing, Graph API client, rate limiter. |
 | `src/ocr/veris.ts` | Veris OCR client, upload inspection, and queue handler. |
 | `src/storage/` | File storage (local volume today, swappable for S3/R2). |
-| `src/db/models.ts` | Collections, indexes, and the dedupe claim. |
+| `src/db/models.ts` | Collections, indexes, the dedupe claim, and the session and document helpers everything else reads through. |
 | `src/server.ts` | Fastify routes: webhook, CRM reads, and the one CRM write. |
 
 ## How a message flows
@@ -206,6 +206,18 @@ or a second instance cannot produce a second one.
 **The webhook acks fast.** OCR takes up to 120s and the model call takes
 seconds; Meta wants a response in about five. Everything real happens on the
 queue.
+
+**A conversation is one document, and so is a candidate's paperwork.**
+`messages` holds one document per sitting — `turns` in order, `endedAt` when it
+closed — because a row per message made the collection unreadable and a
+transcript something you reassembled by sorting. A sitting ends after
+`TUNABLES.sessionTimeoutMinutes` of silence, decided from the gap at write time
+so the log stays right even when the sweep never ran, and at most one open
+session per candidate is a unique partial index rather than a convention.
+`documents` holds one record per candidate with a section per kind — cv,
+passport, aadhaar, pan, driving_licence, certificate — each an array of versions,
+oldest first, nothing ever removed (§22). The current version of anything is the
+last entry without a `supersededAt`.
 
 **Deliveries are deduped.** Meta retries. `claimEvent()` inserts the `wamid`
 into a unique index, and a duplicate is dropped — otherwise a retry re-runs the

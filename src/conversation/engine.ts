@@ -23,8 +23,12 @@
 import type { ObjectId } from 'mongodb';
 import { logger } from '../logger.js';
 import {
+  addUpload,
+  appendTurn,
+  supersedeAllUploads,
   candidates,
-  messages,
+  closeOpenSession,
+  findTurn,
   nextCandidateId,
   recordAudit,
   storedDocuments,
@@ -72,7 +76,7 @@ import {
 } from './render.js';
 import { ageFrom, buildProfileWrite } from './profile.js';
 import { detectLanguage, type Choice, type Language, type Localised } from './language.js';
-import { requirementFor, TUNABLES } from './rules.js';
+import { DOCUMENTS, requirementFor, TUNABLES } from './rules.js';
 import { packById, type TradeQuestion } from './trades.js';
 import { questionsForOccupation } from './tradeQuestions.js';
 import { transcribe } from './audio.js';
@@ -195,16 +199,17 @@ async function persistOutbound(
 ): Promise<void> {
   const now = new Date();
   const wamid = results[0]?.wamid;
-  await messages().insertOne({
+  await appendTurn({
     waId: candidate.waId,
     direction: 'outbound',
-    // Omitted rather than stored as null — the unique index covers strings only.
+    // Omitted rather than stored as null. Not every send comes back with one:
+    // shadow mode has nothing to record, and a failed send never got an id.
     ...(wamid ? { wamid } : {}),
     type: 'text',
     text: body,
     ...(step ? { step } : {}),
     shadowed: results.some((r) => r.shadowed),
-    createdAt: now,
+    at: now,
   });
   await setState(candidate, { lastOutboundAt: now });
 }
@@ -222,13 +227,13 @@ async function reply(candidate: CandidateDoc, outbound: Outbound, step?: string)
       // The re-engagement template is the only way back in, and sending it is a
       // scheduled decision rather than something to do in the middle of a turn.
       logger.warn({ waId: candidate.waId }, 'reply dropped: outside the 24-hour window');
-      await messages().insertOne({
+      await appendTurn({
         waId: candidate.waId,
         direction: 'outbound',
         type: 'text',
         text: body,
         error: 'outside_24h_window',
-        createdAt: new Date(),
+        at: new Date(),
       });
       return;
     }
@@ -544,6 +549,9 @@ async function completeRegistration(candidate: CandidateDoc): Promise<void> {
   });
 
   await tell(candidate, copy.COMPLETED, { candidateId });
+  // The last thing said in this sitting has been said. Close the transcript so
+  // `endedAt` records when it actually ended rather than when it lapsed.
+  await closeOpenSession(candidate.waId);
   await recordAudit({ waId: candidate.waId, candidateId, event: 'registration_completed' });
   logger.info({ waId: candidate.waId, candidateId }, 'registration completed');
 }
@@ -667,10 +675,9 @@ async function deleteProfile(candidate: CandidateDoc): Promise<void> {
     detail: 'requested by the candidate over WhatsApp',
   });
 
-  await storedDocuments().updateMany(
-    { candidateId: candidate._id },
-    { $set: { supersededAt: now, updatedAt: now } },
-  );
+  // Every upload in every section is marked superseded. Nothing is removed —
+  // the files and their history stay for the audit record §23 requires.
+  await supersedeAllUploads(candidate.waId, now);
 
   await candidates().updateOne(
     { _id: candidate._id },
@@ -759,36 +766,32 @@ async function ingestDocument(candidate: CandidateDoc, msg: MessageDoc): Promise
   const requirement = requirementFor(docType);
   const willOcr = !!requirement && requirement.ocr !== 'none';
 
-  const inserted = await storedDocuments().insertOne({
-    candidateId: candidate._id!,
+  // Files it into its section and marks whatever it replaces as a previous
+  // version — never removing it, because §22 forbids destroying an upload a
+  // candidate has not withdrawn.
+  const uploadId = await addUpload({
     waId: candidate.waId,
+    candidateId: candidate._id!,
     docType,
-    mediaId: msg.mediaId,
-    storageKey: stored.storageKey,
-    mimeType: media.mimeType,
-    byteSize: stored.byteSize,
-    sha256: stored.sha256,
-    originalFilename: msg.filename,
-    caption: msg.text,
-    ocr: { status: willOcr ? 'queued' : 'skipped' },
-    createdAt: now,
-    updatedAt: now,
+    upload: {
+      mediaId: msg.mediaId,
+      storageKey: stored.storageKey,
+      mimeType: media.mimeType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: msg.filename,
+      caption: msg.text,
+      ocr: { status: willOcr ? 'queued' : 'skipped' },
+    },
   });
 
   const slots = withMissingSlots(candidate.documents);
   const previous = slots[docType]!;
 
-  if (previous.documentId) {
-    await storedDocuments().updateOne(
-      { _id: previous.documentId },
-      { $set: { supersededAt: now, updatedAt: now } },
-    );
-  }
-
   slots[docType] = {
     ...previous,
     status: willOcr ? 'ocr_queued' : 'received',
-    documentId: inserted.insertedId,
+    documentId: uploadId,
     note: undefined,
     previousDocumentIds: previous.documentId
       ? [...(previous.previousDocumentIds ?? []), previous.documentId]
@@ -799,7 +802,13 @@ async function ingestDocument(candidate: CandidateDoc, msg: MessageDoc): Promise
   await setState(candidate, { documents: slots });
 
   if (willOcr) {
-    await queue.enqueue('ocr', { documentId: inserted.insertedId.toHexString() });
+    // The job carries where the upload lives, not just which one it is: an
+    // upload inside a section cannot be found by id alone.
+    await queue.enqueue('ocr', {
+      waId: candidate.waId,
+      docType,
+      uploadId: uploadId.toHexString(),
+    });
   }
 
   logger.info({ waId: candidate.waId, docType, storageKey: stored.storageKey }, 'document ingested');
@@ -843,12 +852,12 @@ async function ingestVoiceNote(
     logger.info({ waId: candidate.waId, chars: text.length }, 'voice note transcribed');
     // §3 — what a candidate says by voice becomes structured text on the record,
     // not an audio file nobody has listened to.
-    await messages().insertOne({
+    await appendTurn({
       waId: candidate.waId,
       direction: 'inbound',
       type: 'text',
       text: `[voice note] ${text}`,
-      createdAt: new Date(),
+      at: new Date(),
     });
   }
 
@@ -1469,6 +1478,10 @@ export async function endIdleSessions(limit = 200): Promise<number> {
         }
       }
 
+      // Closed after the notice, so the sentence telling them the sitting ended
+      // is the last line of that sitting rather than the first of the next.
+      await closeOpenSession(candidate.waId);
+
       return 1;
     });
   }
@@ -1486,7 +1499,7 @@ export async function handleInboundMessage(payload: {
   wamid: string;
   profileName?: string;
 }): Promise<void> {
-  const msg = await messages().findOne({ wamid: payload.wamid, direction: 'inbound' });
+  const msg = await findTurn(payload.wamid, 'inbound');
   if (!msg) {
     logger.warn({ wamid: payload.wamid }, 'inbound job for unknown message');
     return;
@@ -1799,7 +1812,7 @@ export async function handleInboundMessage(payload: {
   // message asked something else, the tap is refused and the open question is
   // put back.
   if (msg.replyId && msg.contextWamid) {
-    const asked = await messages().findOne({ wamid: msg.contextWamid, direction: 'outbound' });
+    const asked = await findTurn(msg.contextWamid, 'outbound');
     if (asked?.step && asked.step !== step.id) {
       logger.info(
         { waId: candidate.waId, tapped: msg.replyId, from: asked.step, now: step.id },
@@ -2346,12 +2359,12 @@ export async function sendReminders(limit = 50): Promise<number> {
       } else {
         // Outside the window, only an approved template may be sent (§27).
         await sendReengagementTemplate(candidate.phone);
-        await messages().insertOne({
+        await appendTurn({
           waId: candidate.waId,
           direction: 'outbound',
           type: 'template',
           text: '[re-engagement template]',
-          createdAt: new Date(),
+          at: new Date(),
         });
       }
 

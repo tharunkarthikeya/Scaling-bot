@@ -110,6 +110,33 @@ export const DOCUMENTS: DocumentRequirement[] = [
     sensitive: true,
   },
   {
+    /**
+     * Never asked for by the flow, and filed on its own rather than as a
+     * certificate.
+     *
+     * A driver's licence is the single most-sent unprompted document after the
+     * CV — §8's licence question invites a photo — and it used to land in the
+     * certificate slot, because "licence" was one of that slot's keywords. A
+     * recruiter looking for a driver's licence then had to open every
+     * certificate to find it.
+     */
+    id: 'driving_licence',
+    label: {
+      en: 'driving licence',
+      ta: 'ஓட்டுநர் உரிமம்',
+      hi: 'ड्राइविंग लाइसेंस',
+      te: 'డ్రైవింగ్ లైసెన్స్',
+      ml: 'ഡ്രൈവിംഗ് ലൈസൻസ്',
+    },
+    required: false,
+    keywords: [
+      'driving licence', 'driving license', 'driver licence', 'driver license',
+      'dl', 'licence', 'license', 'ஓட்டுநர்', 'உரிமம்', 'ड्राइविंग', 'लाइसेंस',
+    ],
+    ocr: 'document',
+    sensitive: true,
+  },
+  {
     // Never asked for by the flow. It exists so a certificate the candidate
     // sends unprompted, or adds later through UPDATE (§22), has somewhere to go
     // rather than being filed as whatever we last asked for.
@@ -122,9 +149,11 @@ export const DOCUMENTS: DocumentRequirement[] = [
       ml: 'സർട്ടിഫിക്കറ്റ്',
     },
     required: false,
+    // 'licence' and 'license' moved to the driving-licence slot above, which is
+    // what a candidate sending one almost always means.
     keywords: [
       'certificate', 'certificat', 'degree', 'diploma', 'marksheet', 'qualification',
-      'iti', 'licence', 'license', 'சான்றிதழ்', 'सर्टिफिकेट', 'प्रमाणपत्र',
+      'iti', 'சான்றிதழ்', 'सर्टिफिकेट', 'प्रमाणपत्र',
     ],
     ocr: 'document',
   },

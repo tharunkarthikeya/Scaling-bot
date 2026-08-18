@@ -70,14 +70,17 @@ for (const waId of waIds) {
   // The wamid claims are keyed by message id, not by waId, so they have to be
   // found through this number's messages before those messages are deleted.
   const wamids = (
-    await db.collection('messages').find(q, { projection: { wamid: 1 } }).toArray()
+    await db.collection('messages').find(q, { projection: { 'turns.wamid': 1 } }).toArray()
   )
-    .map((m) => m.wamid as string | undefined)
+    .flatMap((session) => (session.turns ?? []) as Array<{ wamid?: string }>)
+    .map((turn) => turn.wamid)
     .filter((w): w is string => !!w);
 
   const counts: Record<string, number> = {
     candidates: await db.collection('candidates').countDocuments(q),
+    // Sessions now, not messages — one document per sitting.
     messages: await db.collection('messages').countDocuments(q),
+    // One record per candidate now, holding every upload in its section.
     documents: await db.collection('documents').countDocuments(q),
     audit_events: await db.collection('audit_events').countDocuments(q),
     processed_events: wamids.length

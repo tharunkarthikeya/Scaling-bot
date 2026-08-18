@@ -35,7 +35,7 @@ process.env.ADMIN_API_KEY ??= 'harness-admin-key-0123456789';
 
 const { config } = await import('./config.js');
 const { connectDb, closeDb } = await import('./db/client.js');
-const { ensureIndexes, messages, candidates, storedDocuments, auditEvents } = await import(
+const { ensureIndexes, turnsFor, uploadsFor, candidates, auditEvents } = await import(
   './db/models.js'
 );
 const { ensureStorageRoot } = await import('./storage/index.js');
@@ -193,17 +193,13 @@ const documentMessage = (filename: string, caption?: string, waId = WA_ID) => ({
 });
 
 async function outboundCount(waId = WA_ID): Promise<number> {
-  return messages().countDocuments({ waId, direction: 'outbound' });
+  return (await turnsFor(waId)).filter((t) => t.direction === 'outbound').length;
 }
 
 /** The last thing the bot said, for assertions about wording. */
 async function lastOutbound(waId = WA_ID): Promise<string> {
-  const row = await messages()
-    .find({ waId, direction: 'outbound' })
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(1)
-    .next();
-  return row?.text ?? '';
+  const sent = (await turnsFor(waId)).filter((t) => t.direction === 'outbound');
+  return sent.at(-1)?.text ?? '';
 }
 
 /** Waits for the bot to say something new. */
@@ -473,7 +469,7 @@ let b2bOk = false;
     dim(`       stage=${contact?.stage} profile fields=${Object.keys(contact?.profile ?? {}).length}`),
   );
 
-  for (const m of await messages().find({ waId: B2B_WA_ID }).sort({ createdAt: 1, _id: 1 }).toArray()) {
+  for (const m of await turnsFor(B2B_WA_ID)) {
     const who = m.direction === 'inbound' ? '\x1b[36mcontact  \x1b[0m' : '\x1b[35mbot      \x1b[0m';
     console.log(`  ${who} │ ${(m.text ?? `[${m.type}]`).replace(/\n/g, ' / ')}`);
   }
@@ -734,7 +730,7 @@ let idleOk = false;
 
 heading('Transcript');
 
-const transcript = await messages().find({ waId: WA_ID }).sort({ createdAt: 1, _id: 1 }).toArray();
+const transcript = await turnsFor(WA_ID);
 for (const m of transcript) {
   const who = m.direction === 'inbound' ? '\x1b[36mcandidate\x1b[0m' : '\x1b[35mbot      \x1b[0m';
   const body = m.text ?? `[${m.type}${m.filename ? ` ${m.filename}` : ''}]`;
@@ -771,7 +767,7 @@ if (candidate) {
 }
 
 heading('Stored files');
-const docs = await storedDocuments().find({ waId: WA_ID }).toArray();
+const docs = await uploadsFor(WA_ID);
 if (!docs.length) console.log(dim('  none'));
 for (const d of docs) {
   const ocr = d.ocr?.status ?? 'none';
@@ -820,7 +816,7 @@ const questionsAsked = new Set(
       (m) =>
         m.direction === 'outbound' &&
         m.step &&
-        (!candidate?.completedAt || m.createdAt <= candidate.completedAt),
+        (!candidate?.completedAt || m.at <= candidate.completedAt),
     )
     .map((m) => m.step),
 ).size;

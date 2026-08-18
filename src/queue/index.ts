@@ -7,7 +7,7 @@ export interface JobPayloads {
   /** One inbound WhatsApp message, already deduped and persisted. */
   inbound_message: { waId: string; wamid: string; profileName?: string };
   /** One stored document ready for OCR. OCR is slow (120s), so it never runs inline. */
-  ocr: { documentId: string };
+  ocr: { waId: string; docType: string; uploadId: string };
 }
 
 export type JobName = keyof JobPayloads;

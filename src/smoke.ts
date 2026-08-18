@@ -16,6 +16,7 @@ import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import { chunkText } from './whatsapp/client.js';
 import { attributeInboundDocument, initialSlots } from './conversation/checklist.js';
+import { DOCUMENTS } from './conversation/rules.js';
 import {
   disambiguationChoices,
   fieldsToClear,
@@ -1724,6 +1725,36 @@ await check('generated slots exist only for the questions a candidate has', () =
     profile: { ...c.profile, tradeAnswers: { accounting_software: ['Tally'] } },
   });
   assert.equal(first.satisfied(answered), true);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nhow uploads are filed');
+
+await check('a driving licence is filed as one, not as a certificate', () => {
+  const c = candidate();
+  // "Licence" used to be a certificate keyword, so every driver's licence
+  // landed among the qualifications and a recruiter had to open each one.
+  for (const hint of ['driving licence.jpg', 'my DL', 'driver license', 'ஓட்டுநர் உரிமம்']) {
+    assert.equal(attributeInboundDocument(c, { filename: hint }), 'driving_licence', hint);
+  }
+
+  // What a certificate slot is still for.
+  assert.equal(attributeInboundDocument(c, { filename: 'ITI certificate.pdf' }), 'certificate');
+  assert.equal(attributeInboundDocument(c, { filename: 'marksheet.pdf' }), 'certificate');
+});
+
+await check('every document kind the flow can ask for has a section to live in', () => {
+  // The sections of a candidate's document record are exactly the kinds in
+  // `rules.ts`; a step asking for one that has nowhere to go would store the
+  // upload and lose it.
+  const kinds = DOCUMENTS.map((d) => d.id);
+  for (const id of ['cv', 'passport', 'aadhaar', 'pan', 'driving_licence', 'certificate']) {
+    assert.ok(kinds.includes(id), `no section for "${id}"`);
+  }
+  for (const step of STEPS) {
+    if (step.document) assert.ok(kinds.includes(step.document), step.id);
+  }
 });
 
 /* ------------------------------------------------------------------ */
