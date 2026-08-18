@@ -320,7 +320,15 @@ function statusForStage(stage: ConversationStage, current: CandidateStatus): Can
  * cursor. That is what makes "never ask twice" (§1) and "resume where you
  * stopped" (§21) one mechanism rather than two that can disagree.
  */
-async function askNextQuestion(candidate: CandidateDoc): Promise<void> {
+/**
+ * Asks the first question that applies and is not already answered.
+ *
+ * `lead` prefixes it in the same message, for callers that have something to
+ * explain first — a tap on a question that has moved on, say. One bubble, not
+ * two: on a phone the question can otherwise arrive above the sentence
+ * explaining it.
+ */
+async function askNextQuestion(candidate: CandidateDoc, lead?: Localised): Promise<void> {
   // If what the candidate has already told us decides their trade questions,
   // record that now so the disambiguation question is skipped entirely (§8).
   const packs = inferTradePacks(candidate);
@@ -372,7 +380,11 @@ async function askNextQuestion(candidate: CandidateDoc): Promise<void> {
     return;
   }
 
-  await reply(candidate, await renderStep(step, candidate), step.id);
+  await reply(
+    candidate,
+    lead ? await renderRetry(step, candidate, lead) : await renderStep(step, candidate),
+    step.id,
+  );
 
   const patch: Partial<CandidateDoc> = { currentStep: step.id };
 
@@ -1695,6 +1707,35 @@ export async function handleInboundMessage(payload: {
   const step = (current ? stepById(current) : undefined) ?? nextStep(candidate);
   if (!step) {
     await askNextQuestion(candidate);
+    return;
+  }
+
+  // An answered question stays answered.
+  //
+  // `currentStep` is a pointer, and pointers go stale: a restart between the
+  // answer being written and the next question being asked, a redelivery, a tap
+  // on a message from before the answer landed. Each of those arrives here
+  // pointing at a step whose answer is already on the record — and
+  // `recordAnswer` would write over it, because `buildProfileWrite` only refuses
+  // a *weaker* source, so a second reply from chat replaces the first without
+  // anything noticing.
+  //
+  // The lock is on the step rather than the field, because one field can hold
+  // many answers: every question in a trade pack writes into `tradeAnswers`, so
+  // locking that field would silently drop the second question of every pack.
+  //
+  // An edit is exempt, and barely needs to be: `startEdit` clears the section's
+  // fields first, so those steps are genuinely unanswered by the time they are
+  // re-asked. The `editQueue` check is belt and braces around that.
+  if (!(candidate.editQueue ?? []).includes(step.id) && step.satisfied(candidate)) {
+    logger.info(
+      { waId: candidate.waId, step: step.id, tapped: msg.replyId },
+      'ignored a reply to a question that is already answered',
+    );
+    // A tap is told its option has expired; typed words are told they could not
+    // be used as an answer, which is true of both and accurate about neither
+    // the candidate nor their message.
+    await askNextQuestion(candidate, msg.replyId ? copy.OPTION_EXPIRED : copy.UNCLEAR);
     return;
   }
 

@@ -18,6 +18,7 @@ import { chunkText } from './whatsapp/client.js';
 import { attributeInboundDocument, initialSlots } from './conversation/checklist.js';
 import {
   disambiguationChoices,
+  fieldsToClear,
   inferTradeAnswers,
   inferTradePacks,
   inEuropeRussiaBranch,
@@ -1482,6 +1483,86 @@ await check('a specialist question tells the interpreter what it is about', () =
   assert.match(described, /THIS QUESTION IS ABOUT/);
   assert.match(described, /CNC/);
   assert.match(described, /"related"/);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nan answered question stays answered');
+
+await check('the flow never returns a question that has an answer', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      fullName: 'Ravi Kumar',
+      currentCity: 'Chennai',
+      currentState: 'Tamil Nadu',
+      dateOfBirth: '1995-08-15',
+      education: 'iti',
+      educationCourse: 'Welder',
+    },
+    documents: { ...initialSlots(), cv: { status: 'unavailable', askedCount: 1, updatedAt: new Date() } },
+  });
+
+  // Every answered step reports itself satisfied, and the scheduler walks past
+  // all of them to the first one that is not.
+  for (const id of ['full_name', 'location', 'dob', 'education', 'education_course']) {
+    assert.equal(stepById(id)!.satisfied(c), true, id);
+  }
+  assert.equal(nextStep(c)?.id, 'main_trade');
+});
+
+await check('an answer survives a restart, because it is state and not a cursor', () => {
+  const c = candidate({ profile: { lookingForOverseasJob: true, fullName: 'Ravi Kumar' } });
+
+  // What a restart actually does: the process forgets everything and reads the
+  // candidate back out of Mongo. `satisfied` is computed from that document, so
+  // there is no in-memory progress to lose — and `currentStep` is a pointer to
+  // the open question, not a record of what has been answered.
+  const reloaded = JSON.parse(JSON.stringify(c)) as CandidateDoc;
+  assert.equal(stepById('full_name')!.satisfied(reloaded), true);
+  assert.notEqual(nextStep(reloaded)?.id, 'full_name');
+});
+
+await check('an answer the CV supplied locks the question just as tightly', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      tradePacks: ['welder'],
+      tradeAnswers: { welding_process: ['arc_smaw'] },
+    },
+  });
+  assert.equal(stepById('trade:welder:welding_process')!.satisfied(c), true);
+  // And nothing further is inferred over the top of it.
+  assert.equal(inferTradeAnswers(c), undefined);
+});
+
+await check('an edit reopens exactly the section it was asked for', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      fullName: 'Ravi Kumar',
+      dateOfBirth: '1995-08-15',
+      education: 'iti',
+      primaryTrade: 'fabrication_welding',
+    },
+  });
+
+  // §22 and §18: an edit clears that section's fields, which is what makes the
+  // steps unanswered again. The lock is on having an answer, so clearing the
+  // answer is the only thing that reopens a question — and it cannot reach
+  // outside the section the candidate chose.
+  const cleared = fieldsToClear('personal');
+  assert.ok(cleared.includes('fullName'));
+  assert.ok(cleared.includes('dateOfBirth'));
+  assert.ok(!cleared.includes('primaryTrade'), 'an edit of personal details reached the trade');
+
+  const edited = candidate({
+    profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding' },
+    editQueue: ['full_name', 'dob', 'education'],
+  });
+  assert.equal(stepById('full_name')!.satisfied(edited), false);
+  assert.equal(nextStep(edited)?.id, 'full_name');
 });
 
 /* ------------------------------------------------------------------ */
