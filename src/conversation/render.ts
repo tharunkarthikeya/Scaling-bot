@@ -44,12 +44,16 @@ const LIST_BUTTON: Localised = {
   en: 'Choose',
   ta: 'தேர்ந்தெடுக்க',
   hi: 'चुनें',
+  te: 'ఎంచుకోండి',
+  ml: 'തിരഞ്ഞെടുക്കുക',
 };
 
 const SELECTED_SO_FAR: Localised = {
   en: 'Selected: {{items}}',
   ta: 'தேர்ந்தெடுத்தவை: {{items}}',
   hi: 'चुने गए: {{items}}',
+  te: 'ఎంచుకున్నవి: {{items}}',
+  ml: 'തിരഞ്ഞെടുത്തത്: {{items}}',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +152,7 @@ export function choicesFor(step: FlowStep, candidate: CandidateDoc): Choice[] {
   const base = generated
     ? generated.options.map((option) => ({
         id: option.toLowerCase().replace(/\s+/g, '_').slice(0, 40),
-        label: { en: option, ta: option, hi: option },
+        label: { en: option, ta: option, hi: option, te: option, ml: option },
       }))
     : step.id === 'trade_disambiguation'
       ? disambiguationChoices(candidate)
@@ -203,7 +207,7 @@ export async function renderStep(step: FlowStep, candidate: CandidateDoc): Promi
     }
   }
 
-  return choices({ en: '', ta: '', hi: '' }, options, candidate).then(async (shape) => {
+  return choices({ en: '', ta: '', hi: '', te: '', ml: '' }, options, candidate).then(async (shape) => {
     const body = parts.join('\n');
     return shape.kind === 'text' ? { kind: 'text', body } : { ...shape, body };
   });
@@ -246,7 +250,7 @@ export async function renderRetry(
 
   if (!withStaff.length) return { kind: 'text', body };
 
-  const shape = await choices({ en: '', ta: '', hi: '' }, withStaff, candidate);
+  const shape = await choices({ en: '', ta: '', hi: '', te: '', ml: '' }, withStaff, candidate);
   return shape.kind === 'text' ? { kind: 'text', body } : { ...shape, body };
 }
 
@@ -258,30 +262,38 @@ export async function renderRetry(
  * or passport number in a WhatsApp confirmation.
  * ───────────────────────────────────────────────────────────────────────────*/
 
-const NOT_GIVEN: Localised = { en: '—', ta: '—', hi: '—' };
+const NOT_GIVEN: Localised = { en: '—', ta: '—', hi: '—', te: '—', ml: '—' };
 
 const STRICT_NOTE: Localised = {
   en: '{{countries}} (only these)',
   ta: '{{countries}} (இவை மட்டும்)',
   hi: '{{countries}} (सिर्फ़ ये)',
+  te: '{{countries}} (ఇవి మాత్రమే)',
+  ml: '{{countries}} (ഇവ മാത്രം)',
 };
 
 const DOCS_RECEIVED: Localised = {
   en: 'Received: {{received}}',
   ta: 'கிடைத்தவை: {{received}}',
   hi: 'मिले: {{received}}',
+  te: 'వచ్చినవి: {{received}}',
+  ml: 'കിട്ടിയത്: {{received}}',
 };
 
 const DOCS_PENDING: Localised = {
   en: 'Pending: {{pending}}',
   ta: 'நிலுவையில்: {{pending}}',
   hi: 'बाकी: {{pending}}',
+  te: 'రావాల్సినవి: {{pending}}',
+  ml: 'ബാക്കിയുള്ളത്: {{pending}}',
 };
 
 const DOCS_NONE: Localised = {
   en: 'None needed yet',
   ta: 'இப்போது தேவையில்லை',
   hi: 'अभी कोई नहीं',
+  te: 'ఇంకా ఏమీ అవసరం లేదు',
+  ml: 'ഇപ്പോൾ ഒന്നും വേണ്ട',
 };
 
 async function label(
@@ -389,6 +401,6 @@ export async function renderConfirmation(candidate: CandidateDoc): Promise<Outbo
     await say(CONFIRM_QUESTION, candidate),
   ].join('\n');
 
-  const shape = await choices({ en: '', ta: '', hi: '' }, CONFIRM_CHOICES, candidate);
+  const shape = await choices({ en: '', ta: '', hi: '', te: '', ml: '' }, CONFIRM_CHOICES, candidate);
   return shape.kind === 'text' ? { kind: 'text', body } : { ...shape, body };
 }

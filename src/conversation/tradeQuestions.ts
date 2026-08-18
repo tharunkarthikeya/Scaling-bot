@@ -42,7 +42,7 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { GeneratedQuestion } from '../db/models.js';
 import { violatesGuardrails } from './faq.js';
-import { LANGUAGE_NAMES, WA_LIMITS, type Language } from './language.js';
+import { hasForeignScript, LANGUAGE_NAMES, WA_LIMITS, type Language } from './language.js';
 import { TUNABLES } from './rules.js';
 
 export type { GeneratedQuestion };
@@ -253,7 +253,10 @@ const ID_SHAPE = /^[a-z][a-z0-9_]{1,39}$/;
  * question, and a candidate cannot tell that the half of it deciding what they
  * were being asked has gone.
  */
-function usable(raw: { id?: unknown; question?: unknown; options?: unknown }): GeneratedQuestion | undefined {
+function usable(
+  raw: { id?: unknown; question?: unknown; options?: unknown },
+  language: Language | undefined,
+): GeneratedQuestion | undefined {
   const id = typeof raw.id === 'string' ? raw.id.trim().toLowerCase().replace(/[\s-]+/g, '_') : '';
   const prompt = typeof raw.question === 'string' ? raw.question.trim() : '';
 
@@ -270,6 +273,18 @@ function usable(raw: { id?: unknown; question?: unknown; options?: unknown }): G
     return undefined;
   }
 
+  // Written in the candidate's language, with a letter of a different Indic
+  // script in the middle of a word. It happens often enough to matter — a Tamil
+  // question came back with Bengali characters inside two of its words — and it
+  // is not a typo a reader can see past: it is a glyph that does not belong to
+  // the alphabet they read, on a phone, from an agency they are deciding
+  // whether to trust with their passport. The same check runs at boot over the
+  // written copy; this is its runtime half.
+  if (hasForeignScript(prompt, language)) {
+    logger.warn({ id, prompt }, 'generated trade question mixed scripts; dropped');
+    return undefined;
+  }
+
   const options = (Array.isArray(raw.options) ? raw.options : [])
     .filter((o): o is string => typeof o === 'string')
     .map((o) => o.trim())
@@ -281,7 +296,9 @@ function usable(raw: { id?: unknown; question?: unknown; options?: unknown }): G
         // Graph API — the whole question then fails to send.
         o.length <= WA_LIMITS.buttonTitle &&
         !FORBIDDEN_SUBJECTS.test(o) &&
-        !violatesGuardrails(o),
+        !violatesGuardrails(o) &&
+        // An option is droppable on its own; the question survives without it.
+        !hasForeignScript(o, language),
     )
     .slice(0, 6);
 
@@ -342,7 +359,7 @@ export async function questionsForOccupation(params: {
     const questions: GeneratedQuestion[] = [];
 
     for (const raw of returned) {
-      const question = usable((raw ?? {}) as Record<string, unknown>);
+      const question = usable((raw ?? {}) as Record<string, unknown>, params.language);
       // A duplicate id would have the second question's answer overwrite the
       // first, and both are stored under the same key.
       if (!question || seen.has(question.id)) continue;

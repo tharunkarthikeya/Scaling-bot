@@ -14,6 +14,8 @@
 import * as copy from './copy.js';
 import {
   assertFits,
+  assertScript,
+  CORE_LANGUAGES,
   glyphLength,
   WA_LIMITS,
   type Choice,
@@ -69,7 +71,7 @@ function checkStep(step: FlowStep): void {
 
   // The prompt and its hint share one interactive body.
   const budget = rendered > 0 ? WA_LIMITS.body : 4096;
-  for (const lang of ['en', 'ta', 'hi'] as const) {
+  for (const lang of CORE_LANGUAGES) {
     const length = glyphLength(step.prompt[lang]) + (step.hint ? glyphLength(step.hint[lang]) + 1 : 0);
     if (length > budget) {
       throw new Error(
@@ -77,6 +79,9 @@ function checkStep(step: FlowStep): void {
       );
     }
   }
+
+  assertScript(`step "${step.id}" prompt`, step.prompt);
+  if (step.hint) assertScript(`step "${step.id}" hint`, step.hint);
 }
 
 function checkMessage(where: string, text: Localised): void {

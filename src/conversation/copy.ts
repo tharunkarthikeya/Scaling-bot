@@ -25,13 +25,15 @@ export function render(template: string, vars: Record<string, string | undefined
  * Shared answers
  * ───────────────────────────────────────────────────────────────────────────*/
 
-export const YES: Localised = { en: 'Yes', ta: 'ஆம்', hi: 'हाँ' };
-export const NO: Localised = { en: 'No', ta: 'இல்லை', hi: 'नहीं' };
-export const OTHER: Localised = { en: 'Other', ta: 'வேறு', hi: 'अन्य' };
+export const YES: Localised = { en: 'Yes', ta: 'ஆம்', hi: 'हाँ', te: 'అవును', ml: 'അതെ' };
+export const NO: Localised = { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' };
+export const OTHER: Localised = { en: 'Other', ta: 'வேறு', hi: 'अन्य', te: 'ఇతర', ml: 'മറ്റുള്ളവ' };
 export const TALK_TO_STAFF: Localised = {
   en: 'Talk to staff',
   ta: 'ஊழியருடன் பேச',
   hi: 'स्टाफ से बात करें',
+  te: 'సిబ్బందితో మాట్లాడు',
+  ml: 'സ്റ്റാഫിനെ വിളിക്കുക',
 };
 
 /** Ends a multi-select. Every multi-select list carries this as its last row. */
@@ -39,6 +41,8 @@ export const DONE: Localised = {
   en: 'Done — that is all',
   ta: 'முடிந்தது',
   hi: 'हो गया',
+  te: 'అయిపోయింది — ఇక చాలు',
+  ml: 'കഴിഞ്ഞു — ഇത്രയേ ഉള്ളൂ',
 };
 
 export const CHOICE_STAFF: Choice = { id: 'staff', label: TALK_TO_STAFF };
@@ -52,6 +56,8 @@ export const WELCOME: Localised = {
   en: 'Hi! Welcome to Adira Enterprises 👋\nHow can we help you today?',
   ta: 'வணக்கம்! அதிரா என்டர்பிரைசஸ்-க்கு வரவேற்கிறோம் 👋\nஇன்று நாங்கள் எப்படி உதவலாம்?',
   hi: 'नमस्ते! अदिरा एंटरप्राइजेज में आपका स्वागत है 👋\nहम आपकी क्या मदद कर सकते हैं?',
+  te: 'హాయ్! Adira Enterprises కి స్వాగతం 👋\nఈరోజు మీకు ఎలా సాయం చేయగలం?',
+  ml: 'ഹായ്! Adira Enterprises ലേക്ക് സ്വാഗതം 👋\nഇന്ന് ഞങ്ങൾക്ക് നിങ്ങളെ എങ്ങനെ സഹായിക്കാം?',
 };
 
 /**
@@ -63,14 +69,14 @@ export const WELCOME: Localised = {
  * personal data from someone who came to talk business.
  */
 export const ENTRY_CHOICES: Choice[] = [
-  { id: 'b2b', label: { en: 'B2B enquiry', ta: 'B2B விசாரணை', hi: 'B2B पूछताछ' } },
+  { id: 'b2b', label: { en: 'B2B enquiry', ta: 'B2B விசாரணை', hi: 'B2B पूछताछ', te: 'B2B విచారణ', ml: 'B2B അന്വേഷണം' } },
   {
     id: 'track',
-    label: { en: 'Track application', ta: 'விண்ணப்ப நிலை', hi: 'आवेदन ट्रैक करें' },
+    label: { en: 'Track application', ta: 'விண்ணப்ப நிலை', hi: 'आवेदन ट्रैक करें', te: 'దరఖాస్తు ట్రాక్', ml: 'അപേക്ഷ ട്രാക്ക്' },
   },
   {
     id: 'apply',
-    label: { en: 'Apply for a job', ta: 'வேலை விண்ணப்பம்', hi: 'नौकरी के लिए आवेदन' },
+    label: { en: 'Apply for a job', ta: 'வேலை விண்ணப்பம்', hi: 'नौकरी के लिए आवेदन', te: 'ఉద్యోగానికి దరఖాస్తు', ml: 'ജോലിക്ക് അപേക്ഷ' },
   },
 ];
 
@@ -79,6 +85,8 @@ export const NOT_LOOKING: Localised = {
   en: 'No problem. Message us any time if you start looking for overseas work.',
   ta: 'பரவாயில்லை. வெளிநாட்டு வேலை தேட விரும்பினால் எப்போது வேண்டுமானாலும் எங்களுக்கு அனுப்புங்கள்.',
   hi: 'कोई बात नहीं। जब भी आप विदेश में काम ढूंढना शुरू करें, हमें मैसेज करें।',
+  te: 'పర్వాలేదు. మీరు విదేశీ పని వెతకడం మొదలుపెడితే ఎప్పుడైనా మాకు మెసేజ్ పెట్టండి.',
+  ml: 'കുഴപ്പമില്ല. വിദേശ ജോലി നോക്കി തുടങ്ങുമ്പോൾ എപ്പോൾ വേണമെങ്കിലും ഞങ്ങൾക്ക് മെസ്സേജ് അയക്കൂ.',
 };
 
 /**
@@ -91,6 +99,8 @@ export const B2B_HANDOFF: Localised = {
   en: 'Thank you for your interest in working with Adira Enterprises. I am passing you to our business team — they will reply here shortly.',
   ta: 'அதிரா என்டர்பிரைசஸுடன் இணைந்து பணியாற்ற ஆர்வம் காட்டியதற்கு நன்றி. உங்களை எங்கள் வணிகக் குழுவிடம் இணைக்கிறேன் — விரைவில் இங்கே பதிலளிப்பார்கள்.',
   hi: 'अदिरा एंटरप्राइजेज के साथ काम करने में रुचि दिखाने के लिए धन्यवाद। मैं आपको हमारी बिज़नेस टीम से जोड़ रहा हूँ — वे जल्द ही यहीं जवाब देंगे।',
+  te: 'Adira Enterprises తో పని చేయాలనుకున్నందుకు ధన్యవాదాలు. మిమ్మల్ని మా బిజినెస్ టీమ్‌కి పంపిస్తున్నాను — వాళ్లు కాసేపట్లో ఇక్కడ రిప్లై ఇస్తారు.',
+  ml: 'Adira Enterprises ഒപ്പം ജോലി ചെയ്യാൻ താൽപ്പര്യം കാണിച്ചതിന് നന്ദി. ഞാൻ നിങ്ങളെ ഞങ്ങളുടെ ബിസിനസ് ടീമിലേക്ക് കൈമാറുന്നു — അവർ ഇവിടെ തന്നെ വൈകാതെ മറുപടി തരും.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -101,6 +111,8 @@ export const CONSENT_DECLINED: Localised = {
   en: 'No problem. We have not registered your application. You can message us anytime if you wish to continue.',
   ta: 'பரவாயில்லை. உங்கள் விண்ணப்பம் பதிவு செய்யப்படவில்லை. தொடர விரும்பினால் எப்போது வேண்டுமானாலும் எங்களுக்கு அனுப்பலாம்.',
   hi: 'कोई बात नहीं। हमने आपका आवेदन रजिस्टर नहीं किया है। आगे बढ़ना चाहें तो कभी भी मैसेज करें।',
+  te: 'పర్వాలేదు. మేము మీ అప్లికేషన్‌ని రిజిస్టర్ చేయలేదు. మీరు కొనసాగించాలనుకుంటే ఎప్పుడైనా మెసేజ్ పెట్టవచ్చు.',
+  ml: 'കുഴപ്പമില്ല. ഞങ്ങൾ നിങ്ങളുടെ അപേക്ഷ രജിസ്റ്റർ ചെയ്തിട്ടില്ല. തുടരണം എന്ന് തോന്നിയാൽ എപ്പോൾ വേണമെങ്കിലും മെസ്സേജ് അയക്കാം.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -111,6 +123,8 @@ export const CV_RECEIVED: Localised = {
   en: 'CV received ✅ I am checking it now.',
   ta: 'CV கிடைத்தது ✅ இப்போது பார்க்கிறேன்.',
   hi: 'CV मिल गया ✅ मैं इसे देख रहा हूँ।',
+  te: 'CV వచ్చింది ✅ ఇప్పుడు చెక్ చేస్తున్నాను.',
+  ml: 'CV കിട്ടി ✅ ഇപ്പോൾ ഞാൻ അത് പരിശോധിക്കുന്നു.',
 };
 
 /** Reply to tapping "Upload CV" — the button cannot open a file picker itself. */
@@ -118,6 +132,8 @@ export const GO_AHEAD: Localised = {
   en: 'Go ahead — attach the file here and send it.',
   ta: 'தாராளமாக அனுப்புங்கள் — கோப்பை இங்கே இணைத்து அனுப்பவும்.',
   hi: 'भेजिए — फ़ाइल यहीं अटैच करके भेज दें।',
+  te: 'సరే — ఫైల్‌ని ఇక్కడ జత చేసి పంపండి.',
+  ml: 'ശരി — ഫയൽ ഇവിടെ അറ്റാച്ച് ചെയ്ത് അയക്കൂ.',
 };
 
 /** Recorded when a candidate says they will send a document later. */
@@ -125,12 +141,16 @@ export const WILL_WAIT: Localised = {
   en: 'No problem, send it whenever you can.',
   ta: 'பரவாயில்லை, முடியும்போது அனுப்புங்கள்.',
   hi: 'कोई बात नहीं, जब हो सके तब भेज दीजिए।',
+  te: 'పర్వాలేదు, మీకు వీలున్నప్పుడు పంపండి.',
+  ml: 'കുഴപ്പമില്ല, കഴിയുമ്പോൾ അയച്ചാൽ മതി.',
 };
 
 export const NO_CV_OK: Localised = {
   en: 'No problem. I will collect a few basic details.',
   ta: 'பரவாயில்லை. சில அடிப்படை விவரங்களைக் கேட்கிறேன்.',
   hi: 'कोई बात नहीं। मैं कुछ बुनियादी जानकारी ले लेता हूँ।',
+  te: 'పర్వాలేదు. నేను కొన్ని బేసిక్ వివరాలు తీసుకుంటాను.',
+  ml: 'സാരമില്ല. ഞാൻ കുറച്ച് അടിസ്ഥാന വിവരങ്ങൾ വാങ്ങാം.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -144,24 +164,32 @@ export const PASSPORT_RECEIVED: Localised = {
   en: 'Passport received ✅',
   ta: 'பாஸ்போர்ட் கிடைத்தது ✅',
   hi: 'पासपोर्ट मिल गया ✅',
+  te: 'పాస్‌పోర్ట్ వచ్చింది ✅',
+  ml: 'പാസ്‌പോർട്ട് കിട്ടി ✅',
 };
 
 export const AADHAAR_RECEIVED: Localised = {
   en: 'Aadhaar received ✅',
   ta: 'ஆதார் கிடைத்தது ✅',
   hi: 'आधार मिल गया ✅',
+  te: 'ఆధార్ వచ్చింది ✅',
+  ml: 'ആധാർ കിട്ടി ✅',
 };
 
 export const PAN_RECEIVED: Localised = {
   en: 'PAN received ✅ Thank you.',
   ta: 'PAN கிடைத்தது ✅ நன்றி.',
   hi: 'PAN मिल गया ✅ धन्यवाद।',
+  te: 'PAN వచ్చింది ✅ థాంక్యూ.',
+  ml: 'PAN കിട്ടി ✅ നന്ദി.',
 };
 
 export const DOCUMENT_RECEIVED: Localised = {
   en: 'Received ✅',
   ta: 'கிடைத்தது ✅',
   hi: 'मिल गया ✅',
+  te: 'వచ్చింది ✅',
+  ml: 'കിട്ടി ✅',
 };
 
 /**
@@ -175,6 +203,8 @@ export const CHECKING_DOCUMENT: Localised = {
   en: 'One moment — I am checking the pages.',
   ta: 'ஒரு நிமிடம் — பக்கங்களைப் பார்க்கிறேன்.',
   hi: 'एक मिनट — मैं पेज देख रहा हूँ।',
+  te: 'ఒక్క నిమిషం — పేజీలు చూస్తున్నాను.',
+  ml: 'ഒരു നിമിഷം — ഞാൻ പേജുകൾ നോക്കുകയാണ്.',
 };
 
 /** Recorded when the candidate says they do not have a document at all. */
@@ -182,6 +212,8 @@ export const NOTED: Localised = {
   en: 'Noted, thank you.',
   ta: 'குறித்துக்கொண்டேன், நன்றி.',
   hi: 'नोट कर लिया, धन्यवाद।',
+  te: 'సరే, థాంక్యూ.',
+  ml: 'മനസ്സിലായി, നന്ദി.',
 };
 
 /** §14. `{{detail}}` names the pages or the problem. */
@@ -189,12 +221,16 @@ export const DOCUMENT_INCOMPLETE: Localised = {
   en: 'Some pages are missing or unclear. Please resend {{detail}}.',
   ta: 'சில பக்கங்கள் இல்லை அல்லது தெளிவாக இல்லை. {{detail}} மீண்டும் அனுப்பவும்.',
   hi: 'कुछ पेज मौजूद नहीं हैं या साफ़ नहीं हैं। कृपया {{detail}} दोबारा भेजें।',
+  te: 'కొన్ని పేజీలు మిస్ అయ్యాయి లేదా క్లియర్‌గా లేవు. దయచేసి {{detail}} మళ్ళీ పంపండి.',
+  ml: 'കുറച്ച് പേജുകൾ ഇല്ല അല്ലെങ്കിൽ വ്യക്തമല്ല. ദയവായി {{detail}} വീണ്ടും അയക്കൂ.',
 };
 
 export const DOCUMENT_UNREADABLE: Localised = {
   en: 'That file was not clear enough to read. Please send it again in good light, with all four corners visible.',
   ta: 'அந்தக் கோப்பு படிக்கும் அளவுக்குத் தெளிவாக இல்லை. நல்ல வெளிச்சத்தில், நான்கு மூலைகளும் தெரியும்படி மீண்டும் அனுப்பவும்.',
   hi: 'यह फ़ाइल पढ़ने लायक साफ़ नहीं थी। कृपया अच्छी रोशनी में, चारों कोने दिखते हुए दोबारा भेजें।',
+  te: 'ఆ ఫైల్ చదవడానికి సరిగ్గా క్లియర్‌గా లేదు. దయచేసి మంచి లైట్‌లో, నాలుగు మూలలు కనిపించేలా మళ్ళీ పంపండి.',
+  ml: 'ആ ഫയൽ വ്യക്തമായി വായിക്കാൻ പറ്റുന്നില്ല. നല്ല വെളിച്ചത്തിൽ, നാല് മൂലയും കാണുന്ന വിധം വീണ്ടും അയക്കൂ.',
 };
 
 /**
@@ -209,6 +245,8 @@ export const DOCUMENT_NOT_READ: Localised = {
   en: 'I could not read anything from that file. Please send a clear photo of your {{document}} — the whole page, flat, in good light, with all four corners visible.',
   ta: 'அந்தக் கோப்பிலிருந்து எதையும் என்னால் படிக்க முடியவில்லை. உங்கள் {{document}}-ஐ தெளிவாகப் படம் எடுத்து அனுப்பவும் — முழுப் பக்கமும், நல்ல வெளிச்சத்தில், நான்கு மூலைகளும் தெரியும்படி.',
   hi: 'मैं उस फ़ाइल से कुछ भी नहीं पढ़ पाया। कृपया अपने {{document}} की साफ़ फ़ोटो भेजें — पूरा पेज, अच्छी रोशनी में, चारों कोने दिखते हुए।',
+  te: 'ఆ ఫైల్ లో నాకు ఏమీ చదవడానికి కుదరలేదు. దయచేసి మీ {{document}} యొక్క క్లియర్ ఫోటో పంపండి — పూర్తి పేజీ, నిటారుగా, మంచి లైట్‌లో, నాలుగు మూలలు కనిపించేలా.',
+  ml: 'ആ ഫയലിൽ നിന്ന് ഒന്നും വായിക്കാൻ പറ്റിയില്ല. നിങ്ങളുടെ {{document}}ന്റെ വ്യക്തമായ ഫോട്ടോ അയക്കൂ — മുഴുവൻ പേജും, നിവർത്തി, നല്ല വെളിച്ചത്തിൽ, നാല് മൂലയും കാണുന്ന വിധം.',
 };
 
 /**
@@ -222,6 +260,8 @@ export const DOCUMENT_WRONG_TYPE: Localised = {
   en: 'That does not look like a {{document}}. Could you check the file and send your {{document}}?',
   ta: 'அது {{document}} போல் தெரியவில்லை. கோப்பைச் சரிபார்த்து உங்கள் {{document}}-ஐ அனுப்ப முடியுமா?',
   hi: 'यह {{document}} जैसा नहीं लग रहा। कृपया फ़ाइल जाँच कर अपना {{document}} भेजें।',
+  te: 'ఇది {{document}} లా అనిపించలేదు. ఫైల్ చెక్ చేసి మీ {{document}} పంపగలరా?',
+  ml: 'ഇത് {{document}} ആണെന്ന് തോന്നുന്നില്ല. ഫയൽ ഒന്ന് നോക്കി നിങ്ങളുടെ {{document}} അയക്കാമോ?',
 };
 
 /** Stands in for the document's name when the slot has no label of its own. */
@@ -229,24 +269,32 @@ export const DOCUMENT_THIS_ONE: Localised = {
   en: 'document',
   ta: 'ஆவணம்',
   hi: 'दस्तावेज़',
+  te: 'డాక్యుమెంట్',
+  ml: 'ഡോക്യുമെന്റ്',
 };
 
 export const DOCUMENT_ALL_PAGES: Localised = {
   en: 'all pages',
   ta: 'எல்லா பக்கங்களையும்',
   hi: 'सभी पेज',
+  te: 'అన్ని పేజీలు',
+  ml: 'എല്ലാ പേജും',
 };
 
 export const DOCUMENT_PAGES: Localised = {
   en: 'page {{pages}}',
   ta: 'பக்கம் {{pages}}',
   hi: 'पेज {{pages}}',
+  te: 'పేజీ {{pages}}',
+  ml: 'പേജ് {{pages}}',
 };
 
 export const FILE_FAILED: Localised = {
   en: 'Sorry, that file did not come through. Could you send it once more?',
   ta: 'மன்னிக்கவும், அந்தக் கோப்பு வரவில்லை. மீண்டும் ஒருமுறை அனுப்ப முடியுமா?',
   hi: 'माफ़ कीजिए, वह फ़ाइल नहीं पहुँची। क्या आप इसे एक बार और भेज सकते हैं?',
+  te: 'సారీ, ఆ ఫైల్ రాలేదు. దయచేసి మళ్ళీ ఒకసారి పంపగలరా?',
+  ml: 'ക്ഷമിക്കണം, ആ ഫയൽ കിട്ടിയില്ല. ഒന്നുകൂടി അയക്കാമോ?',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -260,6 +308,8 @@ export const IDENTITY_MISMATCH: Localised = {
   en: 'We noticed a difference in some document details. Our documentation team will contact you for verification.',
   ta: 'சில ஆவண விவரங்களில் வேறுபாடு தெரிகிறது. சரிபார்ப்பதற்காக எங்கள் ஆவணக் குழு உங்களைத் தொடர்பு கொள்வார்கள்.',
   hi: 'हमें कुछ दस्तावेज़ों की जानकारी में अंतर मिला है। सत्यापन के लिए हमारी डॉक्यूमेंटेशन टीम आपसे संपर्क करेगी।',
+  te: 'కొన్ని డాక్యుమెంట్ వివరాల్లో తేడా గమనించాం. వెరిఫికేషన్ కోసం మా డాక్యుమెంటేషన్ టీమ్ మిమ్మల్ని సంప్రదిస్తుంది.',
+  ml: 'ചില ഡോക്യുമെന്റ് വിവരങ്ങളിൽ ഒരു വ്യത്യാസം ഞങ്ങൾ ശ്രദ്ധിച്ചു. ഞങ്ങളുടെ ഡോക്യുമെന്റേഷൻ ടീം ഉറപ്പുവരുത്താൻ നിങ്ങളെ ബന്ധപ്പെടും.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -270,28 +320,32 @@ export const CONFIRM_HEADER: Localised = {
   en: 'Please confirm your profile:',
   ta: 'உங்கள் விவரங்களை உறுதிப்படுத்தவும்:',
   hi: 'कृपया अपनी प्रोफ़ाइल कन्फ़र्म करें:',
+  te: 'మీ ప్రొఫైల్‌ని ఒకసారి కన్ఫర్మ్ చేయండి:',
+  ml: 'നിങ്ങളുടെ പ്രൊഫൈൽ ശരിയാണോ എന്ന് പറയൂ:',
 };
 
 export const CONFIRM_QUESTION: Localised = {
   en: 'Is this correct?',
   ta: 'இது சரியா?',
   hi: 'क्या यह सही है?',
+  te: 'ఇది కరెక్టేనా?',
+  ml: 'ഇത് ശരിയാണോ?',
 };
 
 export const CONFIRM_LABELS: Record<string, Localised> = {
-  name: { en: 'Name', ta: 'பெயர்', hi: 'नाम' },
-  skill: { en: 'Current skill', ta: 'தற்போதைய திறமை', hi: 'मौजूदा स्किल' },
-  experience: { en: 'Experience', ta: 'அனுபவம்', hi: 'अनुभव' },
-  lookingFor: { en: 'Looking for', ta: 'தேடும் வேலை', hi: 'चाहिए' },
-  countries: { en: 'Countries', ta: 'நாடுகள்', hi: 'देश' },
-  joining: { en: 'Joining', ta: 'சேர முடியும்', hi: 'जॉइनिंग' },
-  passport: { en: 'Passport', ta: 'பாஸ்போர்ட்', hi: 'पासपोर्ट' },
-  documents: { en: 'Documents', ta: 'ஆவணங்கள்', hi: 'दस्तावेज़' },
+  name: { en: 'Name', ta: 'பெயர்', hi: 'नाम', te: 'పేరు', ml: 'പേര്' },
+  skill: { en: 'Current skill', ta: 'தற்போதைய திறமை', hi: 'मौजूदा स्किल', te: 'ప్రస్తుత స్కిల్', ml: 'ഇപ്പോഴത്തെ സ്കിൽ' },
+  experience: { en: 'Experience', ta: 'அனுபவம்', hi: 'अनुभव', te: 'అనుభవం', ml: 'പരിചയം' },
+  lookingFor: { en: 'Looking for', ta: 'தேடும் வேலை', hi: 'चाहिए', te: 'కావాల్సింది', ml: 'ആവശ്യമുള്ളത്' },
+  countries: { en: 'Countries', ta: 'நாடுகள்', hi: 'देश', te: 'దేశాలు', ml: 'രാജ്യങ്ങൾ' },
+  joining: { en: 'Joining', ta: 'சேர முடியும்', hi: 'जॉइनिंग', te: 'చేరిక', ml: 'ജോയിനിംഗ്' },
+  passport: { en: 'Passport', ta: 'பாஸ்போர்ட்', hi: 'पासपोर्ट', te: 'పాస్‌పోర్ట్', ml: 'പാസ്‌പോർട്ട്' },
+  documents: { en: 'Documents', ta: 'ஆவணங்கள்', hi: 'दस्तावेज़', te: 'డాక్యుమెంట్లు', ml: 'ഡോക്യുമെന്റുകൾ' },
 };
 
 export const CONFIRM_CHOICES: Choice[] = [
-  { id: 'correct', label: { en: 'Yes, correct', ta: 'ஆம், சரி', hi: 'हाँ, सही है' } },
-  { id: 'edit', label: { en: 'Edit details', ta: 'திருத்த வேண்டும்', hi: 'बदलाव करें' } },
+  { id: 'correct', label: { en: 'Yes, correct', ta: 'ஆம், சரி', hi: 'हाँ, सही है', te: 'అవును, సరైనది', ml: 'അതെ, ശരിയാണ്' } },
+  { id: 'edit', label: { en: 'Edit details', ta: 'திருத்த வேண்டும்', hi: 'बदलाव करें', te: 'వివరాలు మార్చండి', ml: 'വിവരം തിരുത്തുക' } },
   CHOICE_STAFF,
 ];
 
@@ -299,15 +353,17 @@ export const EDIT_PROMPT: Localised = {
   en: 'What would you like to change?',
   ta: 'எதை மாற்ற விரும்புகிறீர்கள்?',
   hi: 'आप क्या बदलना चाहेंगे?',
+  te: 'మీరు ఏం మార్చాలనుకుంటున్నారు?',
+  ml: 'എന്താണ് മാറ്റേണ്ടത്?',
 };
 
 export const EDIT_CHOICES: Choice[] = [
-  { id: 'personal', label: { en: 'Personal details', ta: 'தனிப்பட்ட விவரங்கள்', hi: 'निजी जानकारी' } },
-  { id: 'experience', label: { en: 'Experience', ta: 'அனுபவம்', hi: 'अनुभव' } },
-  { id: 'job_preference', label: { en: 'Job preference', ta: 'வேலை விருப்பம்', hi: 'नौकरी की पसंद' } },
-  { id: 'country', label: { en: 'Country preference', ta: 'நாட்டு விருப்பம்', hi: 'देश की पसंद' } },
-  { id: 'availability', label: { en: 'Availability', ta: 'சேரும் நேரம்', hi: 'उपलब्धता' } },
-  { id: 'documents', label: { en: 'Documents', ta: 'ஆவணங்கள்', hi: 'दस्तावेज़' } },
+  { id: 'personal', label: { en: 'Personal details', ta: 'தனிப்பட்ட விவரங்கள்', hi: 'निजी जानकारी', te: 'వ్యక్తిగత వివరాలు', ml: 'സ്വന്തം വിവരങ്ങൾ' } },
+  { id: 'experience', label: { en: 'Experience', ta: 'அனுபவம்', hi: 'अनुभव', te: 'అనుభవం', ml: 'പരിചയം' } },
+  { id: 'job_preference', label: { en: 'Job preference', ta: 'வேலை விருப்பம்', hi: 'नौकरी की पसंद', te: 'పని ఇష్టం', ml: 'ജോലി താൽപ്പര്യം' } },
+  { id: 'country', label: { en: 'Country preference', ta: 'நாட்டு விருப்பம்', hi: 'देश की पसंद', te: 'దేశం ఇష్టం', ml: 'രാജ്യം താൽപ്പര്യം' } },
+  { id: 'availability', label: { en: 'Availability', ta: 'சேரும் நேரம்', hi: 'उपलब्धता', te: 'అందుబాటు', ml: 'ലഭ്യത' } },
+  { id: 'documents', label: { en: 'Documents', ta: 'ஆவணங்கள்', hi: 'दस्तावेज़', te: 'డాక్యుమెంట్లు', ml: 'ഡോക്യുമെന്റുകൾ' } },
 ];
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -336,6 +392,8 @@ export const COMPLETED: Localised = {
     'आपकी प्रोफ़ाइल से मेल खाती वैकेंसी आने पर हम आपसे संपर्क करेंगे। ' +
     'रजिस्ट्रेशन चयन की गारंटी नहीं है।\n\n' +
     'जानकारी बदलने के लिए UPDATE और प्रोफ़ाइल हटाने के लिए DELETE भेजें।',
+    te: 'నమోదు పూర్తయ్యింది ✅\nApplication ID: {{candidateId}}\n\nAdira Enterprises లో నమోదు చేసుకున్నందుకు ధన్యవాదాలు. ఈ ID ను దాచుకోండి — మీ దరఖాస్తు స్థితి తెలుసుకోవాలంటే ఎప్పుడైనా మాకు పంపండి.\n\nమీ ప్రొఫైల్‌కు తగిన ఖాళీ ఉన్నప్పుడు మేము మిమ్మల్ని సంప్రదిస్తాము. నమోదు చేసుకున్నంత మాత్రాన ఎంపిక ఖాయం కాదు.\n\nమీ వివరాలు మార్చాలంటే UPDATE అని, మీ ప్రొఫైల్ తీసేయాలంటే DELETE అని రిప్లై ఇవ్వండి.',
+    ml: 'രജിസ്ട്രേഷൻ പൂർത്തിയായി ✅\nഅപേക്ഷ ഐഡി: {{candidateId}}\n\nAdira Enterprises ൽ രജിസ്റ്റർ ചെയ്തതിന് നന്ദി. ഈ ഐഡി സൂക്ഷിച്ചു വെക്കണേ — എപ്പോൾ വേണമെങ്കിലും ഇത് അയച്ചാൽ അപേക്ഷയുടെ സ്ഥിതി അറിയാൻ പറ്റും.\n\nനിങ്ങളുടെ പ്രൊഫൈലിന് ചേരുന്ന ഒഴിവ് വന്നാൽ ഞങ്ങൾ ബന്ധപ്പെടും. രജിസ്ട്രേഷൻ ചെയ്തതുകൊണ്ട് സെലക്ഷൻ ഉറപ്പല്ല.\n\nവിവരങ്ങൾ മാറ്റാൻ UPDATE എന്നും പ്രൊഫൈൽ നീക്കം ചെയ്യാൻ DELETE എന്നും റിപ്ലൈ ചെയ്യൂ.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -351,18 +409,24 @@ export const TRACK_ASK_ID: Localised = {
   en: 'Please type your Application ID.\nExample: ADR-00042',
   ta: 'உங்கள் விண்ணப்ப எண்ணைத் தட்டச்சு செய்யவும்.\nஎடுத்துக்காட்டு: ADR-00042',
   hi: 'कृपया अपनी एप्लिकेशन ID टाइप करें।\nउदाहरण: ADR-00042',
+  te: 'దయచేసి మీ Application ID టైప్ చేయండి.\nఉదాహరణ: ADR-00042',
+  ml: 'നിങ്ങളുടെ അപേക്ഷ ഐഡി ടൈപ്പ് ചെയ്യൂ.\nഉദാഹരണം: ADR-00042',
 };
 
 export const TRACK_PENDING: Localised = {
   en: 'Application ID: {{candidateId}}\nStatus: In progress ⏳\n\nYour profile is with our team. We will message you here as soon as there is an update.',
   ta: 'விண்ணப்ப எண்: {{candidateId}}\nநிலை: பரிசீலனையில் ⏳\n\nஉங்கள் விவரங்கள் எங்கள் குழுவிடம் உள்ளன. புதிய தகவல் வந்தவுடன் இங்கேயே தெரிவிப்போம்.',
   hi: 'एप्लिकेशन ID: {{candidateId}}\nस्थिति: प्रक्रिया में ⏳\n\nआपकी प्रोफ़ाइल हमारी टीम के पास है। कोई अपडेट आते ही हम आपको यहीं मैसेज करेंगे।',
+  te: 'Application ID: {{candidateId}}\nస్థితి: జరుగుతోంది ⏳\n\nమీ ప్రొఫైల్ మా టీమ్ దగ్గర ఉంది. ఏదైనా అప్‌డేట్ రాగానే మేము ఇక్కడ మీకు మెసేజ్ చేస్తాము.',
+  ml: 'അപേക്ഷ ഐഡി: {{candidateId}}\nസ്ഥിതി: നടന്നു കൊണ്ടിരിക്കുന്നു ⏳\n\nനിങ്ങളുടെ പ്രൊഫൈൽ ഞങ്ങളുടെ ടീമിന്റെ കയ്യിലുണ്ട്. പുതിയ വിവരം വന്നാൽ ഉടനെ ഇവിടെ അറിയിക്കാം.',
 };
 
 export const TRACK_COMPLETED: Localised = {
   en: 'Application ID: {{candidateId}}\nStatus: Completed ✅\n\nOur staff will contact you about the next steps.',
   ta: 'விண்ணப்ப எண்: {{candidateId}}\nநிலை: முடிந்தது ✅\n\nஅடுத்த கட்டங்கள் குறித்து எங்கள் ஊழியர் தொடர்பு கொள்வார்கள்.',
   hi: 'एप्लिकेशन ID: {{candidateId}}\nस्थिति: पूरा हुआ ✅\n\nअगले चरणों के बारे में हमारा स्टाफ आपसे संपर्क करेगा।',
+  te: 'Application ID: {{candidateId}}\nస్థితి: పూర్తయింది ✅\n\nతర్వాతి స్టెప్స్ గురించి మా సిబ్బంది మిమ్మల్ని సంప్రదిస్తారు.',
+  ml: 'അപേക്ഷ ഐഡി: {{candidateId}}\nസ്ഥിതി: പൂർത്തിയായി ✅\n\nഅടുത്ത കാര്യങ്ങളെ കുറിച്ച് ഞങ്ങളുടെ സ്റ്റാഫ് നിങ്ങളെ ബന്ധപ്പെടും.',
 };
 
 /**
@@ -374,6 +438,8 @@ export const TRACK_REJECTED: Localised = {
   en: 'Application ID: {{candidateId}}\nStatus: Not proceeding\n\nWe are not able to take this application forward. Your profile stays with us for future vacancies, and we will be in touch if something suitable comes up.',
   ta: 'விண்ணப்ப எண்: {{candidateId}}\nநிலை: தொடரவில்லை\n\nஇந்த விண்ணப்பத்தை எங்களால் தொடர முடியவில்லை. உங்கள் விவரங்கள் எதிர்கால வாய்ப்புகளுக்காக எங்களிடம் இருக்கும்; பொருத்தமானது வந்தால் தொடர்பு கொள்வோம்.',
   hi: 'एप्लिकेशन ID: {{candidateId}}\nस्थिति: आगे नहीं बढ़ रहे\n\nहम इस आवेदन को आगे नहीं बढ़ा पा रहे हैं। आपकी प्रोफ़ाइल भविष्य की वैकेंसी के लिए हमारे पास रहेगी, और कुछ उपयुक्त आने पर हम संपर्क करेंगे।',
+  te: 'Application ID: {{candidateId}}\nస్థితి: ముందుకు వెళ్లడం లేదు\n\nఈ దరఖాస్తును మేము ముందుకు తీసుకెళ్లలేకపోతున్నాము. మీ ప్రొఫైల్ భవిష్యత్ ఖాళీల కోసం మా దగ్గరే ఉంటుంది, ఏదైనా సరిపోయేది వచ్చినప్పుడు మేము మిమ్మల్ని సంప్రదిస్తాము.',
+  ml: 'അപേക്ഷ ഐഡി: {{candidateId}}\nസ്ഥിതി: മുന്നോട്ട് പോകുന്നില്ല\n\nഈ അപേക്ഷ മുന്നോട്ട് കൊണ്ടുപോകാൻ ഞങ്ങൾക്ക് പറ്റുന്നില്ല. നിങ്ങളുടെ പ്രൊഫൈൽ വരും കാലത്തെ ഒഴിവുകൾക്കായി ഞങ്ങളുടെ കയ്യിൽ ഉണ്ടാകും, പറ്റിയത് വന്നാൽ ഞങ്ങൾ ബന്ധപ്പെടും.',
 };
 
 /**
@@ -387,6 +453,8 @@ export const TRACK_NOT_FOUND: Localised = {
   en: 'I could not find an application with that ID for this number. Please check the ID, or tap below to talk to our staff.',
   ta: 'இந்த எண்ணுக்கு அந்த விண்ணப்ப எண்ணில் எதுவும் கிடைக்கவில்லை. எண்ணைச் சரிபார்க்கவும், அல்லது ஊழியருடன் பேச கீழே தட்டவும்.',
   hi: 'इस नंबर के लिए उस ID से कोई आवेदन नहीं मिला। कृपया ID जाँच लें, या स्टाफ से बात करने के लिए नीचे टैप करें।',
+  te: 'ఈ నంబర్‌కు ఆ ID తో ఏ దరఖాస్తు నాకు కనబడలేదు. దయచేసి ID చెక్ చేయండి, లేదా మా సిబ్బందితో మాట్లాడటానికి కింద నొక్కండి.',
+  ml: 'ഈ നമ്പറിന് ഈ ഐഡിയിൽ ഒരു അപേക്ഷയും കണ്ടെത്താൻ പറ്റിയില്ല. ഐഡി ഒന്ന് കൂടെ ചെക്ക് ചെയ്യൂ, അല്ലെങ്കിൽ ഞങ്ങളുടെ സ്റ്റാഫിനോട് സംസാരിക്കാൻ താഴെ ടാപ്പ് ചെയ്യൂ.',
 };
 
 /** They asked to track before finishing registration — there is no id yet. */
@@ -394,6 +462,8 @@ export const TRACK_NOT_REGISTERED: Localised = {
   en: 'You do not have an Application ID yet — your registration is not finished. Shall we continue from where you stopped?',
   ta: 'உங்களுக்கு இன்னும் விண்ணப்ப எண் இல்லை — பதிவு முடியவில்லை. நிறுத்திய இடத்திலிருந்து தொடரலாமா?',
   hi: 'आपके पास अभी एप्लिकेशन ID नहीं है — आपका रजिस्ट्रेशन पूरा नहीं हुआ है। क्या हम वहीं से आगे बढ़ें जहाँ रुके थे?',
+  te: 'మీకు ఇంకా Application ID రాలేదు — మీ నమోదు పూర్తి కాలేదు. మీరు ఆగిన చోటు నుండి కొనసాగిద్దామా?',
+  ml: 'നിങ്ങൾക്ക് ഇതുവരെ അപേക്ഷ ഐഡി ഇല്ല — രജിസ്ട്രേഷൻ പൂർത്തിയായിട്ടില്ല. നിർത്തിയിടത്ത് നിന്ന് തുടരണോ?',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -420,23 +490,29 @@ export const SESSION_ENDED: Localised = {
   hi:
     'निष्क्रियता के कारण आपका सेशन समाप्त कर दिया गया है।\n' +
     'आपके जवाब सुरक्षित हैं — क्या आप आगे बढ़ना चाहेंगे, या शुरू से शुरू करना चाहेंगे?',
+    te: 'చాలా సేపు ఏమీ చేయకపోవడం వల్ల మీ సెషన్ ఆగిపోయింది.\nమీ జవాబులు సేవ్ అయ్యాయి — కొనసాగించాలా, లేదా మళ్లీ మొదటి నుండి మొదలుపెట్టాలా?',
+    ml: 'കുറേ നേരം ഒന്നും ചെയ്യാത്തതു കൊണ്ട് നിങ്ങളുടെ സെഷൻ അവസാനിപ്പിച്ചു.\nനിങ്ങളുടെ ഉത്തരങ്ങൾ സേവ് ചെയ്തിട്ടുണ്ട് — തുടരണോ, അതോ വീണ്ടും തുടങ്ങണോ?',
 };
 
 export const RESUME_PROMPT: Localised = {
   en: 'Welcome back{{name}}. Your registration is saved and not finished. Would you like to continue from where you stopped?',
   ta: 'மீண்டும் வரவேற்கிறோம்{{name}}. உங்கள் பதிவு சேமிக்கப்பட்டுள்ளது, முடியவில்லை. நிறுத்திய இடத்திலிருந்து தொடரலாமா?',
   hi: 'वापस स्वागत है{{name}}। आपका रजिस्ट्रेशन सेव है और अधूरा है। क्या आप वहीं से आगे बढ़ना चाहेंगे जहाँ रुके थे?',
+  te: 'తిరిగి స్వాగతం{{name}}. మీ నమోదు సేవ్ అయి ఉంది, పూర్తి కాలేదు. మీరు ఆగిన చోటు నుండి కొనసాగించాలనుకుంటున్నారా?',
+  ml: 'തിരിച്ചു വന്നതിൽ സന്തോഷം{{name}}. നിങ്ങളുടെ രജിസ്ട്രേഷൻ സേവ് ചെയ്തിട്ടുണ്ട്, പൂർത്തിയായിട്ടില്ല. നിർത്തിയിടത്ത് നിന്ന് തുടരണോ?',
 };
 
 export const RESUME_CHOICES: Choice[] = [
-  { id: 'continue', label: { en: 'Continue session', ta: 'தொடரவும்', hi: 'आगे बढ़ें' } },
-  { id: 'restart', label: { en: 'Restart session', ta: 'முதலிலிருந்து', hi: 'शुरू से' } },
+  { id: 'continue', label: { en: 'Continue session', ta: 'தொடரவும்', hi: 'आगे बढ़ें', te: 'సెషన్ కొనసాగించు', ml: 'സെഷൻ തുടരുക' } },
+  { id: 'restart', label: { en: 'Restart session', ta: 'முதலிலிருந்து', hi: 'शुरू से', te: 'సెషన్ మళ్లీ మొదలు', ml: 'സെഷൻ പുനരാരംഭിക്കുക' } },
 ];
 
 export const RESTARTED: Localised = {
   en: 'Starting again from the beginning.',
   ta: 'முதலிலிருந்து மீண்டும் தொடங்குகிறோம்.',
   hi: 'शुरुआत से फिर से शुरू कर रहे हैं।',
+  te: 'మొదటి నుండి మళ్లీ మొదలుపెడుతున్నాము.',
+  ml: 'തുടക്കം മുതൽ വീണ്ടും തുടങ്ങുന്നു.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -447,6 +523,8 @@ export const RETURNING: Localised = {
   en: 'Welcome back, {{name}}. Your Application ID is {{candidateId}}. What would you like to do?',
   ta: 'மீண்டும் வரவேற்கிறோம், {{name}}. உங்கள் விண்ணப்ப எண் {{candidateId}}. என்ன செய்ய விரும்புகிறீர்கள்?',
   hi: 'वापस स्वागत है, {{name}}। आपकी एप्लिकेशन ID {{candidateId}} है। आप क्या करना चाहेंगे?',
+  te: 'మళ్ళీ వచ్చినందుకు స్వాగతం, {{name}}. మీ దరఖాస్తు ఐడి {{candidateId}}. మీరు ఏం చేయాలనుకుంటున్నారు?',
+  ml: 'തിരികെ വന്നതിൽ സന്തോഷം, {{name}}. നിങ്ങളുടെ അപേക്ഷ ID {{candidateId}} ആണ്. എന്താണ് ചെയ്യേണ്ടത്?',
 };
 
 /** Same message for a returning candidate whose registration never completed. */
@@ -454,24 +532,26 @@ export const RETURNING_NO_ID: Localised = {
   en: 'Welcome back, {{name}}. What would you like to do?',
   ta: 'மீண்டும் வரவேற்கிறோம், {{name}}. என்ன செய்ய விரும்புகிறீர்கள்?',
   hi: 'वापस स्वागत है, {{name}}। आप क्या करना चाहेंगे?',
+  te: 'మళ్ళీ వచ్చినందుకు స్వాగతం, {{name}}. మీరు ఏం చేయాలనుకుంటున్నారు?',
+  ml: 'തിരികെ വന്നതിൽ സന്തോഷം, {{name}}. എന്താണ് ചെയ്യേണ്ടത്?',
 };
 
 export const RETURNING_CHOICES: Choice[] = [
   {
     id: 'track',
-    label: { en: 'Track application', ta: 'விண்ணப்ப நிலை', hi: 'आवेदन ट्रैक करें' },
+    label: { en: 'Track application', ta: 'விண்ணப்ப நிலை', hi: 'आवेदन ट्रैक करें', te: 'దరఖాస్తు ట్రాక్', ml: 'അപേക്ഷ ട്രാക്ക്' },
   },
   {
     id: 'check_jobs',
-    label: { en: 'Check suitable jobs', ta: 'வேலை வாய்ப்புகள்', hi: 'उपयुक्त नौकरियाँ' },
+    label: { en: 'Check suitable jobs', ta: 'வேலை வாய்ப்புகள்', hi: 'उपयुक्त नौकरियाँ', te: 'సరైన ఉద్యోగాలు చూడండి', ml: 'യോജിച്ച ജോലികൾ നോക്കാം' },
   },
-  { id: 'update', label: { en: 'Update profile', ta: 'விவரம் மாற்ற', hi: 'प्रोफ़ाइल अपडेट' } },
+  { id: 'update', label: { en: 'Update profile', ta: 'விவரம் மாற்ற', hi: 'प्रोफ़ाइल अपडेट', te: 'ప్రొఫైల్ మార్చండి', ml: 'പ്രൊഫൈൽ അപ്ഡേറ്റ്' } },
   {
     id: 'upload_documents',
-    label: { en: 'Upload documents', ta: 'ஆவணம் அனுப்ப', hi: 'दस्तावेज़ भेजें' },
+    label: { en: 'Upload documents', ta: 'ஆவணம் அனுப்ப', hi: 'दस्तावेज़ भेजें', te: 'డాక్యుమెంట్లు పంపండి', ml: 'രേഖകൾ അപ്‌ലോഡ് ചെയ്യുക' },
   },
   CHOICE_STAFF,
-  { id: 'delete', label: { en: 'Delete profile', ta: 'சுயவிவரம் நீக்க', hi: 'प्रोफ़ाइल हटाएँ' } },
+  { id: 'delete', label: { en: 'Delete profile', ta: 'சுயவிவரம் நீக்க', hi: 'प्रोफ़ाइल हटाएँ', te: 'ప్రొఫైల్ తీసేయండి', ml: 'പ്രൊഫൈൽ ഡിലീറ്റ് ചെയ്യാം' } },
 ];
 
 /**
@@ -485,6 +565,8 @@ export const JOBS_ANSWER: Localised = {
   en: 'Your profile is with our team. When a vacancy matches it, we will message you here. Would you like a staff member to call you about current openings?',
   ta: 'உங்கள் விவரங்கள் எங்கள் குழுவிடம் உள்ளன. பொருந்தும் வேலை வரும்போது இங்கேயே தெரிவிப்போம். தற்போதைய வாய்ப்புகள் குறித்து ஊழியர் ஒருவர் அழைக்க வேண்டுமா?',
   hi: 'आपकी प्रोफ़ाइल हमारी टीम के पास है। मेल खाती वैकेंसी आने पर हम आपको यहीं मैसेज करेंगे। क्या आप चाहेंगे कि कोई स्टाफ मेंबर मौजूदा वैकेंसी के बारे में आपको कॉल करे?',
+  te: 'మీ ప్రొఫైల్ మా టీమ్ దగ్గర ఉంది. దానికి సరిపడే ఖాళీ వచ్చినప్పుడు, మేము ఇక్కడే మీకు మెసేజ్ చేస్తాము. ఇప్పుడున్న ఖాళీల గురించి మా స్టాఫ్ మీకు కాల్ చేయాలా?',
+  ml: 'നിങ്ങളുടെ പ്രൊഫൈൽ ഞങ്ങളുടെ ടീമിന്റെ കയ്യിലുണ്ട്. യോജിച്ച ഒഴിവ് വരുമ്പോൾ ഞങ്ങൾ ഇവിടെ മെസേജ് ചെയ്യും. ഇപ്പോൾ ഉള്ള ഒഴിവുകളെക്കുറിച്ച് ഞങ്ങളുടെ സ്റ്റാഫ് നിങ്ങളെ വിളിക്കണോ?',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -495,6 +577,8 @@ export const REMINDER: Localised = {
   en: 'Hi {{name}}, your Adira job profile is incomplete. Would you like to continue from where you stopped?',
   ta: 'வணக்கம் {{name}}, உங்கள் அதிரா வேலை விவரங்கள் முழுமையடையவில்லை. நிறுத்திய இடத்திலிருந்து தொடரலாமா?',
   hi: 'नमस्ते {{name}}, आपकी अदिरा जॉब प्रोफ़ाइल अधूरी है। क्या आप वहीं से आगे बढ़ना चाहेंगे जहाँ रुके थे?',
+  te: 'నమస్తే {{name}}, మీ Adira ఉద్యోగ ప్రొఫైల్ పూర్తి కాలేదు. మీరు ఆపిన చోటు నుండి కంటిన్యూ చేయాలా?',
+  ml: 'ഹായ് {{name}}, നിങ്ങളുടെ Adira ജോലി പ്രൊഫൈൽ പൂർത്തിയായിട്ടില്ല. നിർത്തിയ സ്ഥലത്ത് നിന്ന് തുടരണോ?',
 };
 
 /**
@@ -503,21 +587,25 @@ export const REMINDER: Localised = {
  * so in words or send DELETE, both of which are understood anywhere (§23).
  */
 export const REMINDER_CHOICES: Choice[] = [
-  { id: 'continue', label: { en: 'Continue', ta: 'தொடரவும்', hi: 'आगे बढ़ें' } },
-  { id: 'later', label: { en: 'Later', ta: 'பிறகு', hi: 'बाद में' } },
-  { id: 'restart', label: { en: 'Start from first', ta: 'முதலிலிருந்து', hi: 'शुरू से' } },
+  { id: 'continue', label: { en: 'Continue', ta: 'தொடரவும்', hi: 'आगे बढ़ें', te: 'కొనసాగించండి', ml: 'തുടരുക' } },
+  { id: 'later', label: { en: 'Later', ta: 'பிறகு', hi: 'बाद में', te: 'తర్వాత', ml: 'പിന്നീട്' } },
+  { id: 'restart', label: { en: 'Start from first', ta: 'முதலிலிருந்து', hi: 'शुरू से', te: 'మొదటి నుండి', ml: 'ആദ്യം മുതൽ തുടങ്ങാം' } },
 ];
 
 export const REMINDER_LATER: Localised = {
   en: 'No problem. Message us whenever you are ready and we will continue from here.',
   ta: 'பரவாயில்லை. நீங்கள் தயாராகும்போது அனுப்புங்கள், இங்கிருந்தே தொடர்வோம்.',
   hi: 'कोई बात नहीं। जब आप तैयार हों तब मैसेज करें, हम यहीं से आगे बढ़ेंगे।',
+  te: 'పర్వాలేదు. మీరు రెడీ అయినప్పుడు మాకు మెసేజ్ పెట్టండి, మేము ఇక్కడి నుండి కంటిన్యూ చేస్తాము.',
+  ml: 'കുഴപ്പമില്ല. തയ്യാറാകുമ്പോൾ ഞങ്ങൾക്ക് മെസേജ് ചെയ്യൂ, ഞങ്ങൾ ഇവിടെ നിന്ന് തുടരും.',
 };
 
 export const REMINDER_NOT_INTERESTED: Localised = {
   en: 'Understood, we will not message you about this again. If you change your mind, just message us here.',
   ta: 'சரி, இது குறித்து மீண்டும் தொந்தரவு செய்ய மாட்டோம். மனம் மாறினால் இங்கே அனுப்புங்கள்.',
   hi: 'ठीक है, हम इस बारे में दोबारा मैसेज नहीं करेंगे। मन बदले तो यहीं मैसेज कर दें।',
+  te: 'అర్థమైంది, దీని గురించి మేము మీకు ఇక మెసేజ్ చేయము. మీ మనసు మారితే, ఇక్కడే మాకు మెసేజ్ పెట్టండి.',
+  ml: 'മനസ്സിലായി, ഇനി ഇതിനെക്കുറിച്ച് ഞങ്ങൾ മെസേജ് ചെയ്യില്ല. മനസ്സ് മാറിയാൽ ഇവിടെ മെസേജ് ചെയ്താൽ മതി.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -528,40 +616,50 @@ export const UPDATE_PROMPT: Localised = {
   en: 'What would you like to update?',
   ta: 'எதைப் புதுப்பிக்க விரும்புகிறீர்கள்?',
   hi: 'आप क्या अपडेट करना चाहेंगे?',
+  te: 'మీరు ఏం మార్చాలనుకుంటున్నారు?',
+  ml: 'എന്താണ് അപ്ഡേറ്റ് ചെയ്യേണ്ടത്?',
 };
 
 export const UPDATE_CHOICES: Choice[] = [
-  { id: 'new_experience', label: { en: 'New experience', ta: 'புதிய அனுபவம்', hi: 'नया अनुभव' } },
-  { id: 'new_certificate', label: { en: 'New certificate', ta: 'புதிய சான்றிதழ்', hi: 'नया सर्टिफिकेट' } },
-  { id: 'job_preference', label: { en: 'Job preference', ta: 'வேலை விருப்பம்', hi: 'नौकरी की पसंद' } },
-  { id: 'country', label: { en: 'Country preference', ta: 'நாட்டு விருப்பம்', hi: 'देश की पसंद' } },
-  { id: 'documents', label: { en: 'Passport / documents', ta: 'பாஸ்போர்ட்/ஆவணம்', hi: 'पासपोर्ट/दस्तावेज़' } },
-  { id: 'availability', label: { en: 'Joining availability', ta: 'சேரும் நேரம்', hi: 'जॉइनिंग उपलब्धता' } },
-  { id: 'contact', label: { en: 'Contact details', ta: 'தொடர்பு விவரம்', hi: 'संपर्क जानकारी' } },
+  { id: 'new_experience', label: { en: 'New experience', ta: 'புதிய அனுபவம்', hi: 'नया अनुभव', te: 'కొత్త అనుభవం', ml: 'പുതിയ പരിചയം' } },
+  { id: 'new_certificate', label: { en: 'New certificate', ta: 'புதிய சான்றிதழ்', hi: 'नया सर्टिफिकेट', te: 'కొత్త సర్టిఫికెట్', ml: 'പുതിയ സർട്ടിഫിക്കറ്റ്' } },
+  { id: 'job_preference', label: { en: 'Job preference', ta: 'வேலை விருப்பம்', hi: 'नौकरी की पसंद', te: 'పని ఇష్టం', ml: 'ജോലി താൽപ്പര്യം' } },
+  { id: 'country', label: { en: 'Country preference', ta: 'நாட்டு விருப்பம்', hi: 'देश की पसंद', te: 'దేశం ఇష్టం', ml: 'രാജ്യം താൽപ്പര്യം' } },
+  { id: 'documents', label: { en: 'Passport / documents', ta: 'பாஸ்போர்ட்/ஆவணம்', hi: 'पासपोर्ट/दस्तावेज़', te: 'పాస్‌పోర్ట్ / పత్రాలు', ml: 'പാസ്‌പോർട്ട് / രേഖകൾ' } },
+  { id: 'availability', label: { en: 'Joining availability', ta: 'சேரும் நேரம்', hi: 'जॉइनिंग उपलब्धता', te: 'చేరిక లభ్యత', ml: 'ജോലിയിൽ ചേരാനുള്ള സമയം' } },
+  { id: 'contact', label: { en: 'Contact details', ta: 'தொடர்பு விவரம்', hi: 'संपर्क जानकारी', te: 'సంప్రదింపు వివరాలు', ml: 'ബന്ധപ്പെടാനുള്ള വിവരങ്ങൾ' } },
 ];
 
 export const UPDATE_SAVED: Localised = {
   en: 'Updated ✅ Your profile has been changed.',
   ta: 'புதுப்பிக்கப்பட்டது ✅ உங்கள் விவரங்கள் மாற்றப்பட்டன.',
   hi: 'अपडेट हो गया ✅ आपकी प्रोफ़ाइल बदल दी गई है।',
+  te: 'అప్‌డేట్ అయ్యింది ✅ మీ ప్రొఫైల్ మార్చాము.',
+  ml: 'അപ്ഡേറ്റ് ചെയ്തു ✅ നിങ്ങളുടെ പ്രൊഫൈൽ മാറ്റിയിട്ടുണ്ട്.',
 };
 
 export const SEND_CERTIFICATE: Localised = {
   en: 'Please send the certificate as a PDF or a clear photo.',
   ta: 'சான்றிதழை PDF ஆகவோ தெளிவான புகைப்படமாகவோ அனுப்பவும்.',
   hi: 'कृपया सर्टिफिकेट PDF या साफ़ फ़ोटो के रूप में भेजें।',
+  te: 'దయచేసి సర్టిఫికెట్‌ను PDF గా లేదా క్లియర్‌గా ఉన్న ఫోటోగా పంపండి.',
+  ml: 'സർട്ടിഫിക്കറ്റ് PDF ആയോ വ്യക്തമായ ഫോട്ടോ ആയോ അയക്കൂ.',
 };
 
 export const SEND_DOCUMENTS: Localised = {
   en: 'Please send the document you would like to add.',
   ta: 'சேர்க்க விரும்பும் ஆவணத்தை அனுப்பவும்.',
   hi: 'जो दस्तावेज़ जोड़ना है वह भेजें।',
+  te: 'మీరు యాడ్ చేయాలనుకుంటున్న డాక్యుమెంట్‌ను పంపండి.',
+  ml: 'നിങ്ങൾക്ക് ചേർക്കേണ്ട രേഖ അയക്കൂ.',
 };
 
 export const CONTACT_PROMPT: Localised = {
   en: 'Please type the phone number or email you would like us to use.',
   ta: 'நாங்கள் பயன்படுத்த வேண்டிய தொலைபேசி எண் அல்லது மின்னஞ்சலைத் தட்டச்சு செய்யவும்.',
   hi: 'कृपया वह फ़ोन नंबर या ईमेल टाइप करें जो हमें इस्तेमाल करना चाहिए।',
+  te: 'మేము వాడాలనుకునే ఫోన్ నంబర్ లేదా ఈమెయిల్‌ను టైప్ చేయండి.',
+  ml: 'ഞങ്ങൾ ഉപയോഗിക്കേണ്ട ഫോൺ നമ്പറോ ഇമെയിലോ ടൈപ്പ് ചെയ്യൂ.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -572,23 +670,29 @@ export const DELETE_CONFIRM: Localised = {
   en: 'Would you like us to delete your candidate profile and stop future job messages?',
   ta: 'உங்கள் சுயவிவரத்தை நீக்கி, இனி வேலை தொடர்பான செய்திகளை நிறுத்த வேண்டுமா?',
   hi: 'क्या आप चाहते हैं कि हम आपकी प्रोफ़ाइल हटा दें और आगे नौकरी के मैसेज बंद कर दें?',
+  te: 'మీ క్యాండిడేట్ ప్రొఫైల్‌ను డిలీట్ చేసి, ముందు ముందు జాబ్ మెసేజీలు పంపకుండా ఆపాలా?',
+  ml: 'നിങ്ങളുടെ കാൻഡിഡേറ്റ് പ്രൊഫൈൽ ഡിലീറ്റ് ചെയ്ത് ഇനി ജോലി സംബന്ധിച്ച മെസ്സേജുകൾ അയക്കാതിരിക്കണോ?',
 };
 
 export const DELETE_CHOICES: Choice[] = [
-  { id: 'delete_yes', label: { en: 'Yes, delete', ta: 'ஆம், நீக்கவும்', hi: 'हाँ, हटाएँ' } },
-  { id: 'delete_no', label: { en: 'Cancel', ta: 'வேண்டாம்', hi: 'रहने दें' } },
+  { id: 'delete_yes', label: { en: 'Yes, delete', ta: 'ஆம், நீக்கவும்', hi: 'हाँ, हटाएँ', te: 'అవును, DELETE చేయండి', ml: 'അതെ, DELETE ചെയ്യുക' } },
+  { id: 'delete_no', label: { en: 'Cancel', ta: 'வேண்டாம்', hi: 'रहने दें', te: 'రద్దు చేయండి', ml: 'റദ്ദാക്കുക' } },
 ];
 
 export const DELETED: Localised = {
   en: 'Your profile has been removed and we will not send you job messages. If you want to register again, just message us here.',
   ta: 'உங்கள் சுயவிவரம் நீக்கப்பட்டது; இனி வேலை செய்திகள் அனுப்பப்படாது. மீண்டும் பதிவு செய்ய விரும்பினால் இங்கே அனுப்புங்கள்.',
   hi: 'आपकी प्रोफ़ाइल हटा दी गई है और अब हम नौकरी के मैसेज नहीं भेजेंगे। दोबारा रजिस्टर करना हो तो यहीं मैसेज करें।',
+  te: 'మీ ప్రొఫైల్‌ను తీసేశాము, ఇక మీకు జాబ్ మెసేజీలు పంపము. మళ్ళీ రిజిస్టర్ చేసుకోవాలంటే, ఇక్కడ మాకు మెసేజ్ పెట్టండి.',
+  ml: 'നിങ്ങളുടെ പ്രൊഫൈൽ നീക്കം ചെയ്തു, ഇനി ഞങ്ങൾ ജോലി മെസ്സേജുകൾ അയക്കില്ല. വീണ്ടും രജിസ്റ്റർ ചെയ്യണമെങ്കിൽ ഇവിടെ മെസ്സേജ് അയക്കൂ.',
 };
 
 export const DELETE_CANCELLED: Localised = {
   en: 'Nothing has been deleted. Your profile is unchanged.',
   ta: 'எதுவும் நீக்கப்படவில்லை. உங்கள் விவரங்கள் அப்படியே உள்ளன.',
   hi: 'कुछ भी नहीं हटाया गया। आपकी प्रोफ़ाइल जैसी थी वैसी ही है।',
+  te: 'ఏమీ డిలీట్ చేయలేదు. మీ ప్రొఫైల్ అలాగే ఉంది.',
+  ml: 'ഒന്നും ഡിലീറ്റ് ചെയ്തിട്ടില്ല. നിങ്ങളുടെ പ്രൊഫൈലിന് മാറ്റമില്ല.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -599,6 +703,8 @@ export const STAFF_HANDOFF: Localised = {
   en: 'I am passing you to one of our staff. They will reply here shortly.',
   ta: 'உங்களை எங்கள் ஊழியரிடம் இணைக்கிறேன். விரைவில் இங்கே பதிலளிப்பார்கள்.',
   hi: 'मैं आपको हमारे स्टाफ से जोड़ रहा हूँ। वे जल्द ही यहीं जवाब देंगे।',
+  te: 'మిమ్మల్ని మా స్టాఫ్‌లో ఒకరికి కలుపుతున్నాను. వాళ్ళు కాసేపట్లో ఇక్కడే రిప్లై ఇస్తారు.',
+  ml: 'ഞാൻ നിങ്ങളെ ഞങ്ങളുടെ സ്റ്റാഫിലേക്ക് കൈമാറുന്നു. അവർ ഇവിടെ വേഗം മറുപടി തരും.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -613,6 +719,8 @@ export const OUT_OF_SCOPE: Localised = {
   en: 'Our staff will answer that when they contact you. Let me finish your registration first.',
   ta: 'அதற்கு எங்கள் ஊழியர் தொடர்பு கொள்ளும்போது பதிலளிப்பார்கள். முதலில் உங்கள் பதிவை முடிக்கிறேன்.',
   hi: 'हमारा स्टाफ संपर्क करने पर इसका जवाब देगा। पहले मैं आपका रजिस्ट्रेशन पूरा कर लेता हूँ।',
+  te: 'అది మా స్టాఫ్ మిమ్మల్ని కాంటాక్ట్ చేసినప్పుడు చెప్తారు. ముందు మీ రిజిస్ట్రేషన్ పూర్తి చేయనివ్వండి.',
+  ml: 'അതിന് ഞങ്ങളുടെ സ്റ്റാഫ് നിങ്ങളെ ബന്ധപ്പെടുമ്പോൾ മറുപടി പറയും. ആദ്യം നിങ്ങളുടെ രജിസ്ട്രേഷൻ തീർക്കട്ടെ.',
 };
 
 /**
@@ -635,12 +743,16 @@ export const OPTION_EXPIRED: Localised = {
   en: 'That option belonged to an earlier question and is no longer active. Here is where we are now.',
   ta: 'அந்த விருப்பம் முந்தைய கேள்விக்கானது, இப்போது செயலில் இல்லை. நாம் இப்போது இருக்கும் இடம் இதோ.',
   hi: 'वह विकल्प पिछले सवाल का था और अब सक्रिय नहीं है। हम अभी यहाँ हैं।',
+  te: 'ఆ ఆప్షన్ ముందు అడిగిన ప్రశ్నదే, ఇప్పుడు అది పనిచేయదు. మనం ఇప్పుడు ఇక్కడ ఉన్నాం.',
+  ml: 'ആ ഓപ്ഷൻ മുൻപത്തെ ഒരു ചോദ്യത്തിന്റേതായിരുന്നു, അത് ഇപ്പോൾ ഇല്ല. ഇപ്പോൾ നമ്മൾ എവിടെയാണെന്ന് ഇതാ.',
 };
 
 export const UNCLEAR: Localised = {
   en: 'Sorry, I could not use that as an answer. Please reply to the question below.',
   ta: 'மன்னிக்கவும், அதைப் பதிலாகப் பயன்படுத்த முடியவில்லை. கீழே உள்ள கேள்விக்குப் பதிலளிக்கவும்.',
   hi: 'माफ़ कीजिए, मैं इसे जवाब के रूप में नहीं ले सका। कृपया नीचे दिए गए सवाल का जवाब दें।',
+  te: 'క్షమించండి, దాన్ని జవాబుగా తీసుకోలేకపోయాం. దయచేసి కింద ఉన్న ప్రశ్నకు జవాబు ఇవ్వండి.',
+  ml: 'സോറി, അത് ഉത്തരമായി എടുക്കാൻ പറ്റിയില്ല. താഴെയുള്ള ചോദ്യത്തിന് മറുപടി തരൂ.',
 };
 
 /** Asked when a question has been re-asked too often — a person does better. */
@@ -648,6 +760,8 @@ export const STUCK: Localised = {
   en: 'Let me pass this to one of our staff so they can help you directly.',
   ta: 'இதை எங்கள் ஊழியரிடம் தருகிறேன், அவர்கள் நேரடியாக உதவுவார்கள்.',
   hi: 'मैं इसे हमारे स्टाफ को दे देता हूँ ताकि वे सीधे आपकी मदद कर सकें।',
+  te: 'దీన్ని మా సిబ్బందిలో ఒకరికి పంపిస్తాను, వాళ్ళు మీకు నేరుగా సాయం చేస్తారు.',
+  ml: 'ഇത് ഞങ്ങളുടെ സ്റ്റാഫിൽ ഒരാൾക്ക് കൈമാറാം, അവർക്ക് നേരിട്ട് നിങ്ങളെ സഹായിക്കാൻ പറ്റും.',
 };
 
 /**
@@ -661,6 +775,8 @@ export const VOICE_NOT_UNDERSTOOD: Localised = {
   en: 'I have saved your voice message for our staff. Could you also tap an option or type the answer, so I can record it correctly?',
   ta: 'உங்கள் குரல் செய்தியை ஊழியர்களுக்காகச் சேமித்துவிட்டேன். சரியாகப் பதிவு செய்ய, ஒரு விருப்பத்தைத் தேர்ந்தெடுக்கவோ பதிலைத் தட்டச்சு செய்யவோ முடியுமா?',
   hi: 'मैंने आपका वॉइस मैसेज स्टाफ के लिए सेव कर लिया है। सही रिकॉर्ड करने के लिए क्या आप कोई विकल्प चुन सकते हैं या जवाब टाइप कर सकते हैं?',
+  te: 'మీ వాయిస్ మెసేజ్‌ని మా సిబ్బంది కోసం సేవ్ చేశాను. సరిగ్గా నమోదు చేయడానికి, దయచేసి ఒక ఆప్షన్ నొక్కండి లేదా జవాబు టైప్ చేయండి.',
+  ml: 'നിങ്ങളുടെ വോയിസ് മെസ്സേജ് ഞങ്ങളുടെ സ്റ്റാഫിന് വേണ്ടി സേവ് ചെയ്തിട്ടുണ്ട്. ശരിയായി രേഖപ്പെടുത്താൻ, ഒരു ഓപ്ഷൻ ടാപ്പ് ചെയ്യുകയോ ഉത്തരം ടൈപ്പ് ചെയ്യുകയോ ചെയ്യാമോ?',
 };
 
 /** Sent when a candidate messages while staff have taken the conversation over (§24). */
@@ -668,6 +784,8 @@ export const STAFF_IN_CHARGE: Localised = {
   en: 'One of our staff is looking after this conversation. They will reply here.',
   ta: 'இந்த உரையாடலை எங்கள் ஊழியர் ஒருவர் கவனித்து வருகிறார். அவர்கள் இங்கே பதிலளிப்பார்கள்.',
   hi: 'हमारा एक स्टाफ मेंबर इस बातचीत को देख रहा है। वे यहीं जवाब देंगे।',
+  te: 'ఈ సంభాషణను మా సిబ్బందిలో ఒకరు చూసుకుంటున్నారు. వాళ్ళు ఇక్కడే జవాబు ఇస్తారు.',
+  ml: 'ഞങ്ങളുടെ സ്റ്റാഫിൽ ഒരാൾ ഈ സംഭാഷണം നോക്കുന്നുണ്ട്. അവർ ഇവിടെ മറുപടി തരും.',
 };
 
 /** §27 — below the minimum age the flow stops and a person takes over. */
@@ -675,4 +793,6 @@ export const AGE_HANDOFF: Localised = {
   en: 'Thank you. One of our staff will contact you about your application.',
   ta: 'நன்றி. உங்கள் விண்ணப்பம் குறித்து எங்கள் ஊழியர் ஒருவர் தொடர்பு கொள்வார்.',
   hi: 'धन्यवाद। आपके आवेदन के बारे में हमारा स्टाफ आपसे संपर्क करेगा।',
+  te: 'ధన్యవాదాలు. మీ అప్లికేషన్ గురించి మా సిబ్బందిలో ఒకరు మిమ్మల్ని సంప్రదిస్తారు.',
+  ml: 'നന്ദി. നിങ്ങളുടെ അപേക്ഷയെക്കുറിച്ച് ഞങ്ങളുടെ സ്റ്റാഫിൽ ഒരാൾ നിങ്ങളെ ബന്ധപ്പെടും.',
 };

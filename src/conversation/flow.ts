@@ -251,87 +251,87 @@ export function tradeSignals(c: CandidateDoc): Array<string | undefined> {
  * ───────────────────────────────────────────────────────────────────────────*/
 
 export const EDUCATION_CHOICES: Choice[] = [
-  { id: 'below_10', label: { en: 'Below 10th', ta: '10-ஆம் வகுப்புக்கு கீழ்', hi: '10वीं से कम' } },
-  { id: 'class_10', label: { en: '10th', ta: '10-ஆம் வகுப்பு', hi: '10वीं' } },
-  { id: 'class_12', label: { en: '12th', ta: '12-ஆம் வகுப்பு', hi: '12वीं' } },
-  { id: 'iti', label: { en: 'ITI', ta: 'ITI', hi: 'ITI' } },
-  { id: 'diploma', label: { en: 'Diploma', ta: 'டிப்ளோமா', hi: 'डिप्लोमा' } },
-  { id: 'graduate', label: { en: 'Graduate', ta: 'பட்டப்படிப்பு', hi: 'ग्रेजुएट' } },
+  { id: 'below_10', label: { en: 'Below 10th', ta: '10-ஆம் வகுப்புக்கு கீழ்', hi: '10वीं से कम', te: '10వ లోపు', ml: '10ന് താഴെ' } },
+  { id: 'class_10', label: { en: '10th', ta: '10-ஆம் வகுப்பு', hi: '10वीं', te: '10వ తరగతి', ml: '10-ാം ക്ലാസ്' } },
+  { id: 'class_12', label: { en: '12th', ta: '12-ஆம் வகுப்பு', hi: '12वीं', te: '12వ తరగతి', ml: '12-ാം ക്ലാസ്' } },
+  { id: 'iti', label: { en: 'ITI', ta: 'ITI', hi: 'ITI', te: 'ITI', ml: 'ITI' } },
+  { id: 'diploma', label: { en: 'Diploma', ta: 'டிப்ளோமா', hi: 'डिप्लोमा', te: 'డిప్లొమా', ml: 'ഡിപ്ലോമ' } },
+  { id: 'graduate', label: { en: 'Graduate', ta: 'பட்டப்படிப்பு', hi: 'ग्रेजुएट', te: 'గ్రాడ్యుయేట్', ml: 'ബിരുദം' } },
   { id: 'other', label: OTHER },
 ];
 
 export const TRADE_CHOICES: Choice[] = [
   {
     id: 'fabrication_welding',
-    label: { en: 'Fabrication / Welding', ta: 'ஃபேப்ரிகேஷன்/வெல்டிங்', hi: 'फैब्रिकेशन/वेल्डिंग' },
+    label: { en: 'Fabrication / Welding', ta: 'ஃபேப்ரிகேஷன்/வெல்டிங்', hi: 'फैब्रिकेशन/वेल्डिंग', te: 'ఫాబ్రికేషన్ / వెల్డింగ్', ml: 'ഫാബ്രിക്കേഷൻ / വെൽഡിംഗ്' },
   },
-  { id: 'construction', label: { en: 'Construction', ta: 'கட்டுமானம்', hi: 'निर्माण कार्य' } },
+  { id: 'construction', label: { en: 'Construction', ta: 'கட்டுமானம்', hi: 'निर्माण कार्य', te: 'నిర్మాణం', ml: 'നിർമ്മാണം' } },
   {
     id: 'driver_operator',
-    label: { en: 'Driver / Operator', ta: 'டிரைவர்/ஆபரேட்டர்', hi: 'ड्राइवर/ऑपरेटर' },
+    label: { en: 'Driver / Operator', ta: 'டிரைவர்/ஆபரேட்டர்', hi: 'ड्राइवर/ऑपरेटर', te: 'డ్రైవర్ / ఆపరేటర్', ml: 'ഡ്രൈവർ / ഓപ്പറേറ്റർ' },
   },
   {
     id: 'electrical_mechanical',
-    label: { en: 'Electrical / Mechanical', ta: 'எலெக்ட்ரிகல்/மெக்கானிக்', hi: 'इलेक्ट्रिकल/मैकेनिकल' },
+    label: { en: 'Electrical / Mechanical', ta: 'எலெக்ட்ரிகல்/மெக்கானிக்', hi: 'इलेक्ट्रिकल/मैकेनिकल', te: 'ఎలక్ట్రికల్ / మెకానికల్', ml: 'ഇലക്ട്രിക്കൽ/മെക്കാനിക്' },
   },
   {
     id: 'factory_warehouse',
-    label: { en: 'Factory / Warehouse', ta: 'தொழிற்சாலை/கிடங்கு', hi: 'फैक्ट्री/वेयरहाउस' },
+    label: { en: 'Factory / Warehouse', ta: 'தொழிற்சாலை/கிடங்கு', hi: 'फैक्ट्री/वेयरहाउस', te: 'ఫ్యాక్టరీ / గోడాము', ml: 'ഫാക്ടറി / വെയർഹൗസ്' },
   },
-  { id: 'hospitality', label: { en: 'Hospitality', ta: 'ஹாஸ்பிடாலிட்டி', hi: 'हॉस्पिटैलिटी' } },
-  { id: 'sales_retail', label: { en: 'Sales / Retail', ta: 'விற்பனை/ரீடெயில்', hi: 'सेल्स/रिटेल' } },
+  { id: 'hospitality', label: { en: 'Hospitality', ta: 'ஹாஸ்பிடாலிட்டி', hi: 'हॉस्पिटैलिटी', te: 'హాస్పిటాలిటీ', ml: 'ഹോസ്പിറ്റാലിറ്റി' } },
+  { id: 'sales_retail', label: { en: 'Sales / Retail', ta: 'விற்பனை/ரீடெயில்', hi: 'सेल्स/रिटेल', te: 'సేల్స్ / రిటైల్', ml: 'സെയിൽസ് / റീട്ടെയിൽ' } },
   {
     id: 'cleaning_housekeeping',
-    label: { en: 'Cleaning / Housekeeping', ta: 'க்ளீனிங்/ஹவுஸ்கீப்பிங்', hi: 'क्लीनिंग/हाउसकीपिंग' },
+    label: { en: 'Cleaning / Housekeeping', ta: 'க்ளீனிங்/ஹவுஸ்கீப்பிங்', hi: 'क्लीनिंग/हाउसकीपिंग', te: 'క్లీనింగ్ / హౌస్‌కీపింగ్', ml: 'ക്ലീനിങ്/ഹൗസ്കീപ്പിങ്' },
   },
-  { id: 'fresher', label: { en: 'Fresher', ta: 'புதியவர்', hi: 'फ्रेशर' } },
+  { id: 'fresher', label: { en: 'Fresher', ta: 'புதியவர்', hi: 'फ्रेशर', te: 'ఫ్రెషర్', ml: 'പുതുതായി ജോലി' } },
   { id: 'other', label: OTHER },
 ];
 
 export const EXPERIENCE_CHOICES: Choice[] = [
-  { id: 'fresher', label: { en: 'Fresher', ta: 'புதியவர்', hi: 'फ्रेशर' } },
-  { id: 'below_2', label: { en: 'Below 2 years', ta: '2 ஆண்டுக்கு கீழ்', hi: '2 साल से कम' } },
-  { id: '2_5', label: { en: '2–5 years', ta: '2–5 ஆண்டுகள்', hi: '2–5 साल' } },
-  { id: '5_10', label: { en: '5–10 years', ta: '5–10 ஆண்டுகள்', hi: '5–10 साल' } },
-  { id: 'above_10', label: { en: 'Above 10 years', ta: '10 ஆண்டுக்கு மேல்', hi: '10 साल से ज़्यादा' } },
+  { id: 'fresher', label: { en: 'Fresher', ta: 'புதியவர்', hi: 'फ्रेशर', te: 'ఫ్రెషర్', ml: 'പുതുതായി ജോലി' } },
+  { id: 'below_2', label: { en: 'Below 2 years', ta: '2 ஆண்டுக்கு கீழ்', hi: '2 साल से कम', te: '2 సంవత్సరాల కంటే తక్కువ', ml: '2 വർഷത്തിൽ താഴെ' } },
+  { id: '2_5', label: { en: '2–5 years', ta: '2–5 ஆண்டுகள்', hi: '2–5 साल', te: '2–5 సంవత్సరాలు', ml: '2–5 വർഷം' } },
+  { id: '5_10', label: { en: '5–10 years', ta: '5–10 ஆண்டுகள்', hi: '5–10 साल', te: '5–10 సంవత్సరాలు', ml: '5–10 വർഷം' } },
+  { id: 'above_10', label: { en: 'Above 10 years', ta: '10 ஆண்டுக்கு மேல்', hi: '10 साल से ज़्यादा', te: '10 సంవత్సరాల కంటే ఎక్కువ', ml: '10 വർഷത്തിൽ കൂടുതൽ' } },
 ];
 
 export const GENERAL_JOB_CHOICES: Choice[] = [
-  { id: 'factory', label: { en: 'Factory', ta: 'தொழிற்சாலை', hi: 'फैक्ट्री' } },
-  { id: 'warehouse', label: { en: 'Warehouse', ta: 'கிடங்கு', hi: 'वेयरहाउस' } },
-  { id: 'packing', label: { en: 'Packing', ta: 'பேக்கிங்', hi: 'पैकिंग' } },
-  { id: 'helper', label: { en: 'General Helper', ta: 'ஹெல்பர்', hi: 'हेल्पर' } },
-  { id: 'construction', label: { en: 'Construction', ta: 'கட்டுமானம்', hi: 'निर्माण' } },
-  { id: 'cleaning', label: { en: 'Cleaning', ta: 'க்ளீனிங்', hi: 'क्लीनिंग' } },
-  { id: 'hospitality', label: { en: 'Hospitality', ta: 'ஹாஸ்பிடாலிட்டி', hi: 'हॉस्पिटैलिटी' } },
-  { id: 'delivery', label: { en: 'Delivery', ta: 'டெலிவரி', hi: 'डिलीवरी' } },
+  { id: 'factory', label: { en: 'Factory', ta: 'தொழிற்சாலை', hi: 'फैक्ट्री', te: 'ఫ్యాక్టరీ', ml: 'ഫാക്ടറി' } },
+  { id: 'warehouse', label: { en: 'Warehouse', ta: 'கிடங்கு', hi: 'वेयरहाउस', te: 'వేర్‌హౌస్', ml: 'വെയർഹൗസ്' } },
+  { id: 'packing', label: { en: 'Packing', ta: 'பேக்கிங்', hi: 'पैकिंग', te: 'ప్యాకింగ్', ml: 'പാക്കിംഗ്' } },
+  { id: 'helper', label: { en: 'General Helper', ta: 'ஹெல்பர்', hi: 'हेल्पर', te: 'జనరల్ హెల్పర్', ml: 'ജനറൽ ഹെൽപ്പർ' } },
+  { id: 'construction', label: { en: 'Construction', ta: 'கட்டுமானம்', hi: 'निर्माण', te: 'నిర్మాణం', ml: 'നിർമ്മാണം' } },
+  { id: 'cleaning', label: { en: 'Cleaning', ta: 'க்ளீனிங்', hi: 'क्लीनिंग', te: 'క్లీనింగ్', ml: 'ക്ലീനിംഗ്' } },
+  { id: 'hospitality', label: { en: 'Hospitality', ta: 'ஹாஸ்பிடாலிட்டி', hi: 'हॉस्पिटैलिटी', te: 'హాస్పిటాలిటీ', ml: 'ഹോസ്പിറ്റാലിറ്റി' } },
+  { id: 'delivery', label: { en: 'Delivery', ta: 'டெலிவரி', hi: 'डिलीवरी', te: 'డెలివరీ', ml: 'ഡെലിവറി' } },
   { id: 'other', label: OTHER },
 ];
 
 export const COUNTRY_CHOICES: Choice[] = [
-  { id: 'gcc', label: { en: 'GCC', ta: 'வளைகுடா நாடுகள் (GCC)', hi: 'GCC देश' } },
-  { id: 'europe', label: { en: 'Europe', ta: 'ஐரோப்பா', hi: 'यूरोप' } },
-  { id: 'russia_cis', label: { en: 'Russia / CIS', ta: 'ரஷ்யா/CIS', hi: 'रूस/CIS' } },
+  { id: 'gcc', label: { en: 'GCC', ta: 'வளைகுடா நாடுகள் (GCC)', hi: 'GCC देश', te: 'GCC', ml: 'GCC' } },
+  { id: 'europe', label: { en: 'Europe', ta: 'ஐரோப்பா', hi: 'यूरोप', te: 'యూరప్', ml: 'യൂറോപ്പ്' } },
+  { id: 'russia_cis', label: { en: 'Russia / CIS', ta: 'ரஷ்யா/CIS', hi: 'रूस/CIS', te: 'రష్యా / CIS', ml: 'റഷ്യ / CIS' } },
   {
     id: 'singapore_malaysia',
-    label: { en: 'Singapore / Malaysia', ta: 'சிங்கப்பூர்/மலேசியா', hi: 'सिंगापुर/मलेशिया' },
+    label: { en: 'Singapore / Malaysia', ta: 'சிங்கப்பூர்/மலேசியா', hi: 'सिंगापुर/मलेशिया', te: 'సింగపూర్ / మలేషియా', ml: 'സിംഗപ്പൂർ / മലേഷ്യ' },
   },
-  { id: 'any', label: { en: 'Any country', ta: 'எந்த நாடும்', hi: 'कोई भी देश' } },
+  { id: 'any', label: { en: 'Any country', ta: 'எந்த நாடும்', hi: 'कोई भी देश', te: 'ఏ దేశమైనా', ml: 'ഏത് രാജ്യവും' } },
   {
     id: 'select',
-    label: { en: 'Select countries', ta: 'நாடுகளைத் தேர்வு', hi: 'देश चुनें' },
+    label: { en: 'Select countries', ta: 'நாடுகளைத் தேர்வு', hi: 'देश चुनें', te: 'దేశాలు ఎంచుకోండి', ml: 'രാജ്യങ്ങൾ തിരഞ്ഞെടുക്കൂ' },
   },
 ];
 
 export const DOCUMENT_CHOICES: Choice[] = [
-  { id: 'passport', label: { en: 'Passport', ta: 'பாஸ்போர்ட்', hi: 'पासपोर्ट' } },
-  { id: 'aadhaar', label: { en: 'Aadhaar', ta: 'ஆதார்', hi: 'आधार' } },
-  { id: 'pan', label: { en: 'PAN', ta: 'PAN', hi: 'PAN' } },
+  { id: 'passport', label: { en: 'Passport', ta: 'பாஸ்போர்ட்', hi: 'पासपोर्ट', te: 'పాస్‌పోర్ట్', ml: 'പാസ്‌പോർട്ട്' } },
+  { id: 'aadhaar', label: { en: 'Aadhaar', ta: 'ஆதார்', hi: 'आधार', te: 'ఆధార్', ml: 'ആധാർ' } },
+  { id: 'pan', label: { en: 'PAN', ta: 'PAN', hi: 'PAN', te: 'PAN', ml: 'PAN' } },
 ];
 
 const YES_NO: Choice[] = [
-  { id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ' } },
-  { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं' } },
+  { id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ', te: 'అవును', ml: 'അതെ' } },
+  { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
 ];
 
 /**
@@ -344,11 +344,11 @@ const YES_NO: Choice[] = [
 const DOCUMENT_FALLBACKS: Choice[] = [
   {
     id: 'later',
-    label: { en: 'I will send it later', ta: 'பிறகு அனுப்புகிறேன்', hi: 'बाद में भेजूँगा' },
+    label: { en: 'I will send it later', ta: 'பிறகு அனுப்புகிறேன்', hi: 'बाद में भेजूँगा', te: 'నేను దీన్ని తర్వాత పంపిస్తాను', ml: 'ഞാൻ അത് പിന്നീട് അയക്കാം' },
   },
   {
     id: 'dont_have',
-    label: { en: 'I do not have it', ta: 'என்னிடம் இல்லை', hi: 'मेरे पास नहीं है' },
+    label: { en: 'I do not have it', ta: 'என்னிடம் இல்லை', hi: 'मेरे पास नहीं है', te: 'నా దగ్గర ఇది లేదు', ml: 'എന്റെ കയ്യിൽ അതില്ല' },
   },
 ];
 
@@ -374,7 +374,7 @@ const START_STEPS: FlowStep[] = [
     // `choices` above — a duplicate would be numbered twice in the list the
     // interpreter sees and break "2 means the second option".
     hiddenChoices: [
-      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं' } },
+      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
       CHOICE_STAFF,
     ],
     satisfied: (c) => p(c).lookingForOverseasJob === true,
@@ -388,12 +388,19 @@ const START_STEPS: FlowStep[] = [
       en: 'Please choose your preferred language.',
       ta: 'உங்கள் விருப்ப மொழியைத் தேர்ந்தெடுக்கவும்.',
       hi: 'कृपया अपनी पसंदीदा भाषा चुनें।',
+      te: 'దయచేసి మీకు నచ్చిన భాష ఎంచుకోండి.',
+      ml: 'നിങ്ങൾക്ക് വേണ്ട ഭാഷ ഒന്ന് തിരഞ്ഞെടുക്കൂ.',
     },
     input: 'choice',
     choices: [
-      { id: 'en', label: { en: 'English', ta: 'English', hi: 'English' } },
-      { id: 'ta', label: { en: 'தமிழ்', ta: 'தமிழ்', hi: 'தமிழ்' } },
-      { id: 'hi', label: { en: 'हिंदी', ta: 'हिंदी', hi: 'हिंदी' } },
+      { id: 'en', label: { en: 'English', ta: 'English', hi: 'English', te: 'English', ml: 'English' } },
+      { id: 'ta', label: { en: 'தமிழ்', ta: 'தமிழ்', hi: 'தமிழ்', te: 'தமிழ்', ml: 'தமிழ்' } },
+      { id: 'hi', label: { en: 'हिंदी', ta: 'हिंदी', hi: 'हिंदी', te: 'हिंदी', ml: 'हिंदी' } },
+      // Each language names itself, in its own script, in every language — that
+      // is the whole point of this menu. Someone looking for Telugu is looking
+      // for "తెలుగు", not for the word "Telugu" spelled out in another script.
+      { id: 'te', label: { en: 'తెలుగు', ta: 'తెలుగు', hi: 'తెలుగు', te: 'తెలుగు', ml: 'తెలుగు' } },
+      { id: 'ml', label: { en: 'മലയാളം', ta: 'മലയാളം', hi: 'മലയാളം', te: 'മലയാളം', ml: 'മലയാളം' } },
       { id: 'other', label: OTHER },
     ],
     // Satisfied by the candidate *choosing*, not by the engine guessing. The
@@ -411,6 +418,8 @@ const START_STEPS: FlowStep[] = [
       en: 'Please type your preferred language.',
       ta: 'உங்கள் விருப்ப மொழியைத் தட்டச்சு செய்யவும்.',
       hi: 'कृपया अपनी पसंदीदा भाषा टाइप करें।',
+      te: 'మీకు నచ్చిన భాష టైప్ చేయండి.',
+      ml: 'നിങ്ങൾക്ക് ഇഷ്ടമുള്ള ഭാഷ ടൈപ്പ് ചെയ്യൂ.',
     },
     input: 'text',
     when: (c) => c.language === 'other',
@@ -433,11 +442,13 @@ const START_STEPS: FlowStep[] = [
         'आपका आवेदन प्रोसेस करने और उपयुक्त विदेशी नौकरियों की जानकारी WhatsApp पर भेजने के लिए ' +
         'हम आपकी जानकारी और दस्तावेज़ सुरक्षित रखेंगे। आप कभी भी अपनी प्रोफ़ाइल अपडेट या डिलीट ' +
         'कर सकते हैं।\nक्या हम आगे बढ़ें?',
+        te: 'మీ వివరాలు, డాక్యుమెంట్లు మేము దగ్గర పెట్టుకుని మీ అప్లికేషన్ ప్రాసెస్ చేసి, మీకు సరిపడే విదేశీ ఉద్యోగాల గురించి WhatsApp లో చెప్తాం. మీ ప్రొఫైల్‌ని మీరు ఎప్పుడైనా UPDATE లేదా DELETE చేసుకోవచ్చు.\nమనం కొనసాగించమంటారా?',
+        ml: 'നിങ്ങളുടെ വിവരങ്ങളും ഡോക്യുമെന്റുകളും ഞങ്ങൾ സൂക്ഷിക്കും, അപേക്ഷ പ്രോസസ്സ് ചെയ്യാനും അനുയോജ്യമായ വിദേശ ജോലികളെക്കുറിച്ച് WhatsApp വഴി അറിയിക്കാനും. നിങ്ങൾക്ക് എപ്പോൾ വേണമെങ്കിലും പ്രൊഫൈൽ UPDATE ചെയ്യാം അല്ലെങ്കിൽ DELETE ചെയ്യാം.\nനമുക്ക് തുടരാമോ?',
     },
     input: 'choice',
     choices: [
-      { id: 'yes', label: { en: 'Yes, continue', ta: 'ஆம், தொடரவும்', hi: 'हाँ, आगे बढ़ें' } },
-      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं' } },
+      { id: 'yes', label: { en: 'Yes, continue', ta: 'ஆம், தொடரவும்', hi: 'हाँ, आगे बढ़ें', te: 'అవును, కొనసాగించండి', ml: 'അതെ, തുടരാം' } },
+      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
       CHOICE_STAFF,
     ],
     // Consent lives on the candidate, not the profile — the engine writes it.
@@ -451,13 +462,15 @@ const START_STEPS: FlowStep[] = [
       en: 'Please send your CV as a PDF, Word file or clear photo.',
       ta: 'உங்கள் CV-ஐ PDF, Word கோப்பு அல்லது தெளிவான புகைப்படமாக அனுப்பவும்.',
       hi: 'कृपया अपना CV — PDF, Word फ़ाइल या साफ़ फ़ोटो — भेजें।',
+      te: 'దయచేసి మీ CV ని PDF, Word ఫైల్ లేదా క్లియర్ ఫోటోగా పంపండి.',
+      ml: 'നിങ്ങളുടെ CV, PDF ആയോ Word ഫയൽ ആയോ വ്യക്തമായ ഫോട്ടോ ആയോ അയക്കൂ.',
     },
     input: 'document',
     document: 'cv',
     allowMedia: true,
     choices: [
-      { id: 'upload_cv', label: { en: 'Upload CV', ta: 'CV அனுப்ப', hi: 'CV भेजें' } },
-      { id: 'no_cv', label: { en: "I don't have a CV", ta: 'CV இல்லை', hi: 'CV नहीं है' } },
+      { id: 'upload_cv', label: { en: 'Upload CV', ta: 'CV அனுப்ப', hi: 'CV भेजें', te: 'CV అప్‌లోడ్ చేయండి', ml: 'CV അപ്‌ലോഡ് ചെയ്യുക' } },
+      { id: 'no_cv', label: { en: "I don't have a CV", ta: 'CV இல்லை', hi: 'CV नहीं है', te: 'నా దగ్గర CV లేదు', ml: 'എന്റെ കയ്യിൽ CV ഇല്ല' } },
     ],
     hiddenChoices: DOCUMENT_FALLBACKS,
     allowStaff: true,
@@ -479,6 +492,8 @@ const PERSONAL_STEPS: FlowStep[] = [
       en: 'What is your full name as per passport?',
       ta: 'பாஸ்போர்ட்டில் உள்ளபடி உங்கள் முழுப் பெயர் என்ன?',
       hi: 'पासपोर्ट के अनुसार आपका पूरा नाम क्या है?',
+      te: 'పాస్‌పోర్ట్‌లో ఉన్నట్టు మీ పూర్తి పేరు ఏంటి?',
+      ml: 'പാസ്‌പോർട്ട് പ്രകാരമുള്ള നിങ്ങളുടെ പൂർണ്ണ പേര് എന്താണ്?',
     },
     input: 'text',
     satisfied: (c) => has(p(c).fullName),
@@ -493,11 +508,15 @@ const PERSONAL_STEPS: FlowStep[] = [
       en: 'Which city and state are you currently living in?',
       ta: 'நீங்கள் தற்போது எந்த நகரம் மற்றும் மாநிலத்தில் வசிக்கிறீர்கள்?',
       hi: 'आप इस समय किस शहर और राज्य में रहते हैं?',
+      te: 'మీరు ఇప్పుడు ఏ ఊరు, ఏ రాష్ట్రంలో ఉంటున్నారు?',
+      ml: 'നിങ്ങൾ ഇപ്പോൾ താമസിക്കുന്ന നഗരവും സംസ്ഥാനവും ഏതാണ്?',
     },
     hint: {
       en: 'Example: Chennai, Tamil Nadu',
       ta: 'எடுத்துக்காட்டு: சென்னை, தமிழ்நாடு',
       hi: 'उदाहरण: चेन्नई, तमिलनाडु',
+      te: 'ఉదాహరణ: చెన్నై, తమిళనాడు',
+      ml: 'ഉദാഹരണം: ചെന്നൈ, തമിഴ്‌നാട്',
     },
     input: 'structured',
     // Stored split because matching filters on state and country, not on a
@@ -520,11 +539,15 @@ const PERSONAL_STEPS: FlowStep[] = [
       en: 'What is your date of birth?',
       ta: 'உங்கள் பிறந்த தேதி என்ன?',
       hi: 'आपकी जन्मतिथि क्या है?',
+      te: 'మీ పుట్టిన తేదీ ఏంటి?',
+      ml: 'നിങ്ങളുടെ ജനന തീയതി എന്താണ്?',
     },
     hint: {
       en: 'Example: 15/08/1995',
       ta: 'எடுத்துக்காட்டு: 15/08/1995',
       hi: 'उदाहरण: 15/08/1995',
+      te: 'ఉదాహరణ: 15/08/1995',
+      ml: 'ഉദാഹരണം: 15/08/1995',
     },
     input: 'date',
     // Age is derived from this, never asked separately (§6).
@@ -540,6 +563,8 @@ const PERSONAL_STEPS: FlowStep[] = [
       en: 'What is your highest qualification?',
       ta: 'உங்கள் உயர்ந்த கல்வித் தகுதி என்ன?',
       hi: 'आपकी उच्चतम योग्यता क्या है?',
+      te: 'మీ పెద్ద చదువు ఏంటి?',
+      ml: 'നിങ്ങളുടെ ഏറ്റവും ഉയർന്ന വിദ്യാഭ്യാസ യോഗ്യത എന്താണ്?',
     },
     input: 'choice',
     choices: EDUCATION_CHOICES,
@@ -562,6 +587,8 @@ const PERSONAL_STEPS: FlowStep[] = [
       en: 'What course or trade did you complete?',
       ta: 'எந்தப் படிப்பு அல்லது தொழிற்பயிற்சி முடித்தீர்கள்?',
       hi: 'आपने कौन सा कोर्स या ट्रेड पूरा किया है?',
+      te: 'మీరు ఏ కోర్సు లేదా ట్రేడ్ పూర్తి చేశారు?',
+      ml: 'നിങ്ങൾ പൂർത്തിയാക്കിയ കോഴ്‌സ് അല്ലെങ്കിൽ ട്രേഡ് ഏതാണ്?',
     },
     input: 'text',
     when: (c) => ['iti', 'diploma', 'graduate'].includes(String(p(c).education)),
@@ -583,6 +610,8 @@ const EXPERIENCE_STEPS: FlowStep[] = [
       en: 'What is your main job or skill?',
       ta: 'உங்கள் முக்கிய வேலை அல்லது திறமை என்ன?',
       hi: 'आपका मुख्य काम या स्किल क्या है?',
+      te: 'మీ ప్రధాన పని లేదా నైపుణ్యం ఏంటి?',
+      ml: 'നിങ്ങളുടെ പ്രധാന ജോലി അല്ലെങ്കിൽ സ്‌കിൽ എന്താണ്?',
     },
     input: 'choice',
     choices: TRADE_CHOICES,
@@ -621,6 +650,8 @@ const EXPERIENCE_STEPS: FlowStep[] = [
       en: 'Please type your job or skill.',
       ta: 'உங்கள் வேலை அல்லது திறமையைத் தட்டச்சு செய்யவும்.',
       hi: 'कृपया अपना काम या स्किल टाइप करें।',
+      te: 'దయచేసి మీ పని లేదా నైపుణ్యం టైప్ చేయండి.',
+      ml: 'നിങ്ങളുടെ ജോലി അല്ലെങ്കിൽ സ്‌കിൽ ടൈപ്പ് ചെയ്യൂ.',
     },
     input: 'text',
     allowMedia: true,
@@ -638,6 +669,8 @@ const EXPERIENCE_STEPS: FlowStep[] = [
       en: 'How many years of experience do you have in this work?',
       ta: 'இந்த வேலையில் எத்தனை ஆண்டுகள் அனுபவம் உள்ளது?',
       hi: 'इस काम में आपको कितने साल का अनुभव है?',
+      te: 'ఈ పనిలో మీకు ఎన్ని సంవత్సరాల అనుభవం ఉంది?',
+      ml: 'ഈ പണിയിൽ നിങ്ങൾക്ക് എത്ര വർഷത്തെ പരിചയം ഉണ്ട്?',
     },
     input: 'choice',
     choices: EXPERIENCE_CHOICES,
@@ -670,6 +703,8 @@ const EXPERIENCE_STEPS: FlowStep[] = [
       en: 'Which countries have you worked in?',
       ta: 'எந்தெந்த நாடுகளில் வேலை செய்துள்ளீர்கள்?',
       hi: 'आपने किन देशों में काम किया है?',
+      te: 'మీరు ఏయే దేశాల్లో పని చేశారు?',
+      ml: 'ഏതൊക്കെ രാജ്യങ്ങളിൽ നിങ്ങൾ ജോലി ചെയ്തിട്ടുണ്ട്?',
     },
     input: 'text',
     // Asked only when overseas experience is already on the record — from the
@@ -698,22 +733,24 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'What type of work are you looking for now?',
       ta: 'இப்போது எந்த வகை வேலை தேடுகிறீர்கள்?',
       hi: 'अब आप किस तरह का काम ढूंढ रहे हैं?',
+      te: 'ఇప్పుడు మీకు ఎలాంటి పని కావాలి?',
+      ml: 'ഇപ്പോൾ എന്ത് തരം പണിയാണ് നിങ്ങൾ നോക്കുന്നത്?',
     },
     input: 'choice',
     choices: [
       {
         id: 'current_trade',
-        label: { en: 'My current trade', ta: 'என் தற்போதைய வேலை', hi: 'मेरा मौजूदा काम' },
+        label: { en: 'My current trade', ta: 'என் தற்போதைய வேலை', hi: 'मेरा मौजूदा काम', te: 'నా ఇప్పటి పని రంగం', ml: 'എന്റെ ഇപ്പോഴത്തെ പണി' },
       },
       {
         id: 'related',
-        label: { en: 'Related skilled jobs', ta: 'தொடர்புடைய வேலைகள்', hi: 'मिलते-जुलते काम' },
+        label: { en: 'Related skilled jobs', ta: 'தொடர்புடைய வேலைகள்', hi: 'मिलते-जुलते काम', te: 'దీనికి సంబంధించిన పనులు', ml: 'അനുബന്ധ വൈദഗ്ധ്യ ജോലികൾ' },
       },
       {
         id: 'general',
-        label: { en: 'Any general work', ta: 'ஏதேனும் பொது வேலை', hi: 'कोई भी सामान्य काम' },
+        label: { en: 'Any general work', ta: 'ஏதேனும் பொது வேலை', hi: 'कोई भी सामान्य काम', te: 'ఏదైనా సాధారణ పని', ml: 'ഏതെങ്കിലും സാധാരണ പണി' },
       },
-      { id: 'different', label: { en: 'Different job', ta: 'வேறு வேலை', hi: 'अलग काम' } },
+      { id: 'different', label: { en: 'Different job', ta: 'வேறு வேலை', hi: 'अलग काम', te: 'వేరే పని', ml: 'വേറെ പണി' } },
     ],
     // The four options are relationships to their current trade, not jobs, so
     // a job they name has to keep its own wording.
@@ -754,20 +791,22 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'Will you accept related jobs also?',
       ta: 'தொடர்புடைய வேலைகளையும் ஏற்பீர்களா?',
       hi: 'क्या आप मिलते-जुलते काम भी करेंगे?',
+      te: 'సంబంధిత పనులు కూడా చేస్తారా?',
+      ml: 'ഇതുമായി ബന്ധപ്പെട്ട പണികളും സമ്മതമാണോ?',
     },
     input: 'choice',
     choices: [
       {
         id: 'only_my_job',
-        label: { en: 'Only my job', ta: 'என் வேலை மட்டும்', hi: 'सिर्फ़ मेरा काम' },
+        label: { en: 'Only my job', ta: 'என் வேலை மட்டும்', hi: 'सिर्फ़ मेरा काम', te: 'నా ఉద్యోగం మాత్రమే', ml: 'എന്റെ ജോലി മാത്രം' },
       },
       {
         id: 'related_ok',
-        label: { en: 'Related jobs okay', ta: 'தொடர்புடையது சரி', hi: 'मिलते-जुलते ठीक हैं' },
+        label: { en: 'Related jobs okay', ta: 'தொடர்புடையது சரி', hi: 'मिलते-जुलते ठीक हैं', te: 'సంబంధిత పనులు ఓకే', ml: 'അനുബന്ധ ജോലികൾ മതി' },
       },
       {
         id: 'any_suitable',
-        label: { en: 'Any suitable work', ta: 'ஏதேனும் பொருத்தமானது', hi: 'कोई भी उपयुक्त काम' },
+        label: { en: 'Any suitable work', ta: 'ஏதேனும் பொருத்தமானது', hi: 'कोई भी उपयुक्त काम', te: 'ఏదైనా సరిపడే పని', ml: 'ഏത് ജോലിയും മതി' },
       },
     ],
     when: (c) => p(c).workTypePreference === 'current_trade',
@@ -789,6 +828,8 @@ const PREFERENCE_STEPS: FlowStep[] = [
       hi:
         'क्या आप फैक्ट्री, वेयरहाउस, पैकिंग, हेल्पर, क्लीनिंग या निर्माण का काम करने को तैयार हैं, ' +
         'भले ही यह आपके पिछले अनुभव से अलग हो?',
+        te: 'మీ ముందు అనుభవానికి వేరుగా ఉన్నా, ఫ్యాక్టరీ, వేర్‌హౌస్, ప్యాకింగ్, హెల్పర్, క్లీనింగ్ లేదా కన్‌స్ట్రక్షన్ పని చేయడానికి మీరు రెడీనా?',
+        ml: 'നിങ്ങളുടെ മുൻപത്തെ പണിയിൽ നിന്ന് വേറെയാണെങ്കിലും, ഫാക്ടറി, വെയർഹൗസ്, പാക്കിംഗ്, ഹെൽപ്പർ, ക്ലീനിംഗ് അല്ലെങ്കിൽ കൺസ്ട്രക്ഷൻ പണി ചെയ്യാൻ നിങ്ങൾക്ക് സമ്മതമാണോ?',
     },
     input: 'choice',
     choices: [
@@ -796,15 +837,15 @@ const PREFERENCE_STEPS: FlowStep[] = [
       // in the prompt above, so the buttons only have to be distinguishable.
       {
         id: 'any_suitable',
-        label: { en: 'Yes, any work', ta: 'ஆம், எந்த வேலையும்', hi: 'हाँ, कोई भी काम' },
+        label: { en: 'Yes, any work', ta: 'ஆம், எந்த வேலையும்', hi: 'हाँ, कोई भी काम', te: 'అవును, ఏ పనైనా సరే', ml: 'അതെ, ഏത് ജോലിയും' },
       },
       {
         id: 'selected',
-        label: { en: 'Only selected jobs', ta: 'சில வேலைகள் மட்டும்', hi: 'सिर्फ़ चुने हुए काम' },
+        label: { en: 'Only selected jobs', ta: 'சில வேலைகள் மட்டும்', hi: 'सिर्फ़ चुने हुए काम', te: 'ఎంపిక చేసిన పనులే', ml: 'തിരഞ്ഞെടുത്തവ മാത്രം' },
       },
       {
         id: 'need_details',
-        label: { en: 'Need details first', ta: 'முதலில் விவரம்', hi: 'पहले जानकारी चाहिए' },
+        label: { en: 'Need details first', ta: 'முதலில் விவரம்', hi: 'पहले जानकारी चाहिए', te: 'ముందు వివరాలు కావాలి', ml: 'ആദ്യം വിവരങ്ങൾ വേണം' },
       },
     ],
     when: (c) => p(c).workTypePreference === 'general',
@@ -820,6 +861,8 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'Which jobs would you accept? Choose as many as you like.',
       ta: 'எந்த வேலைகளை ஏற்பீர்கள்? விரும்பியவற்றைத் தேர்ந்தெடுக்கவும்.',
       hi: 'आप कौन-कौन से काम करेंगे? जितने चाहें चुनें।',
+      te: 'మీరు ఏ ఏ ఉద్యోగాలు ఒప్పుకుంటారు? మీకు నచ్చినన్ని ఎంచుకోండి.',
+      ml: 'നിങ്ങൾക്ക് ഏതൊക്കെ ജോലി സ്വീകാര്യമാണ്? എത്ര വേണമെങ്കിലും തിരഞ്ഞെടുക്കാം.',
     },
     input: 'multi_choice',
     choices: GENERAL_JOB_CHOICES,
@@ -836,6 +879,8 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'Which job are you looking for?',
       ta: 'எந்த வேலையைத் தேடுகிறீர்கள்?',
       hi: 'आप कौन सी नौकरी ढूंढ रहे हैं?',
+      te: 'మీరు ఏ ఉద్యోగం కోసం చూస్తున్నారు?',
+      ml: 'നിങ്ങൾ ഏത് ജോലിയാണ് അന്വേഷിക്കുന്നത്?',
     },
     input: 'text',
     allowMedia: true,
@@ -854,14 +899,16 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'Are you willing to attend training for the new job?',
       ta: 'புதிய வேலைக்குப் பயிற்சி பெறத் தயாரா?',
       hi: 'क्या आप नई नौकरी के लिए ट्रेनिंग लेने को तैयार हैं?',
+      te: 'కొత్త ఉద్యోగం కోసం ట్రైనింగ్‌కి రావడానికి మీరు ఒప్పుకుంటారా?',
+      ml: 'പുതിയ ജോലിക്ക് വേണ്ടി ട്രെയിനിംഗ് അറ്റൻഡ് ചെയ്യാൻ നിങ്ങൾ തയ്യാറാണോ?',
     },
     input: 'choice',
     choices: [
-      { id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ' } },
-      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं' } },
+      { id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ', te: 'అవును', ml: 'അതെ' } },
+      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
       {
         id: 'depends',
-        label: { en: 'Depends on details', ta: 'விவரத்தைப் பொறுத்து', hi: 'जानकारी पर निर्भर' },
+        label: { en: 'Depends on details', ta: 'விவரத்தைப் பொறுத்து', hi: 'जानकारी पर निर्भर', te: 'వివరాలను బట్టి', ml: 'വിവരങ്ങൾ അനുസരിച്ച്' },
       },
     ],
     when: (c) => p(c).workTypePreference === 'different',
@@ -877,6 +924,8 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'Where would you like to work?',
       ta: 'எங்கு வேலை செய்ய விரும்புகிறீர்கள்?',
       hi: 'आप कहाँ काम करना चाहेंगे?',
+      te: 'మీరు ఎక్కడ పని చేయాలనుకుంటున్నారు?',
+      ml: 'നിങ്ങൾക്ക് എവിടെയാണ് ജോലി ചെയ്യണ്ടത്?',
     },
     input: 'choice',
     choices: COUNTRY_CHOICES,
@@ -892,11 +941,15 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'Please type the countries you prefer.',
       ta: 'நீங்கள் விரும்பும் நாடுகளைத் தட்டச்சு செய்யவும்.',
       hi: 'कृपया अपने पसंदीदा देश टाइप करें।',
+      te: 'మీకు నచ్చిన దేశాల పేర్లు టైప్ చేయండి.',
+      ml: 'നിങ്ങൾക്ക് ഇഷ്ടമുള്ള രാജ്യങ്ങൾ ടൈപ്പ് ചെയ്യൂ.',
     },
     hint: {
       en: 'Example: Romania, Serbia and Russia',
       ta: 'எடுத்துக்காட்டு: ருமேனியா, செர்பியா மற்றும் ரஷ்யா',
       hi: 'उदाहरण: रोमानिया, सर्बिया और रूस',
+      te: 'ఉదాహరణ: రొమేనియా, సెర్బియా మరియు రష్యా',
+      ml: 'ഉദാഹരണം: റൊമാനിയ, സെർബിയ, റഷ്യ',
     },
     input: 'text',
     when: (c) => p(c).countryPreference === 'select',
@@ -917,20 +970,22 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'Is this your strict preference?',
       ta: 'இது கண்டிப்பான விருப்பமா?',
       hi: 'क्या यह आपकी सख़्त पसंद है?',
+      te: 'ఇదే మీ పక్కా ఇష్టమా?',
+      ml: 'ഇത് നിങ്ങളുടെ ഉറച്ച തീരുമാനമാണോ?',
     },
     input: 'choice',
     choices: [
       {
         id: 'strict',
-        label: { en: 'Only these countries', ta: 'இந்த நாடுகள் மட்டும்', hi: 'सिर्फ़ ये देश' },
+        label: { en: 'Only these countries', ta: 'இந்த நாடுகள் மட்டும்', hi: 'सिर्फ़ ये देश', te: 'ఈ దేశాలే కావాలి', ml: 'ഈ രാജ്യങ്ങൾ മാത്രം' },
       },
       {
         id: 'prefer',
-        label: { en: 'Others okay too', ta: 'மற்ற நாடுகளும் சரி', hi: 'दूसरे देश भी चलेंगे' },
+        label: { en: 'Others okay too', ta: 'மற்ற நாடுகளும் சரி', hi: 'दूसरे देश भी चलेंगे', te: 'ఇతరాలు కూడా సరే', ml: 'മറ്റുള്ളവയും ആകാം' },
       },
       {
         id: 'any',
-        label: { en: 'Any suitable country', ta: 'ஏதேனும் நாடு', hi: 'कोई भी देश' },
+        label: { en: 'Any suitable country', ta: 'ஏதேனும் நாடு', hi: 'कोई भी देश', te: 'ఏ దేశమైనా సరిపోతుంది', ml: 'ഏത് രാജ്യവും മതി' },
       },
     ],
     // Only meaningful once they have named somewhere specific. "Any country"
@@ -948,15 +1003,17 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'When can you join?',
       ta: 'எப்போது சேர முடியும்?',
       hi: 'आप कब जॉइन कर सकते हैं?',
+      te: 'మీరు ఎప్పుడు జాయిన్ అవ్వగలరు?',
+      ml: 'നിങ്ങൾക്ക് എപ്പോൾ ജോയിൻ ചെയ്യാൻ പറ്റും?',
     },
     input: 'choice',
     choices: [
-      { id: 'immediate', label: { en: 'Immediately', ta: 'உடனடியாக', hi: 'तुरंत' } },
-      { id: 'within_15', label: { en: 'Within 15 days', ta: '15 நாட்களுக்குள்', hi: '15 दिन के अंदर' } },
-      { id: 'within_30', label: { en: 'Within 30 days', ta: '30 நாட்களுக்குள்', hi: '30 दिन के अंदर' } },
+      { id: 'immediate', label: { en: 'Immediately', ta: 'உடனடியாக', hi: 'तुरंत', te: 'వెంటనే', ml: 'ഉടനെ' } },
+      { id: 'within_15', label: { en: 'Within 15 days', ta: '15 நாட்களுக்குள்', hi: '15 दिन के अंदर', te: '15 రోజుల్లోపు', ml: '15 ദിവസത്തിനുള്ളിൽ' } },
+      { id: 'within_30', label: { en: 'Within 30 days', ta: '30 நாட்களுக்குள்', hi: '30 दिन के अंदर', te: '30 రోజుల్లోపు', ml: '30 ദിവസത്തിനുള്ളിൽ' } },
       {
         id: 'more_than_30',
-        label: { en: 'More than 30 days', ta: '30 நாட்களுக்கு மேல்', hi: '30 दिन से ज़्यादा' },
+        label: { en: 'More than 30 days', ta: '30 நாட்களுக்கு மேல்', hi: '30 दिन से ज़्यादा', te: '30 రోజుల కన్నా ఎక్కువ', ml: '30 ദിവസത്തിൽ കൂടുതൽ' },
       },
     ],
     satisfied: (c) => has(p(c).availability),
@@ -994,6 +1051,8 @@ const PREFERENCE_STEPS: FlowStep[] = [
       en: 'When will you be available?',
       ta: 'எப்போது கிடைப்பீர்கள்?',
       hi: 'आप कब उपलब्ध होंगे?',
+      te: 'మీరు ఎప్పుడు అందుబాటులో ఉంటారు?',
+      ml: 'നിങ്ങൾ എപ്പോൾ റെഡിയാകും?',
     },
     input: 'text',
     when: (c) => p(c).availability === 'more_than_30',
@@ -1015,13 +1074,15 @@ const PASSPORT_STEPS: FlowStep[] = [
       en: 'Do you have a valid passport?',
       ta: 'செல்லுபடியாகும் பாஸ்போர்ட் உள்ளதா?',
       hi: 'क्या आपके पास वैध पासपोर्ट है?',
+      te: 'మీ దగ్గర సరైన పాస్‌పోర్ట్ ఉందా?',
+      ml: 'നിങ്ങളുടെ കയ്യിൽ വാലിഡ് പാസ്‌പോർട്ട് ഉണ്ടോ?',
     },
     input: 'choice',
     choices: [
-      { id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ' } },
-      { id: 'applied', label: { en: 'Applied', ta: 'விண்ணப்பித்தேன்', hi: 'अप्लाई किया है' } },
-      { id: 'expired', label: { en: 'Expired', ta: 'காலாவதியானது', hi: 'एक्सपायर हो गया' } },
-      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं' } },
+      { id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ', te: 'అవును', ml: 'അതെ' } },
+      { id: 'applied', label: { en: 'Applied', ta: 'விண்ணப்பித்தேன்', hi: 'अप्लाई किया है', te: 'అప్లై చేశారు', ml: 'അപേക്ഷിച്ചു' } },
+      { id: 'expired', label: { en: 'Expired', ta: 'காலாவதியானது', hi: 'एक्सपायर हो गया', te: 'గడువు ముగిసింది', ml: 'കാലാവധി കഴിഞ്ഞു' } },
+      { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
     ],
     satisfied: (c) => has(p(c).passportStatus),
     apply: (a) => ({ passportStatus: a.ids?.[0] }),
@@ -1041,8 +1102,10 @@ const PASSPORT_STEPS: FlowStep[] = [
       en: 'When does your passport expire?',
       ta: 'உங்கள் பாஸ்போர்ட் எப்போது காலாவதியாகும்?',
       hi: 'आपका पासपोर्ट कब एक्सपायर हो रहा है?',
+      te: 'మీ పాస్‌పోర్ట్ గడువు ఎప్పుడు అయిపోతుంది?',
+      ml: 'നിങ്ങളുടെ പാസ്‌പോർട്ടിന്റെ കാലാവധി എപ്പോൾ തീരും?',
     },
-    hint: { en: 'Example: 03/2031', ta: 'எடுத்துக்காட்டு: 03/2031', hi: 'उदाहरण: 03/2031' },
+    hint: { en: 'Example: 03/2031', ta: 'எடுத்துக்காட்டு: 03/2031', hi: 'उदाहरण: 03/2031', te: 'ఉదాహరణ: 03/2031', ml: 'ഉദാഹരണം: 03/2031' },
     input: 'month_year',
     when: (c) => p(c).passportStatus === 'yes',
     satisfied: (c) => has(p(c).passportExpiry),
@@ -1057,6 +1120,8 @@ const PASSPORT_STEPS: FlowStep[] = [
       en: 'When did you apply for it?',
       ta: 'எப்போது விண்ணப்பித்தீர்கள்?',
       hi: 'आपने कब अप्लाई किया था?',
+      te: 'దాని కోసం ఎప్పుడు అప్లై చేశారు?',
+      ml: 'നിങ്ങൾ എപ്പോഴാണ് ഇതിന് അപേക്ഷിച്ചത്?',
     },
     input: 'text',
     when: (c) => p(c).passportStatus === 'applied',
@@ -1072,6 +1137,8 @@ const PASSPORT_STEPS: FlowStep[] = [
       en: 'Are you applying for renewal?',
       ta: 'புதுப்பிக்க விண்ணப்பிக்கிறீர்களா?',
       hi: 'क्या आप रिन्यूअल के लिए अप्लाई कर रहे हैं?',
+      te: 'రెన్యువల్ కోసం అప్లై చేస్తున్నారా?',
+      ml: 'നിങ്ങൾ റിന്യൂവലിന് അപേക്ഷിക്കുന്നുണ്ടോ?',
     },
     input: 'choice',
     choices: YES_NO,
@@ -1102,6 +1169,8 @@ const PASSPORT_STEPS: FlowStep[] = [
       en: 'Are you willing to apply for a passport?',
       ta: 'பாஸ்போர்ட்டுக்கு விண்ணப்பிக்கத் தயாரா?',
       hi: 'क्या आप पासपोर्ट के लिए अप्लाई करने को तैयार हैं?',
+      te: 'పాస్‌పోర్ట్ కోసం అప్లై చేయడానికి మీకు ఇష్టమేనా?',
+      ml: 'നിങ്ങൾ പാസ്‌പോർട്ടിന് അപേക്ഷിക്കാൻ തയ്യാറാണോ?',
     },
     input: 'choice',
     choices: YES_NO,
@@ -1127,12 +1196,14 @@ const DOCUMENT_STEPS: FlowStep[] = [
       en: 'For Europe/Russia opportunities, we need your passport, Aadhaar and PAN for document verification. Are they available?',
       ta: 'ஐரோப்பா/ரஷ்யா வாய்ப்புகளுக்கு, ஆவணச் சரிபார்ப்புக்காக உங்கள் பாஸ்போர்ட், ஆதார் மற்றும் PAN தேவை. அவை உள்ளனவா?',
       hi: 'यूरोप/रूस के अवसरों के लिए दस्तावेज़ सत्यापन हेतु आपका पासपोर्ट, आधार और PAN चाहिए। क्या ये उपलब्ध हैं?',
+      te: 'యూరప్/రష్యా అవకాశాల కోసం, డాక్యుమెంట్ వెరిఫికేషన్ కి మీ పాస్‌పోర్ట్, ఆధార్, PAN కావాలి. ఇవి మీ దగ్గర ఉన్నాయా?',
+      ml: 'യൂറോപ്പ്/റഷ്യ ജോലികൾക്ക് ഡോക്യുമെന്റ് വെരിഫിക്കേഷന് പാസ്‌പോർട്ട്, ആധാർ, PAN എന്നിവ വേണം. ഇവ കയ്യിൽ ഉണ്ടോ?',
     },
     input: 'choice',
     choices: [
-      { id: 'all', label: { en: 'All available', ta: 'எல்லாம் உள்ளன', hi: 'सभी उपलब्ध हैं' } },
-      { id: 'some', label: { en: 'Some are missing', ta: 'சில இல்லை', hi: 'कुछ नहीं हैं' } },
-      { id: 'later', label: { en: 'Upload later', ta: 'பிறகு அனுப்புகிறேன்', hi: 'बाद में भेजूँगा' } },
+      { id: 'all', label: { en: 'All available', ta: 'எல்லாம் உள்ளன', hi: 'सभी उपलब्ध हैं', te: 'అన్నీ ఉన్నాయి', ml: 'എല്ലാം ഉണ്ട്' } },
+      { id: 'some', label: { en: 'Some are missing', ta: 'சில இல்லை', hi: 'कुछ नहीं हैं', te: 'కొన్ని లేవు', ml: 'ചിലത് ഇല്ല' } },
+      { id: 'later', label: { en: 'Upload later', ta: 'பிறகு அனுப்புகிறேன்', hi: 'बाद में भेजूँगा', te: 'తర్వాత అప్‌లోడ్', ml: 'പിന്നീട് അയക്കാം' } },
     ],
     when: inEuropeRussiaBranch,
     satisfied: (c) => has(p(c).documentAvailability),
@@ -1151,6 +1222,8 @@ const DOCUMENT_STEPS: FlowStep[] = [
       en: 'Which documents do you have with you?',
       ta: 'உங்களிடம் எந்த ஆவணங்கள் உள்ளன?',
       hi: 'आपके पास कौन-कौन से दस्तावेज़ हैं?',
+      te: 'మీ దగ్గర ఏ డాక్యుమెంట్లు ఉన్నాయి?',
+      ml: 'നിങ്ങളുടെ കയ്യിൽ ഏതൊക്കെ ഡോക്യുമെന്റ് ഉണ്ട്?',
     },
     input: 'multi_choice',
     choices: DOCUMENT_CHOICES,
@@ -1167,6 +1240,8 @@ const DOCUMENT_STEPS: FlowStep[] = [
       en: 'Please send a clear colour scan of all passport pages, including blank pages, in one PDF.',
       ta: 'காலி பக்கங்கள் உட்பட அனைத்து பாஸ்போர்ட் பக்கங்களின் தெளிவான வண்ண ஸ்கேனை ஒரே PDF-ஆக அனுப்பவும்.',
       hi: 'कृपया खाली पेज सहित पासपोर्ट के सभी पेजों का साफ़ रंगीन स्कैन एक ही PDF में भेजें।',
+      te: 'దయచేసి పాస్‌పోర్ట్ పేజీలన్నీ (ఖాళీ పేజీలతో సహా) క్లియర్‌గా కలర్ స్కాన్ చేసి, ఒక్క PDF లో పంపండి.',
+      ml: 'പാസ്പോർട്ടിന്റെ എല്ലാ പേജുകളും (ബ്ലാങ്ക് പേജുകൾ ഉൾപ്പെടെ) വ്യക്തമായ കളർ സ്കാൻ ചെയ്ത് ഒരൊറ്റ PDF ആയി അയക്കൂ.',
     },
     input: 'document',
     document: 'passport',
@@ -1186,6 +1261,8 @@ const DOCUMENT_STEPS: FlowStep[] = [
       en: 'Please send your PAN card as a PDF, or as photos of the front and back.',
       ta: 'உங்கள் PAN அட்டையை PDF ஆகவோ, முன் மற்றும் பின் பக்க புகைப்படங்களாகவோ அனுப்பவும்.',
       hi: 'कृपया अपना PAN कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
+      te: 'దయచేసి మీ PAN కార్డు PDF గా పంపండి, లేదా ముందు వెనుక ఫోటోలు పంపండి.',
+      ml: 'നിങ്ങളുടെ PAN കാർഡ് PDF ആയോ, അല്ലെങ്കിൽ മുൻവശം പിൻവശം ഫോട്ടോ ആയോ അയക്കൂ.',
     },
     input: 'document',
     document: 'pan',
@@ -1203,6 +1280,8 @@ const DOCUMENT_STEPS: FlowStep[] = [
       en: 'Please send your Aadhaar card as a PDF, or as photos of the front and back.',
       ta: 'உங்கள் ஆதார் அட்டையை PDF ஆகவோ, முன் மற்றும் பின் பக்க புகைப்படங்களாகவோ அனுப்பவும்.',
       hi: 'कृपया अपना आधार कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
+      te: 'దయచేసి మీ ఆధార్ కార్డు PDF గా పంపండి, లేదా ముందు వెనుక ఫోటోలు పంపండి.',
+      ml: 'നിങ്ങളുടെ ആധാർ കാർഡ് PDF ആയോ, അല്ലെങ്കിൽ മുൻവശം പിൻവശം ഫോട്ടോ ആയോ അയക്കൂ.',
     },
     input: 'document',
     document: 'aadhaar',
@@ -1269,7 +1348,7 @@ function generatedQuestionStep(index: number): FlowStep {
     // Replaced at render time by the candidate's own question, which is already
     // in their language. This is the fallback for a step rendered without one,
     // which `when` makes unreachable.
-    prompt: { en: '', ta: '', hi: '' },
+    prompt: { en: '', ta: '', hi: '', te: '', ml: '' },
     input: 'text',
     allowMedia: true,
     when: (c) => !!at(c),
@@ -1348,6 +1427,8 @@ function disambiguationStep(): FlowStep {
       en: 'Which is your main work?',
       ta: 'உங்கள் முக்கிய வேலை எது?',
       hi: 'आपका मुख्य काम कौन सा है?',
+      te: 'మీ ముఖ్యమైన పని ఏంటి?',
+      ml: 'നിങ്ങളുടെ പ്രധാന ജോലി എന്താണ്?',
     },
     input: 'choice',
     choices: [],
@@ -1442,7 +1523,7 @@ const CONFIRM_STEP: FlowStep = {
   section: 'confirm',
   // The body is built from the candidate's own answers, so the prompt here is
   // only the closing question — see `renderConfirmation` in render.ts.
-  prompt: { en: 'Is this correct?', ta: 'இது சரியா?', hi: 'क्या यह सही है?' },
+  prompt: { en: 'Is this correct?', ta: 'இது சரியா?', hi: 'क्या यह सही है?', te: 'ఇది కరెక్టేనా?', ml: 'ഇത് ശരിയാണോ?' },
   input: 'choice',
   // These have to be declared here, not only inside `renderConfirmation`. The
   // step's choices are what the interpreter is offered, and with an empty list

@@ -59,6 +59,7 @@ import { REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
 import { inspectUpload, resumeCompleteness } from './ocr/veris.js';
 import { offLimits } from './conversation/tradeQuestions.js';
+import { hasForeignScript } from './conversation/language.js';
 import { INTERPRETER_PROMPT, TUNABLES } from './conversation/rules.js';
 import type { CandidateDoc, OcrField } from './db/models.js';
 
@@ -223,7 +224,7 @@ await check('ignores a non-whatsapp payload', () => {
 
 console.log('\ncopy');
 
-await check('every label fits WhatsApp’s limits in all three languages', () => {
+await check('every label fits WhatsApp’s limits in every language we ship', () => {
   validateCopy();
 });
 
@@ -1306,7 +1307,7 @@ await check('a number given at the contact question is not a request for a call'
   assert.equal(detectGlobalCommand('call me back please'), 'staff');
 });
 
-await check('asking for a person is understood in all three languages', () => {
+await check('asking for a person is understood in every language we ship', () => {
   for (const said of [
     'talk to staff',
     'speak to someone',
@@ -1628,6 +1629,26 @@ await check('the filter does not mistake trade vocabulary for a banned subject',
   ]) {
     assert.equal(offLimits(asked), false, asked);
   }
+});
+
+await check('copy is never written in a script the reader does not read', () => {
+  // A Tamil question came back from the model with Bengali letters inside two of
+  // its words. It is not a typo a reader can see past — it is a glyph outside
+  // the alphabet they read, and it is invisible in review to anyone who does not
+  // read the script. Checked at boot for written copy, and here for the runtime
+  // half that guards generated questions.
+  assert.equal(hasForeignScript('எந்த மின் வேலை செய்தீர்கள்?', 'ta'), false);
+  assert.equal(hasForeignScript('என்ன ধরமான மின் வேலை?', 'ta'), true, 'Bengali inside Tamil');
+  assert.equal(hasForeignScript('మీరు ఏ పని చేస్తారు?', 'te'), false);
+  assert.equal(hasForeignScript('మీ సংગ్రహించి', 'te'), true, 'Bengali and Gujarati inside Telugu');
+  assert.equal(hasForeignScript('നിങ്ങളുടെ ജോലി എന്താണ്?', 'ml'), false);
+
+  // English is Latin and unconstrained, and a language we do not ship copy for
+  // has no script to check against.
+  assert.equal(hasForeignScript('Which machines have you operated?', 'en'), false);
+  assert.equal(hasForeignScript('যে কোনো লেখা', 'other'), false);
+  // Latin terms inside a translated sentence are expected, not foreign.
+  assert.equal(hasForeignScript('உங்கள் CV-ஐ PDF ஆக அனுப்பவும்', 'ta'), false);
 });
 
 await check('the job asked about is the candidate own words, not a menu heading', () => {

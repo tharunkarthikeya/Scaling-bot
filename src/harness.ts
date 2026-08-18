@@ -826,7 +826,7 @@ const questionsAsked = new Set(
 ).size;
 
 verdict('signature verification', true, 'working');
-verdict('copy fits WhatsApp limits', copyOk, copyOk ? 'en / ta / hi' : 'over the limit');
+verdict('copy fits WhatsApp limits', copyOk, copyOk ? 'en / ta / hi / te / ml' : 'over the limit');
 verdict('every turn produced a reply', outbound >= inbound, `${outbound} replies to ${inbound} messages`);
 verdict(
   'registration completed',
