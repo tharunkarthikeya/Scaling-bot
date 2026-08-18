@@ -29,6 +29,7 @@ import {
 } from './copy.js';
 import {
   disambiguationChoices,
+  generatedQuestionFor,
   labelFor,
   type FlowStep,
 } from './flow.js';
@@ -138,8 +139,20 @@ export async function choices(
  * when a candidate replies with a number instead of tapping.
  */
 export function choicesFor(step: FlowStep, candidate: CandidateDoc): Choice[] {
-  const base =
-    step.id === 'trade_disambiguation' ? disambiguationChoices(candidate) : (step.choices ?? []);
+  const generated = generatedQuestionFor(step.id, candidate);
+
+  // A generated question's options are already in the candidate's language —
+  // the whole question was written in it — so the same string stands for all
+  // three. That also makes a typed reply match by comparison, without a model
+  // call, exactly as a hand-written label does.
+  const base = generated
+    ? generated.options.map((option) => ({
+        id: option.toLowerCase().replace(/\s+/g, '_').slice(0, 40),
+        label: { en: option, ta: option, hi: option },
+      }))
+    : step.id === 'trade_disambiguation'
+      ? disambiguationChoices(candidate)
+      : (step.choices ?? []);
 
   const options = [...base];
 
@@ -165,7 +178,13 @@ export async function renderStep(step: FlowStep, candidate: CandidateDoc): Promi
   if (step.id === 'confirm') return renderConfirmation(candidate);
 
   const options = choicesFor(step, candidate);
-  const parts: string[] = [await say(step.prompt, candidate)];
+
+  // A generated question is stored already written in the candidate's language,
+  // so it is used as it stands rather than selected from `Localised` — and it
+  // is never handed to the translator, which exists to translate copy a person
+  // wrote, not text a model produced a moment ago.
+  const generated = generatedQuestionFor(step.id, candidate);
+  const parts: string[] = [generated ? generated.prompt : await say(step.prompt, candidate)];
 
   if (step.hint) parts.push(await say(step.hint, candidate));
 

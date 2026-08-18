@@ -19,7 +19,7 @@
  * Nothing here decides *phrasing*. The prompt is the phrasing.
  */
 
-import type { CandidateDoc, CandidateProfile } from '../db/models.js';
+import type { CandidateDoc, CandidateProfile, GeneratedQuestion } from '../db/models.js';
 import type { Choice, Localised } from './language.js';
 import {
   CHOICE_STAFF,
@@ -42,6 +42,7 @@ import {
   resolvePacks,
   type TradeQuestion,
 } from './trades.js';
+import { MAX_GENERATED_QUESTIONS } from './tradeQuestions.js';
 import { passportExpiryFlag } from './profile.js';
 import {
   availabilityBand,
@@ -1241,6 +1242,103 @@ function tradeQuestionStep(packId: string, q: TradeQuestion): FlowStep {
   };
 }
 
+/**
+ * The slots generated trade questions are served through (§8).
+ *
+ * `STEPS` is built once at module load and the flow scheduler walks it, so a
+ * question written for one candidate cannot be a step of its own. These are
+ * fixed steps that read their question out of the candidate instead: slot `n`
+ * applies when that candidate has an `n`th generated question, and disappears
+ * when they do not. Nothing about `nextStep`, editing or the confirmation
+ * changes, and a candidate served by a hand-written pack never sees one.
+ *
+ * `input` is `text` on all of them because a step's shape is fixed at load and
+ * a generated question may or may not carry options. Where it does they are
+ * rendered as buttons anyway — see `choicesFor` — and a tap resolves against
+ * them exactly as it would for any other step; where it does not, the candidate
+ * types. What the two share is that a typed answer is always accepted, which is
+ * the safe default for a question nobody wrote in advance.
+ */
+function generatedQuestionStep(index: number): FlowStep {
+  const at = (c: CandidateDoc): GeneratedQuestion | undefined =>
+    (p(c).tradeQuestions as GeneratedQuestion[] | undefined)?.[index];
+
+  return {
+    id: `trade_extra:${index}`,
+    section: 'experience',
+    // Replaced at render time by the candidate's own question, which is already
+    // in their language. This is the fallback for a step rendered without one,
+    // which `when` makes unreachable.
+    prompt: { en: '', ta: '', hi: '' },
+    input: 'text',
+    allowMedia: true,
+    when: (c) => !!at(c),
+    satisfied: (c) => {
+      const question = at(c);
+      return !question || has((p(c).tradeAnswers ?? {})[question.id]);
+    },
+    apply: (a, c) => {
+      const question = at(c);
+      if (!question) return {};
+      return {
+        tradeAnswers: {
+          ...(p(c).tradeAnswers ?? {}),
+          [question.id]: a.ids?.length ? a.ids : a.value ? [a.value] : [],
+        },
+      };
+    },
+    clears: ['tradeAnswers'],
+  };
+}
+
+/**
+ * The job to write trade questions about — the candidate's own words wherever
+ * they exist (§8).
+ *
+ * Three sources, in the order they are worth having. `currentOccupation` is
+ * what they typed and what the flow already keeps. Failing that, the raw
+ * wording `recordAnswer` stored against `primaryTrade`, which matters more than
+ * it sounds: someone who *types* "plumber" has it read as the
+ * Electrical/Mechanical category, and `main_trade.apply` deliberately does not
+ * copy a category into `currentOccupation` — so their word survives only here,
+ * and handing "Electrical / Mechanical" to a question writer instead of
+ * "plumber" is the difference between questions about their trade and questions
+ * about a menu heading. Last, the category label itself, for someone who tapped
+ * one and said nothing else.
+ */
+export function occupationForQuestions(c: CandidateDoc): string | undefined {
+  const own = (p(c).currentOccupation ?? '').trim();
+  if (own.length > 1) return own;
+
+  const trade = p(c).primaryTrade as string | undefined;
+  // "Other" is not a job. The follow-up question collects the real one, and
+  // until it does there is nothing worth writing questions about.
+  if (!trade || trade === 'other') return undefined;
+
+  const label = labelFor(trade, 'main_trade')?.en;
+  const typed = (c.fieldMeta?.primaryTrade?.raw ?? '').trim();
+  const same = (a: string, b: string) =>
+    a.toLowerCase().replace(/[^a-z0-9]/g, '') === b.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  // A bare number is the position of an option in the list they were shown, not
+  // a job — see `resolveLocally`.
+  const usable =
+    typed.length > 2 && !/^\d+$/.test(typed) && !(label && same(typed, label));
+
+  return usable ? typed : label;
+}
+
+/** The generated question a slot is currently serving, for the renderer. */
+export function generatedQuestionFor(
+  stepId: string,
+  c: CandidateDoc,
+): GeneratedQuestion | undefined {
+  if (!stepId.startsWith('trade_extra:')) return undefined;
+  const index = Number(stepId.slice('trade_extra:'.length));
+  if (!Number.isInteger(index)) return undefined;
+  return (p(c).tradeQuestions as GeneratedQuestion[] | undefined)?.[index];
+}
+
 /** The one-question fork used when a trade maps to more than one pack. */
 function disambiguationStep(): FlowStep {
   return {
@@ -1365,6 +1463,8 @@ const ALL_TRADE_STEPS: FlowStep[] = [
     const pack = packById(packId);
     return pack ? pack.questions.map((q) => tradeQuestionStep(packId, q)) : [];
   }),
+  // After the packs, and only ever reached by a candidate no pack covers.
+  ...Array.from({ length: MAX_GENERATED_QUESTIONS }, (_, i) => generatedQuestionStep(i)),
 ];
 
 /**

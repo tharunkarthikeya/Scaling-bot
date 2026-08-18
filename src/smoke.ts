@@ -21,6 +21,7 @@ import {
   fieldsToClear,
   inferTradeAnswers,
   inferTradePacks,
+  occupationForQuestions,
   inEuropeRussiaBranch,
   nextStep,
   stepById,
@@ -57,6 +58,7 @@ import { looksLikeApplicationId, normaliseApplicationId } from './conversation/e
 import { REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
 import { inspectUpload, resumeCompleteness } from './ocr/veris.js';
+import { offLimits } from './conversation/tradeQuestions.js';
 import { INTERPRETER_PROMPT, TUNABLES } from './conversation/rules.js';
 import type { CandidateDoc, OcrField } from './db/models.js';
 
@@ -1563,6 +1565,144 @@ await check('an edit reopens exactly the section it was asked for', () => {
   });
   assert.equal(stepById('full_name')!.satisfied(edited), false);
   assert.equal(nextStep(edited)?.id, 'full_name');
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nquestions written for a trade no pack covers (§8)');
+
+await check('a generated question may not stray off the trade it was written for', () => {
+  for (const asked of [
+    'What salary are you expecting for this work?',
+    'How much do you charge for a day of work?',
+    'Please send your passport copy.',
+    'When can you join?',
+    'Which country would you like to work in?',
+    'How old are you?',
+    'Are you married or single?',
+    'Do you have children?',
+    'What is your blood group?',
+    'Do you have any medical condition?',
+    'Which caste do you belong to?',
+    'How many years of experience do you have?',
+  ]) {
+    assert.equal(offLimits(asked), true, asked);
+  }
+});
+
+await check('a professional qualification for the trade may be asked about', () => {
+  // The registration asks for schooling. A certificate for the work itself is a
+  // different question and one a recruiter needs — blocking the word
+  // "qualification" outright took it away from every trade at once.
+  for (const asked of [
+    'Do you have a professional accounting qualification such as CA, CPA or ACCA?',
+    'Do you hold a plumbing certificate or registration?',
+    'Are you registered with a physiotherapy board or council?',
+    'Did you complete a course or training in beauty work, or did you learn on the job?',
+  ]) {
+    assert.equal(offLimits(asked), false, asked);
+  }
+
+  // What the flow asks itself stays out of bounds.
+  assert.equal(offLimits('What is your highest qualification?'), true);
+  assert.equal(offLimits('Which college did you attend?'), true);
+  assert.equal(offLimits('How many years of experience do you have?'), true);
+});
+
+await check('the filter does not mistake trade vocabulary for a banned subject', () => {
+  // Every one of these was blocked by the first version of the filter, which
+  // matched the risky word without the sense that made it risky. A screen that
+  // silently drops the questions a recruiter needs is worse than none: nothing
+  // reports it, and the profile just comes back thin.
+  for (const asked of [
+    'What voltage have you worked with — low voltage single phase, or three phase?',
+    'Do you have health and safety training?',
+    'Have you worked on medical gas piping?',
+    'Have you worked as a chargehand?',
+    'Which joining methods do you use?',
+    'Have you cooked in a family restaurant or a community kitchen?',
+    'Do you do cost estimation for the jobs you take?',
+    'Which sewing machines have you used?',
+    'What licences or certificates do you hold for electrical work?',
+    'Who did you mostly cut hair for — men, women, children, or mixed?',
+  ]) {
+    assert.equal(offLimits(asked), false, asked);
+  }
+});
+
+await check('the job asked about is the candidate own words, not a menu heading', () => {
+  // Typing "plumber" is read as the Electrical/Mechanical category, and
+  // `main_trade.apply` deliberately does not copy a category into
+  // `currentOccupation` — so their word survives only in the raw wording, and
+  // that is the brief a question writer needs.
+  const typed = candidate({
+    profile: { lookingForOverseasJob: true, primaryTrade: 'electrical_mechanical' },
+    fieldMeta: { primaryTrade: { source: 'chat', raw: 'plumber', at: new Date() } },
+  });
+  assert.equal(occupationForQuestions(typed), 'plumber');
+
+  // A tap carries the label as its raw text, so there is nothing better to use.
+  const tapped = candidate({
+    profile: { lookingForOverseasJob: true, primaryTrade: 'electrical_mechanical' },
+    fieldMeta: { primaryTrade: { source: 'chat', raw: 'Electrical / Mechanical', at: new Date() } },
+  });
+  assert.equal(occupationForQuestions(tapped), 'Electrical / Mechanical');
+
+  // A number is the position of an option in the list they were shown.
+  const numbered = candidate({
+    profile: { lookingForOverseasJob: true, primaryTrade: 'hospitality' },
+    fieldMeta: { primaryTrade: { source: 'chat', raw: '6', at: new Date() } },
+  });
+  assert.equal(occupationForQuestions(numbered), 'Hospitality');
+
+  // Their own words win over everything.
+  const own = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'other',
+      currentOccupation: 'poultry farm supervisor',
+    },
+  });
+  assert.equal(occupationForQuestions(own), 'poultry farm supervisor');
+
+  // "Other" with nothing behind it yet is not a job to write questions about.
+  const nothing = candidate({
+    profile: { lookingForOverseasJob: true, primaryTrade: 'other' },
+  });
+  assert.equal(occupationForQuestions(nothing), undefined);
+});
+
+await check('a hand-written pack is always asked before a generated question', () => {
+  const packStep = STEPS.findIndex((s) => s.id.startsWith('trade:'));
+  const generated = STEPS.findIndex((s) => s.id.startsWith('trade_extra:'));
+  assert.ok(packStep >= 0 && generated > packStep, 'generated questions come before a pack');
+});
+
+await check('generated slots exist only for the questions a candidate has', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'other',
+      currentOccupation: 'accountant',
+      tradePacks: [],
+      tradeQuestions: [
+        { id: 'accounting_software', prompt: 'Which accounting software have you used?', options: [] },
+      ],
+    },
+  });
+
+  const first = stepById('trade_extra:0')!;
+  const second = stepById('trade_extra:1')!;
+
+  assert.equal(first.when!(c), true);
+  assert.equal(first.satisfied(c), false);
+  // One question means one slot. The other three never apply.
+  assert.equal(second.when!(c), false);
+
+  const answered = candidate({
+    profile: { ...c.profile, tradeAnswers: { accounting_software: ['Tally'] } },
+  });
+  assert.equal(first.satisfied(answered), true);
 });
 
 /* ------------------------------------------------------------------ */

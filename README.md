@@ -65,6 +65,7 @@ real traffic before going live.
 | `src/conversation/flow.ts` | **Every question, in order, and what each answer means.** |
 | `src/conversation/copy.ts` | Every other sentence a candidate can receive, in en/ta/hi. |
 | `src/conversation/trades.ts` | Trade-specific question packs (§8). Add a trade here and nowhere else. |
+| `src/conversation/tradeQuestions.ts` | **Questions written per candidate for a job no pack covers, and the filter around them.** |
 | `src/conversation/interpret.ts` | The only model call that reads a candidate: reply → option id. |
 | `src/conversation/translate.ts` | Fixed copy in a language we do not ship. |
 | `src/conversation/faq.ts` | **What the bot may answer in its own words, and the guardrail around it.** |
@@ -102,13 +103,14 @@ confirmation and acknowledgement is written by a person in `flow.ts` or
 the candidate typed and say which of the offered options it corresponds to — it
 cannot steer the conversation because it has no channel through which to do so.
 
-It writes to a candidate in exactly three places, and all three are fenced:
+It writes to a candidate in exactly four places, and all four are fenced:
 
 | Where | What it may write | The fence |
 |---|---|---|
 | `translate.ts` | Fixed copy, in a language we do not ship | One sentence in, the same sentence out. Never given a topic, so it cannot introduce one. |
 | `faq.ts` | An answer to a question the candidate asked | Grounded in `FAQ` and nothing else, then guard-checked for money amounts, promises and timelines before it is sent. |
-| `respond.ts` | A reply to a message that is about the open question, and the sentence telling someone their upload is not the document asked for | Same grounding and the same guard as `faq.ts`. It is told the question, the options and the message — never the candidate's record — and it is forbidden to answer the question on their behalf. The question is re-sent underneath whatever it writes. |
+| `respond.ts` | A reply to a message that is about the open question, and the sentence telling someone their upload is not the document asked for |
+| `tradeQuestions.ts` | Two to four screening questions about a job no pack covers | Told one thing — the job, in the candidate's own words. `FORBIDDEN_SUBJECTS` drops anything touching pay, documents, the flow's own questions, or a protected characteristic, whatever the model returns. Guard-checked and length-checked, stored before it is asked, and empty on any failure. | Same grounding and the same guard as `faq.ts`. It is told the question, the options and the message — never the candidate's record — and it is forbidden to answer the question on their behalf. The question is re-sent underneath whatever it writes. |
 
 `faq.ts` is what stops the bot deflecting every question to staff. A candidate
 who asks *"is there any fee?"* gets the agency's actual answer. `respond.ts`
@@ -267,6 +269,27 @@ sentence. The smoke checks pin both directions, including that *"registering
 does not guarantee selection"* still gets through. That one is not hypothetical:
 the first version of the guard blocked it, which would have silenced the exact
 sentence §27 wants said.
+
+**A trade nobody wrote a pack for still gets asked about.** `trades.ts` holds
+hand-written packs for the trades this agency places most, and they always win.
+Everyone else — an electrician, an accountant, a physiotherapist, a poultry farm
+supervisor — used to answer "what is your main job?" and go straight to the
+preference questions, leaving a recruiter a profile that named the trade and said
+nothing about the worker. For those, `tradeQuestions.ts` writes two to four
+questions for that job, once, and stores them on the candidate before they are
+asked. It is told one thing: the job, in the candidate's own words — which is
+also why `occupationForQuestions` exists, because someone who *types* "plumber"
+has it recorded as the Electrical/Mechanical category, and generating from a menu
+heading produces menu-heading questions.
+
+The filter around it is phrases, not words, and that is the point. A bare word
+list blocks the trade it is protecting: "single" is marital status and also
+single-phase power, "health" is a medical condition and also health-and-safety
+training, "join" is a start date and also how two pieces of steel are joined. Each
+of those silently dropped a question a recruiter needed. What stays absolutely
+blocked, in any wording, is age, gender, religion, caste, marital status, family,
+pregnancy, health and disability — an agency screening on those is breaking the
+law in most of the countries it places into.
 
 **A trade is weighed, not raced.** `classifyTrade` scores every trade over
 everything the CV gave us — designation, industry, skills, certifications,

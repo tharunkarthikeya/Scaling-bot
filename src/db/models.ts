@@ -131,11 +131,34 @@ export interface DocumentSlot {
  *      wording — see `fieldMeta` on the candidate document.
  * ───────────────────────────────────────────────────────────────────────────*/
 
+/**
+ * A trade question written for one candidate, because no pack covers their job
+ * (§8). Stored on the profile before it is asked — see
+ * `conversation/tradeQuestions.ts` for how it is written and what it may not
+ * contain.
+ */
+export interface GeneratedQuestion {
+  /** Stable key. Answers live at `profile.tradeAnswers[id]`, like a pack's. */
+  id: string;
+  /** The question, already in the candidate's language. */
+  prompt: string;
+  /** Up to six short options, or none for a typed answer. */
+  options: string[];
+}
+
 export interface CandidateProfile {
   /** §2 — answered before anything personal is collected. */
   lookingForOverseasJob?: boolean;
   /** Trade question packs selected for this candidate (§8). */
   tradePacks?: string[];
+  /**
+   * Questions written for a job no pack covers (§8), stored before they are
+   * asked so what the candidate was asked is on the record next to what they
+   * answered. See `conversation/tradeQuestions.ts` for the fence around them.
+   */
+  tradeQuestions?: GeneratedQuestion[];
+  /** The occupation those questions were written for, so a change rewrites them. */
+  tradeQuestionsFor?: string;
   /** Set once the §17 comparison has flagged a difference, so it is raised once. */
   identityFlagged?: boolean;
 

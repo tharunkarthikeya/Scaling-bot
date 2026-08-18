@@ -51,6 +51,7 @@ import {
   fieldsToClear,
   inferTradeAnswers,
   inferTradePacks,
+  occupationForQuestions,
   nextStep,
   stepById,
   stepsInSection,
@@ -73,6 +74,7 @@ import { ageFrom, buildProfileWrite } from './profile.js';
 import { detectLanguage, type Choice, type Language, type Localised } from './language.js';
 import { requirementFor, TUNABLES } from './rules.js';
 import { packById, type TradeQuestion } from './trades.js';
+import { questionsForOccupation } from './tradeQuestions.js';
 import { transcribe } from './audio.js';
 
 /** Meta's customer service window. Outside it, only approved templates may be sent. */
@@ -321,6 +323,54 @@ function statusForStage(stage: ConversationStage, current: CandidateStatus): Can
  * stopped" (§21) one mechanism rather than two that can disagree.
  */
 /**
+ * Writes the trade questions for a job no hand-written pack covers (§8).
+ *
+ * Runs once per candidate per occupation, and only where the packs came up
+ * empty — a welder, a fabricator, a driver, a machinist and an NDT technician
+ * all keep the questions a person wrote for them. Everyone else used to be
+ * asked nothing at all about their trade: a recruiter opening an electrician's
+ * profile learned that he was an electrician and nothing further.
+ *
+ * The result is stored either way, empty included. An empty list is an answer —
+ * "there is nothing useful to ask this candidate about their trade" — and
+ * storing it is what stops a model call on every turn for the rest of the
+ * registration.
+ */
+async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
+  const profile = candidate.profile ?? {};
+
+  if ((profile.tradePacks ?? []).length) return;
+  // A fresher has no trade to be asked about, which is what the option means.
+  if (!profile.primaryTrade || profile.primaryTrade === 'fresher') return;
+
+  // Their own words wherever they exist — see `occupationForQuestions`, which is
+  // where the difference between "plumber" and "Electrical / Mechanical" is
+  // recovered.
+  const occupation = occupationForQuestions(candidate);
+  if (!occupation) return;
+  if (profile.tradeQuestionsFor === occupation) return;
+
+  const questions = await questionsForOccupation({
+    occupation,
+    language: candidate.language,
+    languageOther: candidate.languageOther,
+  });
+
+  await candidates().updateOne(
+    { _id: candidate._id },
+    {
+      $set: {
+        'profile.tradeQuestions': questions,
+        'profile.tradeQuestionsFor': occupation,
+        updatedAt: new Date(),
+      },
+    },
+  );
+  candidate.profile.tradeQuestions = questions;
+  candidate.profile.tradeQuestionsFor = occupation;
+}
+
+/**
  * Asks the first question that applies and is not already answered.
  *
  * `lead` prefixes it in the same message, for callers that have something to
@@ -339,6 +389,8 @@ async function askNextQuestion(candidate: CandidateDoc, lead?: Localised): Promi
     );
     candidate.profile.tradePacks = packs;
   }
+
+  await ensureTradeQuestions(candidate);
 
   // And the answers those questions already have, from the same evidence (§1).
   // Recorded with their source, so a recruiter can see the candidate never said

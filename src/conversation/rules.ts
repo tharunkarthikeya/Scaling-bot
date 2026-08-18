@@ -205,6 +205,12 @@ export const TUNABLES = {
    * answered by `faq.ts` or `respond.ts` and never counted here.
    */
   maxAsksPerStep: 2,
+  /**
+   * Ceiling on a generated set of trade questions (`tradeQuestions.ts`). Two to
+   * four questions with their options, in Tamil or Hindi, which cost noticeably
+   * more tokens than the English they are written from.
+   */
+  maxQuestionTokens: 1200,
   /** Stop chasing a document after this many asks. */
   maxAsksPerDocument: 2,
   /** OCR field confidence below this routes the document to human review. */
