@@ -34,6 +34,7 @@ import {
   type CandidateDoc,
   type CandidateStatus,
   type ConversationStage,
+  type FieldMeta,
   type MessageDoc,
 } from '../db/models.js';
 import {
@@ -48,6 +49,7 @@ import { queue, withCandidateLock } from '../queue/index.js';
 import * as copy from './copy.js';
 import {
   fieldsToClear,
+  inferTradeAnswers,
   inferTradePacks,
   nextStep,
   stepById,
@@ -328,6 +330,32 @@ async function askNextQuestion(candidate: CandidateDoc): Promise<void> {
       { $set: { 'profile.tradePacks': packs, updatedAt: new Date() } },
     );
     candidate.profile.tradePacks = packs;
+  }
+
+  // And the answers those questions already have, from the same evidence (§1).
+  // Recorded with their source, so a recruiter can see the candidate never said
+  // this out loud — it was read off their CV, and CV data is never verified
+  // information (§27).
+  const inferred = inferTradeAnswers(candidate);
+  if (inferred) {
+    const merged = { ...(candidate.profile.tradeAnswers ?? {}), ...inferred };
+    const now = new Date();
+    const meta: Record<string, FieldMeta> = { ...(candidate.fieldMeta ?? {}) };
+    for (const key of Object.keys(inferred)) {
+      meta[`tradeAnswers.${key}`] = { source: 'cv', at: now, confidence: null };
+    }
+
+    await candidates().updateOne(
+      { _id: candidate._id },
+      { $set: { 'profile.tradeAnswers': merged, fieldMeta: meta, updatedAt: now } },
+    );
+    candidate.profile.tradeAnswers = merged;
+    candidate.fieldMeta = meta;
+
+    logger.info(
+      { waId: candidate.waId, questions: Object.keys(inferred) },
+      'trade answers taken from the CV rather than asked',
+    );
   }
 
   const step = nextStep(candidate);

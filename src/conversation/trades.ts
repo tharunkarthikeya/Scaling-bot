@@ -18,11 +18,24 @@
 import type { Choice, Localised } from './language.js';
 import { OTHER } from './copy.js';
 
+/**
+ * An option that a CV can name.
+ *
+ * `evidence` is what the candidate's own words would have to say for this option
+ * to be true — the terms a CV actually uses for it, including the ones the
+ * option's label does not: nobody writes "ARC / SMAW" on a CV, they write SMAW,
+ * and GMAW and MIG are the same process under two names. Trade knowledge, so it
+ * lives here beside the option rather than in the matching code.
+ */
+export interface TradeChoice extends Choice {
+  evidence?: string[];
+}
+
 export interface TradeQuestion {
   /** Stable key. Answers are stored under `profile.tradeAnswers[id]`. */
   id: string;
   prompt: Localised;
-  choices: Choice[];
+  choices: TradeChoice[];
   /** True when the candidate may pick several answers. */
   multi: boolean;
   /** When the candidate picks `other`, ask them to type it. */
@@ -85,11 +98,23 @@ export const TRADE_PACKS: TradePack[] = [
         },
         multi: true,
         choices: [
-          { id: 'tig', label: { en: 'TIG', ta: 'TIG', hi: 'TIG' } },
-          { id: 'arc_smaw', label: { en: 'ARC / SMAW', ta: 'ARC / SMAW', hi: 'ARC / SMAW' } },
-          { id: 'mig', label: { en: 'MIG', ta: 'MIG', hi: 'MIG' } },
-          { id: 'fcaw', label: { en: 'FCAW', ta: 'FCAW', hi: 'FCAW' } },
-          { id: 'saw', label: { en: 'SAW', ta: 'SAW', hi: 'SAW' } },
+          { id: 'tig', label: { en: 'TIG', ta: 'TIG', hi: 'TIG' }, evidence: ['tig', 'gtaw'] },
+          {
+            id: 'arc_smaw',
+            label: { en: 'ARC / SMAW', ta: 'ARC / SMAW', hi: 'ARC / SMAW' },
+            evidence: ['smaw', 'stick welding', 'shielded metal arc'],
+          },
+          { id: 'mig', label: { en: 'MIG', ta: 'MIG', hi: 'MIG' }, evidence: ['mig', 'gmaw'] },
+          {
+            id: 'fcaw',
+            label: { en: 'FCAW', ta: 'FCAW', hi: 'FCAW' },
+            evidence: ['fcaw', 'flux cored'],
+          },
+          {
+            id: 'saw',
+            label: { en: 'SAW', ta: 'SAW', hi: 'SAW' },
+            evidence: ['saw', 'submerged arc'],
+          },
           { id: 'other', label: OTHER },
         ],
         otherPrompt: {
@@ -132,12 +157,36 @@ export const TRADE_PACKS: TradePack[] = [
         },
         multi: true,
         choices: [
-          { id: 'structural', label: { en: 'Structural', ta: 'ஸ்ட்ரக்சரல்', hi: 'स्ट्रक्चरल' } },
-          { id: 'peb', label: { en: 'PEB', ta: 'PEB', hi: 'PEB' } },
-          { id: 'tank', label: { en: 'Tank', ta: 'டேங்க்', hi: 'टैंक' } },
-          { id: 'vessel', label: { en: 'Vessel', ta: 'வெசல்', hi: 'वेसल' } },
-          { id: 'pipe', label: { en: 'Pipe', ta: 'பைப்', hi: 'पाइप' } },
-          { id: 'sheet_metal', label: { en: 'Sheet metal', ta: 'ஷீட் மெட்டல்', hi: 'शीट मेटल' } },
+          {
+            id: 'structural',
+            label: { en: 'Structural', ta: 'ஸ்ட்ரக்சரல்', hi: 'स्ट्रक्चरल' },
+            evidence: ['structural steel', 'structural fabrication'],
+          },
+          {
+            id: 'peb',
+            label: { en: 'PEB', ta: 'PEB', hi: 'PEB' },
+            evidence: ['peb', 'pre engineered building'],
+          },
+          {
+            id: 'tank',
+            label: { en: 'Tank', ta: 'டேங்க்', hi: 'टैंक' },
+            evidence: ['storage tank', 'storage tanks'],
+          },
+          {
+            id: 'vessel',
+            label: { en: 'Vessel', ta: 'வெசல்', hi: 'वेसल' },
+            evidence: ['pressure vessel', 'pressure vessels', 'heat exchanger'],
+          },
+          {
+            id: 'pipe',
+            label: { en: 'Pipe', ta: 'பைப்', hi: 'पाइप' },
+            evidence: ['piping', 'pipe fabrication', 'pipe fitting'],
+          },
+          {
+            id: 'sheet_metal',
+            label: { en: 'Sheet metal', ta: 'ஷீட் மெட்டல்', hi: 'शीट मेटल' },
+            evidence: ['sheet metal'],
+          },
           { id: 'other', label: OTHER },
         ],
         otherPrompt: {
@@ -256,9 +305,9 @@ export const TRADE_PACKS: TradePack[] = [
         },
         multi: true,
         choices: [
-          { id: 'asnt', label: { en: 'ASNT', ta: 'ASNT', hi: 'ASNT' } },
-          { id: 'pcn', label: { en: 'PCN', ta: 'PCN', hi: 'PCN' } },
-          { id: 'irata', label: { en: 'IRATA', ta: 'IRATA', hi: 'IRATA' } },
+          { id: 'asnt', label: { en: 'ASNT', ta: 'ASNT', hi: 'ASNT' }, evidence: ['asnt'] },
+          { id: 'pcn', label: { en: 'PCN', ta: 'PCN', hi: 'PCN' }, evidence: ['pcn'] },
+          { id: 'irata', label: { en: 'IRATA', ta: 'IRATA', hi: 'IRATA' }, evidence: ['irata'] },
           { id: 'other', label: OTHER },
         ],
         otherPrompt: {
@@ -270,6 +319,57 @@ export const TRADE_PACKS: TradePack[] = [
     ],
   },
 ];
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Answers the CV already gave
+ *
+ * §1: never ask for what we already know. The pack questions were the one place
+ * that rule did not reach — the evidence that *chose* the pack was then invisible
+ * to the questions inside it, so a CV reading "Welding Procedures
+ * (SMAW/GTAW/GMAW/SAW)" and "ASNT Level-II" selected the welder and NDT packs
+ * and then asked which welding processes he knew and which certifications he
+ * held. The bot picked the right questions using facts it went on to ask for.
+ *
+ * The reason it could not was structural rather than an oversight: a pack answer
+ * is an option id, CV evidence is free text, and nothing mapped one to the
+ * other. `evidence` is that map, written next to the option it belongs to.
+ *
+ * Opt-in on purpose. A choice with no `evidence` is never inferred, so adding a
+ * question is still adding data and nothing else, and a question that should
+ * always be asked — "do you have a valid welding certificate?", which a list of
+ * certifications cannot answer, because holding one and holding a *valid* one
+ * are different claims — simply declares none.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** Whether the evidence names this term, as a whole word rather than a substring. */
+function names(haystack: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*');
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, 'i').test(haystack);
+}
+
+/**
+ * The answers this question's own options can be settled from, or undefined.
+ *
+ * Deliberately silent in three cases, each of which costs one question and
+ * saves a wrong answer on a permanent record:
+ *
+ *   - no option declares evidence, so the question is not inferable at all;
+ *   - nothing matched;
+ *   - a single-answer question matched more than one option, which is the CV
+ *     being ambiguous rather than the CV answering.
+ */
+export function answersFromEvidence(q: TradeQuestion, evidence: string): string[] | undefined {
+  if (!evidence.trim()) return undefined;
+
+  const matched = q.choices.filter(
+    (c) => c.id !== 'other' && (c.evidence ?? []).some((term) => names(evidence, term)),
+  );
+
+  if (!matched.length) return undefined;
+  if (!q.multi && matched.length > 1) return undefined;
+
+  return matched.map((c) => c.id);
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Disambiguation

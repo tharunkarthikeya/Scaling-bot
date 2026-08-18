@@ -18,6 +18,7 @@ import { chunkText } from './whatsapp/client.js';
 import { attributeInboundDocument, initialSlots } from './conversation/checklist.js';
 import {
   disambiguationChoices,
+  inferTradeAnswers,
   inferTradePacks,
   inEuropeRussiaBranch,
   nextStep,
@@ -1408,6 +1409,67 @@ await check('tapping Fabrication / Welding asks which, rather than loading both'
     disambiguationChoices(c).map((ch) => ch.id),
     ['welding', 'fabrication', 'both'],
   );
+});
+
+await check('a date of birth written the way people write it is not dropped', () => {
+  // The CV said "25th May 1976" and the candidate was asked for a date of birth
+  // printed at the top of the page he had just sent.
+  assert.equal(normaliseDate('25th May 1976'), '1976-05-25');
+  assert.equal(normaliseDate('1st Mar 1994'), '1994-03-01');
+  assert.equal(normaliseDate('3rd December 1988'), '1988-12-03');
+  assert.equal(normaliseDate('May 25, 1976'), '1976-05-25');
+  // Still day-first where both numbers could be a month (§5), and still silent
+  // where there is no date at all.
+  assert.equal(normaliseDate('12/02/2027'), '2027-02-12');
+  assert.equal(normaliseDate('sometime next year'), undefined);
+});
+
+await check('pack questions the CV already answered are not asked (§1)', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      tradePacks: ['welder', 'ndt'],
+      skills: ['Welding Procedures (SMAW/GTAW/GMAW/SAW)', 'PWHT', 'Stage Inspection'],
+      certifications: ['ASNT Level-II in PT, MPT, UT & RT'],
+    },
+  });
+
+  const inferred = inferTradeAnswers(c)!;
+  assert.ok(inferred, 'nothing was inferred from a CV that names both');
+
+  // GMAW is MIG and GTAW is TIG — the CV's own words for the same processes.
+  assert.deepEqual(inferred.welding_process!.sort(), ['arc_smaw', 'mig', 'saw', 'tig']);
+  assert.deepEqual(inferred.ndt_certifications, ['asnt']);
+
+  // Never the yes/no question next to them: a list of certifications does not
+  // say whether the welding one is *valid*, and that is what it asks.
+  assert.equal(inferred.welding_certificate, undefined);
+});
+
+await check('an answer the candidate gave is never overwritten by the CV', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      tradePacks: ['welder'],
+      skills: ['SMAW', 'GMAW'],
+      tradeAnswers: { welding_process: ['tig'] },
+    },
+  });
+  assert.equal(inferTradeAnswers(c), undefined);
+});
+
+await check('a CV that names nothing infers nothing', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      tradePacks: ['welder', 'ndt'],
+      skills: ['Team management', 'MS Office'],
+    },
+  });
+  assert.equal(inferTradeAnswers(c), undefined);
 });
 
 await check('a specialist question tells the interpreter what it is about', () => {

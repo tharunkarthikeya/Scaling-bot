@@ -62,10 +62,25 @@ export function normaliseDate(input: string | undefined): string | undefined {
     }
   }
 
-  const named = /^(\d{1,2})[\s\-]([a-z]{3,})[\s\-,]*(\d{2,4})$/i.exec(text);
+  // "25 May 1976", "25-May-1976", and — because CVs are written by people —
+  // "25th May 1976". The ordinal suffix is the commonest reason a date that is
+  // plainly on the page fails to parse: the candidate is then asked for a date
+  // of birth their CV printed at the top, which is the one thing §1 says not to
+  // do. Dropped rather than captured, because nothing downstream wants it.
+  const named = /^(\d{1,2})(?:st|nd|rd|th)?[\s\-,]+([a-z]{3,})[\s\-,]+(\d{2,4})$/i.exec(text);
   if (named) {
     const month = MONTHS[named[2]!.slice(0, 3).toLowerCase()];
     if (month) return `${fullYear(Number(named[3]))}-${pad(month)}-${pad(Number(named[1]))}`;
+  }
+
+  // The same date the other way round — "May 25, 1976", "Mar 3 1994" — which is
+  // how a CV written to an American template prints it.
+  const monthFirst = /^([a-z]{3,})[\s\-,]+(\d{1,2})(?:st|nd|rd|th)?[\s\-,]+(\d{2,4})$/i.exec(text);
+  if (monthFirst) {
+    const month = MONTHS[monthFirst[1]!.slice(0, 3).toLowerCase()];
+    if (month) {
+      return `${fullYear(Number(monthFirst[3]))}-${pad(month)}-${pad(Number(monthFirst[2]))}`;
+    }
   }
 
   return undefined;

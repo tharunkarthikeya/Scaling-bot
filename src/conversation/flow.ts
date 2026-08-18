@@ -36,6 +36,7 @@ import {
   TUNABLES,
 } from './rules.js';
 import {
+  answersFromEvidence,
   disambiguationFor,
   packById,
   resolvePacks,
@@ -1288,6 +1289,45 @@ export function inferTradePacks(c: CandidateDoc): string[] | undefined {
   const { packs, needsDisambiguation } = resolvePacks(trade, tradeSignals(c));
   if (needsDisambiguation) return undefined;
   return packs.map((pk) => pk.id);
+}
+
+/**
+ * Pack answers the candidate's own words already settle, so those questions are
+ * skipped (§1). Returns undefined when nothing new can be filled in.
+ *
+ * Runs after `inferTradePacks` and reads the same signals, which is the point:
+ * the evidence that chose the pack was previously invisible to the questions
+ * inside it, so a CV naming four welding processes picked the welder pack and
+ * was then asked which welding processes he knew.
+ *
+ * Conservative by construction — see `answersFromEvidence`. An answer already
+ * recorded is never overwritten, because the candidate's own reply outranks
+ * anything read off their CV.
+ */
+export function inferTradeAnswers(c: CandidateDoc): Record<string, string[]> | undefined {
+  const packs = p(c).tradePacks as string[] | undefined;
+  if (!packs?.length) return undefined;
+
+  const evidence = tradeSignals(c).filter(Boolean).join(' ');
+  if (!evidence.trim()) return undefined;
+
+  const answered = (p(c).tradeAnswers ?? {}) as Record<string, string[]>;
+  let found: Record<string, string[]> | undefined;
+
+  for (const packId of packs) {
+    for (const question of packById(packId)?.questions ?? []) {
+      if (has(answered[question.id])) continue;
+      // A question gated on an answer inside its own pack is left alone: it may
+      // not apply at all, and inferring an answer to it would be deciding that
+      // for the candidate.
+      if (question.when && !question.when(answered)) continue;
+
+      const ids = answersFromEvidence(question, evidence);
+      if (ids?.length) (found ??= {})[question.id] = ids;
+    }
+  }
+
+  return found;
 }
 
 /** The disambiguation question's choices, resolved for this candidate. */
