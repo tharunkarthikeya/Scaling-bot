@@ -46,6 +46,7 @@ const { buildServer } = await import('./server.js');
 const { validateCopy } = await import('./conversation/validate.js');
 const { stepById } = await import('./conversation/flow.js');
 const { acceptedChoices } = await import('./conversation/render.js');
+const { interpret } = await import('./conversation/interpret.js');
 
 const WA_ID = '919000000001';
 /** A second number, so the B2B branch cannot disturb the registration above. */
@@ -882,6 +883,32 @@ verdict(
   anthropicOk ? 'working' : 'unverified — free text would not be understood',
 );
 
+/* A specialist question, answered about something else (§8).
+ *
+ * Two interpretations rather than a fifth conversation: the failure is entirely
+ * inside the classification, and driving a whole registration to reach one
+ * question would take minutes to tell us the same thing.
+ *
+ * "Tailor machine" is a clear, well-spelled answer to a different question. It
+ * was stored as machining experience, and the candidate was never asked again,
+ * because a free-text step said only "this wants text". "HAAS VF-2" has to keep
+ * working — a guard that also rejects real machines is worse than no guard, and
+ * this one is a model reading the subject rather than a list of banned words.
+ */
+const cncStep = stepById('trade:cnc_operator:machines_operated')!;
+const cncCandidate = { profile: {}, documents: {}, fieldMeta: {}, history: [] } as never;
+const cncChoices = acceptedChoices(cncStep, cncCandidate);
+
+const offSubject = await interpret({ step: cncStep, choices: cncChoices, text: 'tailor machine' });
+const onSubject = await interpret({ step: cncStep, choices: cncChoices, text: 'HAAS VF-2' });
+const specialistOk = offSubject.kind !== 'value' && onSubject.kind === 'value';
+
+verdict(
+  'a specialist question refuses an answer about something else (§8)',
+  specialistOk,
+  `"tailor machine" -> ${offSubject.kind}, "HAAS VF-2" -> ${onSubject.kind}`,
+);
+
 verdict(
   'application tracking (§25)',
   trackingOk && statusApiOk,
@@ -919,4 +946,8 @@ await queue.close();
 await closeDb();
 await mongo.stop();
 console.log('');
-process.exit(completed && trackingOk && statusApiOk && b2bOk && idleOk && faqOk && occupationOk ? 0 : 1);
+process.exit(
+  completed && trackingOk && statusApiOk && b2bOk && idleOk && faqOk && occupationOk && specialistOk
+    ? 0
+    : 1,
+);

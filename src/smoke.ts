@@ -17,6 +17,7 @@ import { parseWebhook } from './whatsapp/parse.js';
 import { chunkText } from './whatsapp/client.js';
 import { attributeInboundDocument, initialSlots } from './conversation/checklist.js';
 import {
+  disambiguationChoices,
   inferTradePacks,
   inEuropeRussiaBranch,
   nextStep,
@@ -25,7 +26,12 @@ import {
   TRADE_CHOICES,
 } from './conversation/flow.js';
 import { validateCopy } from './conversation/validate.js';
-import { detectGlobalCommand, interpret, resolveOfferedIds } from './conversation/interpret.js';
+import {
+  describeQuestion,
+  detectGlobalCommand,
+  interpret,
+  resolveOfferedIds,
+} from './conversation/interpret.js';
 import {
   ageFrom,
   buildProfileWrite,
@@ -1317,6 +1323,103 @@ await check('the interpreter is told what "related" is, and what "unclear" now c
   // A classification the tool offers and the prompt never explains is dead.
   assert.match(INTERPRETER_PROMPT, /- related/);
   assert.match(INTERPRETER_PROMPT, /handed to a member of staff/);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nwhich trade, and which questions follow from it (§7, §8)');
+
+await check('a trade is read from all the CV says, not from one word of the job title', () => {
+  // The case this was written for. "Planning & Production Manager" matched the
+  // word `production` in the factory/warehouse pattern, that pattern came first,
+  // and four welding processes, an ASNT certification, pressure vessels and PEB
+  // were never looked at.
+  const { patch } = extractFromCv([
+    cvField('name', 'SREENU ERITAM'),
+    cvField('designation', 'Planning & Production Manager'),
+    cvField('industry', 'Pressure Vessels | Steel Structures'),
+    cvField(
+      'skills',
+      'Project Planning, Production Control, Welding Procedures (SMAW/GTAW/GMAW/SAW), PWHT, Stage Inspection',
+    ),
+    cvField('certification', 'ASNT Level-II in PT, MPT, UT & RT'),
+    cvField('previous_designation', 'Production Head'),
+  ]);
+
+  assert.equal(patch.primaryTrade, 'fabrication_welding');
+});
+
+await check('the trade vocabulary also picks the right question packs', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      currentOccupation: 'Planning & Production Manager',
+      skills: ['Welding Procedures (SMAW/GTAW/GMAW/SAW)', 'PWHT'],
+      certifications: ['ASNT Level-II in PT, MPT, UT & RT'],
+    },
+  });
+  // Welding from the processes, NDT from the certification. Both are this
+  // candidate's actual work, and neither was reachable before.
+  assert.deepEqual(inferTradePacks(c), ['welder', 'ndt']);
+});
+
+await check('a generic job title alone loads no specialist pack', () => {
+  const { patch } = extractFromCv([cvField('designation', 'Production Manager')]);
+  const c = candidate({ profile: { lookingForOverseasJob: true, ...patch } });
+
+  // The title is still read as factory/warehouse, which is a fair reading of it
+  // and one the candidate can correct at the summary. What must not happen is
+  // the CNC pack loading off the back of it — that is how someone with no
+  // machining evidence was asked which machines he had operated.
+  assert.notEqual(patch.primaryTrade, 'fabrication_welding');
+  assert.deepEqual(inferTradePacks(c), []);
+});
+
+await check('one candidate pack is not evidence for that pack', () => {
+  // factory_warehouse is served by exactly one pack. That used to be taken as
+  // "nothing to choose between", and the pack was loaded with no support at all.
+  const c = candidate({
+    profile: { lookingForOverseasJob: true, primaryTrade: 'factory_warehouse' },
+  });
+  assert.deepEqual(inferTradePacks(c), []);
+});
+
+await check('tapping Fabrication / Welding asks which, rather than loading both', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      tradeFromList: true,
+    },
+  });
+
+  // Nothing is inferred: the candidate named a category and nothing else, so
+  // only their own answer may narrow it.
+  assert.equal(inferTradePacks(c), undefined);
+
+  // The question applies and is outstanding, so the flow reaches it — asserted
+  // on the step itself rather than on `nextStep`, which returns the CV question
+  // first for a candidate who has not sent one.
+  const step = stepById('trade_disambiguation')!;
+  assert.equal(step.when!(c), true);
+  assert.equal(step.satisfied(c), false);
+  assert.deepEqual(
+    disambiguationChoices(c).map((ch) => ch.id),
+    ['welding', 'fabrication', 'both'],
+  );
+});
+
+await check('a specialist question tells the interpreter what it is about', () => {
+  const step = stepById('trade:cnc_operator:machines_operated')!;
+  assert.ok(step.expects, 'the CNC machine question declares no context');
+
+  // Declared on the question and dropped on the way to the model is the same as
+  // not declared at all, and looks identical from outside.
+  const described = describeQuestion(step, []);
+  assert.match(described, /THIS QUESTION IS ABOUT/);
+  assert.match(described, /CNC/);
+  assert.match(described, /"related"/);
 });
 
 /* ------------------------------------------------------------------ */

@@ -34,6 +34,24 @@ export interface TradeQuestion {
    * operators are told they may answer by text, image, or voice).
    */
   allowMedia?: boolean;
+  /**
+   * What a free-text answer to this question has to be about.
+   *
+   * Only meaningful on a question with no options, because a question with
+   * options already constrains its answers by offering them. Without this the
+   * interpreter is told only "this question wants free text", and it has no
+   * grounds to treat "tailor machine" as anything other than a tidy answer to
+   * "which machines have you operated?" — so it was stored as machining
+   * experience and the candidate was never asked again (§1 cuts both ways).
+   *
+   * The interpreter classifies an incompatible answer `related` rather than
+   * `value`, which replies to what they said and puts the question back. It is
+   * never a blacklist of wrong answers: the model is told what the question is
+   * about and judges the answer against that, so a question about welding
+   * positions or licence classes gets the same protection by declaring what it
+   * is about.
+   */
+  expects?: { context: string; examples?: string };
 }
 
 export interface TradePack {
@@ -198,14 +216,25 @@ export const TRADE_PACKS: TradePack[] = [
     questions: [
       {
         id: 'machines_operated',
+        // Names CNC, because "which machines have you operated?" does not: a
+        // tailor, a packer and a crane driver have all operated machines, and
+        // the question was never about those. The pack is only loaded for a
+        // machining candidate, so naming it costs nothing and removes the one
+        // reading of the question that produced wrong answers.
         prompt: {
-          en: 'Which machines have you operated? You can type them, send a photo, or send a voice note.',
-          ta: 'எந்தெந்த இயந்திரங்களை இயக்கியுள்ளீர்கள்? தட்டச்சு செய்யலாம், புகைப்படம் அல்லது குரல் செய்தியும் அனுப்பலாம்.',
-          hi: 'आपने कौन-कौन सी मशीनें चलाई हैं? आप टाइप कर सकते हैं, फ़ोटो या वॉइस नोट भी भेज सकते हैं।',
+          en: 'Which CNC machines have you operated? You can type them, send a photo, or send a voice note.',
+          ta: 'எந்தெந்த CNC இயந்திரங்களை இயக்கியுள்ளீர்கள்? தட்டச்சு செய்யலாம், புகைப்படம் அல்லது குரல் செய்தியும் அனுப்பலாம்.',
+          hi: 'आपने कौन-कौन सी CNC मशीनें चलाई हैं? आप टाइप कर सकते हैं, फ़ोटो या वॉइस नोट भी भेज सकते हैं।',
         },
         multi: false,
         allowMedia: true,
         choices: [],
+        expects: {
+          context: 'CNC and machine-shop machine tools',
+          examples:
+            'VMC, HMC, CNC lathe, turning centre, machining centre, Fanuc or Siemens controls, ' +
+            'conventional lathe, milling machine, drilling machine, surface grinder',
+        },
       },
     ],
   },
@@ -309,9 +338,11 @@ export function disambiguationFor(trade: string): Disambiguation | undefined {
  * listed. A welder who typed "welder" never sees the disambiguation question;
  * one who tapped "Fabrication/Welding" and said nothing else does.
  *
- * Returns an empty array when the trade has no packs at all, which is the normal
- * case for Hospitality, Sales, Cleaning and Fresher — they get no trade
- * questions, exactly as §8 requires.
+ * Returns an empty array when the trade has no packs at all — the normal case
+ * for Hospitality, Sales, Cleaning and Fresher, which get no trade questions,
+ * exactly as §8 requires — and also when it has packs but nothing supports any
+ * of them. A pack is loaded on evidence or on the candidate's own answer to the
+ * disambiguation question, and on nothing else.
  */
 export function resolvePacks(
   trade: string | undefined,
@@ -328,10 +359,22 @@ export function resolvePacks(
     : [];
 
   if (matched.length) return { packs: matched, needsDisambiguation: false };
-  if (candidates.length === 1) return { packs: candidates, needsDisambiguation: false };
 
-  // Several packs, nothing to choose between them. Ask, if there is a question
-  // defined; otherwise skip trade questions rather than ask all of them.
+  // Nothing the candidate has told us supports any pack under this trade.
+  //
+  // This used to load the pack anyway whenever the trade had exactly one, on
+  // the reasoning that there was nothing to choose between. There was nothing
+  // to choose *from* — which is not the same thing, and it is how a planning
+  // manager whose CV never mentions a machine tool came to be asked which CNC
+  // machines he had operated, and then had "tailor machine" recorded as an
+  // answer to it. One candidate pack is not evidence; it is a coincidence of
+  // how the packs happen to be filed.
+  //
+  // So: ask, where the trade has a question that would settle it, and
+  // otherwise ask nothing. A candidate skipping trade questions they had no
+  // business being asked loses nothing — §8's questions exist to sharpen a
+  // match, and a sharpened match built on an invented answer is worse than an
+  // unsharpened one.
   return {
     packs: [],
     needsDisambiguation: disambiguationFor(trade) !== undefined,

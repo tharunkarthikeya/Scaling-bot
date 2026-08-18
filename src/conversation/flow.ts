@@ -145,6 +145,16 @@ export interface FlowStep {
    * the reading, not what is stored.
    */
   acceptsOccupation?: 'category' | 'named';
+  /**
+   * What a free-text answer to this step has to be about (§8).
+   *
+   * Declared on a specialist question whose subject is narrower than "some
+   * text" — the CNC pack's machine question, and anything like it added later.
+   * The interpreter is given the context and judges the answer against it, so
+   * an answer about something else comes back `related` and is replied to
+   * rather than recorded. See `TradeQuestion.expects` for why.
+   */
+  expects?: { context: string; examples?: string };
   /** Offer "Talk to staff" alongside the answers. Always available by typing (§24). */
   allowStaff?: boolean;
   /** Accept a photo, file or voice note as an answer as well as a tap or text. */
@@ -1214,6 +1224,7 @@ function tradeQuestionStep(packId: string, q: TradeQuestion): FlowStep {
     input: q.choices.length ? (q.multi ? 'multi_choice' : 'choice') : 'text',
     choices: q.choices.length ? q.choices : undefined,
     allowMedia: q.allowMedia,
+    expects: q.expects,
     when: (c) => {
       if (!(p(c).tradePacks as string[] | undefined)?.includes(packId)) return false;
       return q.when ? q.when((p(c).tradeAnswers ?? {}) as Record<string, string[]>) : true;

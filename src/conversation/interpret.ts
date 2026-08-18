@@ -261,7 +261,14 @@ export function resolveOfferedIds(returned: unknown, choices: Choice[]): string[
     .filter((id): id is string => id !== undefined);
 }
 
-function describeQuestion(step: FlowStep, choices: Choice[]): string {
+/**
+ * The question, as the model is shown it.
+ *
+ * Exported for the smoke checks: a step declaring what it is about has to have
+ * that reach the prompt, and a field that is silently dropped on the way looks
+ * exactly like one that works.
+ */
+export function describeQuestion(step: FlowStep, choices: Choice[]): string {
   const lines = [`Question asked: ${step.prompt.en}`];
 
   // Work questions get an explicit test before anything else, because the
@@ -300,6 +307,41 @@ function describeQuestion(step: FlowStep, choices: Choice[]): string {
       '',
       'Only if it names no work at all — a greeting, a question, small talk — go',
       'on to the other classifications.',
+    );
+  }
+
+  // A specialist question, whose subject is narrower than "some text" (§8).
+  // Without this the model is told only that free text is wanted, and it has no
+  // grounds to see anything wrong with "tailor machine" as an answer to a
+  // question about machines — so it came back as a tidy value and was recorded
+  // as machining experience.
+  //
+  // Note what is *not* here: a list of wrong answers. The model is given the
+  // subject and judges the reply against it, which is what makes this work for
+  // the next specialist question as well as this one.
+  if (step.expects) {
+    lines.push(
+      '',
+      `THIS QUESTION IS ABOUT: ${step.expects.context}.`,
+      step.expects.examples ? `Answers that fit look like: ${step.expects.examples}.` : '',
+      '',
+      'Before returning a value, check the reply is about that subject. A reply',
+      'that is clearly about something else is not a usable answer to this',
+      'question, however clearly it is written — classify it "related" and the',
+      'candidate will be asked about it rather than have it recorded.',
+      '',
+      'Be careful in one direction only. Rough spelling, a brand or model name',
+      'you do not recognise, a local or trade name, an abbreviation, or an',
+      'answer in Tamil or Hindi are all still answers — return them. Use',
+      '"related" when the reply is about a different subject altogether, not',
+      'when it is about the right subject and you cannot place the specific',
+      'thing named. A machine you have never heard of is far likelier to be a',
+      'real machine than a mistake.',
+      '',
+      'Use "related" for this, not "unrelated". They were answering the question',
+      'you asked — about the wrong subject, but answering it — and the two are',
+      'handled differently: one explains what the question is asking, the other',
+      'treats them as having changed the subject.',
     );
   }
 

@@ -1727,6 +1727,7 @@ export async function handleInboundMessage(payload: {
       const replied = await respondInContext({
         question: step.prompt.en,
         options: acceptedChoices(step, candidate).map((c) => c.label.en),
+        context: step.expects?.context,
         message: interpretation.raw,
         language: candidate.language,
         languageOther: candidate.languageOther,
@@ -1776,10 +1777,38 @@ export async function handleInboundMessage(payload: {
         return;
       }
 
-      // Nothing approved covers it. They are told staff will pick it up — which
-      // is true — but no button is attached: a person is reached by asking for
-      // one, and hanging the offer off every unanswerable question is what made
-      // the bot feel like it was showing them the door.
+      // Nothing approved covers it. Before falling back to the staff line, try
+      // reading it as a remark about the open question instead.
+      //
+      // The split between `related` and `unrelated` is a model's judgement and
+      // it is not stable: the same reply — "tailor machine" at the CNC machine
+      // question — came back `related` on one run and `unrelated` on the next.
+      // Both are correct readings; only one of them used to produce a useful
+      // message, and which one the candidate got was luck. This makes the two
+      // paths converge on the same reply rather than leaving that to the prompt.
+      const asRemark = await respondInContext({
+        question: step.prompt.en,
+        options: acceptedChoices(step, candidate).map((c) => c.label.en),
+        context: step.expects?.context,
+        message: interpretation.raw,
+        language: candidate.language,
+        languageOther: candidate.languageOther,
+      });
+
+      if (asRemark.kind === 'staff') {
+        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        return;
+      }
+
+      if (asRemark.kind === 'answered') {
+        await reply(candidate, await renderRetry(step, candidate, asRemark.text), step.id);
+        return;
+      }
+
+      // Genuinely nothing to say. They are told staff will pick it up — which is
+      // true — but no button is attached: a person is reached by asking for one,
+      // and hanging the offer off every unanswerable question is what made the
+      // bot feel like it was showing them the door.
       await reply(candidate, await renderRetry(step, candidate, copy.OUT_OF_SCOPE), step.id);
       return;
     }

@@ -90,6 +90,12 @@ The plain meaning of the question itself, or of a word in it — an option's nam
 a trade term like FCAW or LMV, what "valid passport" means. This is describing
 the question that is already on their screen, not new information.
 
+Where the message tells you what the question is about, what it is asking for —
+so a candidate who answered about something else knows what to answer instead.
+Say it as a clarification and not a correction: they read the question the way
+it was written, and the useful reply is the one that gets them to the right
+answer rather than the one that points out the wrong one.
+
 That what they described is fine to record, or that they should pick the option
 closest to their situation, when the options themselves make that obvious.
 
@@ -155,6 +161,14 @@ export async function respondInContext(params: {
   question: string;
   /** The option labels offered with it, in English. Empty for a text question. */
   options: string[];
+  /**
+   * What a specialist question is about, where the step declares it (§8).
+   *
+   * Without it a reply about the wrong subject can only be met with "that is
+   * not an answer"; with it the candidate is told what the question is actually
+   * asking, which is the difference between being corrected and being helped.
+   */
+  context?: string;
   /** What the candidate said instead of answering. */
   message: string;
   language: Language | undefined;
@@ -166,6 +180,11 @@ export async function respondInContext(params: {
   const offered = params.options.length
     ? `Options offered:\n${params.options.map((o) => `  - ${o}`).join('\n')}`
     : 'This question has no options — it asks for typed text.';
+
+  // A specialist question says what it is about, so the reply can say it too.
+  const about = params.context
+    ? `\nWhat this question is about: ${params.context}. Their reply is not about that, which is why it could not be recorded as an answer.`
+    : '';
 
   try {
     const response = await client.messages.create({
@@ -185,7 +204,7 @@ export async function respondInContext(params: {
           role: 'user',
           content:
             `Candidate's language: ${languageName(params.language, params.languageOther)}\n\n` +
-            `Question on their screen: ${params.question}\n${offered}\n\n` +
+            `Question on their screen: ${params.question}\n${offered}${about}\n\n` +
             `They replied:\n${message}`,
         },
       ],

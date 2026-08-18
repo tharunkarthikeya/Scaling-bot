@@ -272,6 +272,141 @@ export function normaliseTrade(input: string | undefined): string | undefined {
   return undefined;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Which trade, from everything the CV says
+ *
+ * `normaliseTrade` above reads a job title. That is the right tool for a title
+ * and the wrong one for a CV, and using it as though it were the second is what
+ * put a pressure-vessel man in a CNC pack: "Planning & Production Manager"
+ * matched the word `production` in the factory/warehouse pattern, the first
+ * pattern to match won, and the SMAW/GTAW/GMAW/SAW line, the ASNT Level-II
+ * certification, the pressure vessels and the PEB work — all of it already
+ * extracted, all of it on the same page — were never consulted.
+ *
+ * So this weighs evidence instead of racing patterns. A term that only one
+ * trade uses counts for three; a generic title word counts for one; the trade
+ * with the most support wins, and a tie is not a decision — it returns nothing
+ * and the candidate is asked, which is what §27 requires of a field this one
+ * decides which follow-up questions get asked.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export interface TradeEvidence {
+  designation?: string;
+  industry?: string;
+  skills?: string[];
+  certifications?: string[];
+  machinery?: string[];
+  previousTitles?: string[];
+  employers?: string[];
+}
+
+/**
+ * Terms that belong to one trade and to no other.
+ *
+ * A welding process, a machine tool, a code stamp, a certification body. Nobody
+ * writes GTAW on a CV unless they weld, and nobody writes VMC unless they
+ * machine — which is exactly what makes these worth more than a job title, where
+ * "manager", "supervisor", "production" and "operations" appear across every
+ * trade there is.
+ *
+ * Scored by how many *distinct* terms hit, so a CV naming four welding
+ * processes outweighs one naming a single machine in passing.
+ */
+const STRONG_TERMS: Array<[string, RegExp]> = [
+  [
+    'fabrication_welding',
+    /\b(?:smaw|gtaw|gmaw|fcaw|saw|tig|mig|arc\s*weld\w*|stick\s*weld\w*|weld\w*|fabricat\w*|pressure\s*vessels?|peb|pre\s*engineered\s*building\w*|boiler\s*mak\w*|structural\s*steel|structural\s*fitt\w*|pwht|wps|pqr|wpq|[1-6][fg]\b|asnt|ndt|radiograph\w*|ultrasonic|heat\s*exchanger\w*|storage\s*tanks?|pipe\s*fitt\w*)\b/gi,
+  ],
+  [
+    'factory_warehouse',
+    /\b(?:cnc|vmc|hmc|lathe|turret|machining\s*cent\w*|turning\s*cent\w*|fanuc|mazak|haas|siemens\s*840|g\s*-?\s*code|machinist|turner|miller|milling|warehouse|packing\s*line|assembly\s*line|store\s*keep\w*|storekeep\w*)\b/gi,
+  ],
+  [
+    'driver_operator',
+    /\b(?:jcb|hgv|lmv|hmv|excavator|backhoe|forklift|trailer|tipper|chauffeur|heavy\s*vehicle|crane\s*operat\w*|driving\s*licen[cs]e)\b/gi,
+  ],
+  [
+    'electrical_mechanical',
+    /\b(?:hvac|refrigerat\w*|wireman|lineman|instrumentat\w*|electrician|plumb\w*|switchgear|panel\s*wiring|motor\s*rewind\w*|ac\s*mechanic)\b/gi,
+  ],
+  [
+    'construction',
+    /\b(?:mason\w*|carpenter\w*|shutter\w*|scaffold\w*|bar\s*bend\w*|steel\s*fix\w*|plaster\w*|concret\w*|formwork)\b/gi,
+  ],
+  [
+    'cleaning_housekeeping',
+    /\b(?:house\s*keep\w*|housekeep\w*|janitor\w*|deep\s*clean\w*)\b/gi,
+  ],
+  [
+    'hospitality',
+    /\b(?:chef|commis|sous\s*chef|cook|waiter|steward\w*|barista|banquet\w*|f\s*&\s*b)\b/gi,
+  ],
+  [
+    'sales_retail',
+    /\b(?:cashier|merchandis\w*|salesman|shop\s*assistant|point\s*of\s*sale)\b/gi,
+  ],
+];
+
+/** A term nobody else uses is worth three of a word every trade uses. */
+const STRONG_WEIGHT = 3;
+
+/** Distinct terms of this trade's vocabulary that appear in the evidence. */
+function distinctHits(haystack: string, pattern: RegExp): number {
+  const seen = new Set<string>();
+  for (const match of haystack.matchAll(pattern)) {
+    seen.add(match[0].toLowerCase().replace(/\s+/g, ' '));
+  }
+  return seen.size;
+}
+
+/**
+ * The candidate's trade, or undefined when the CV does not settle it.
+ *
+ * Undefined is a real answer here and not a failure: the flow asks
+ * `main_trade`, the candidate answers in one tap, and nothing has been guessed
+ * into a field that decides which specialist questions they see. Wrong is far
+ * more expensive than absent — §1 stops us asking a question the CV answered,
+ * and nothing stops us asking one it did not.
+ */
+export function classifyTrade(evidence: TradeEvidence): string | undefined {
+  const haystack = [
+    evidence.designation,
+    evidence.industry,
+    ...(evidence.skills ?? []),
+    ...(evidence.certifications ?? []),
+    ...(evidence.machinery ?? []),
+    ...(evidence.previousTitles ?? []),
+    ...(evidence.employers ?? []),
+  ]
+    .filter(Boolean)
+    .join(' \n ');
+
+  const scores = new Map<string, number>();
+  const add = (trade: string, points: number) =>
+    scores.set(trade, (scores.get(trade) ?? 0) + points);
+
+  if (haystack.trim()) {
+    for (const [trade, pattern] of STRONG_TERMS) {
+      const hits = distinctHits(haystack, pattern);
+      if (hits) add(trade, hits * STRONG_WEIGHT);
+    }
+  }
+
+  // The generic layer: the job title read as a job title, exactly as before.
+  // Worth a point, which is enough to classify a CV that says nothing else and
+  // never enough to outvote a trade's own vocabulary.
+  const generic = normaliseTrade(evidence.designation) ?? normaliseTrade(evidence.industry);
+  if (generic) add(generic, 1);
+
+  const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1]);
+  if (!ranked.length) return undefined;
+  // Two trades with equal support is not a close call to be broken by list
+  // order — it is the CV declining to answer. Ask.
+  if (ranked.length > 1 && ranked[0]![1] === ranked[1]![1]) return undefined;
+
+  return ranked[0]![0];
+}
+
 /**
  * Indian states and union territories, for splitting a CV address into the
  * fields matching filters on (§6). Matching on the state is what makes an
@@ -377,9 +512,20 @@ export function extractFromCv(ocrFields: OcrField[], ownPhone?: string): CvExtra
   // §9: this is what they currently do. It is never copied into what they want.
   if (designation) patch.currentOccupation = designation;
 
-  // The trade only where the title names it outright. Where it does not, the
-  // field stays empty and the flow asks — see `normaliseTrade`.
-  const trade = normaliseTrade(designation) ?? normaliseTrade(first(f, 'industry'));
+  // The trade, weighed across everything the CV gave us rather than read off
+  // the job title alone — see `classifyTrade`. Where the evidence does not
+  // settle it the field stays empty and the flow asks, which costs one tap and
+  // is the only honest outcome for a field that decides which specialist
+  // questions the candidate then sees (§8).
+  const trade = classifyTrade({
+    designation,
+    industry: first(f, 'industry'),
+    skills: f.skills,
+    certifications: f.certification,
+    machinery: f.machinery,
+    previousTitles: f.previous_designation,
+    employers: f.employer,
+  });
   if (trade) patch.primaryTrade = trade;
 
   const totalYears =

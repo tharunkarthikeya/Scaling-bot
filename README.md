@@ -72,7 +72,7 @@ real traffic before going live.
 | `src/conversation/engine.ts` | Orchestrates one inbound message end to end. |
 | `src/conversation/render.ts` | Step → WhatsApp shape (text, ≤3 buttons, or a list). |
 | `src/conversation/checklist.ts` | Deterministic document state machine. |
-| `src/conversation/cv.ts` | Extracted CV fields → profile fields. |
+| `src/conversation/cv.ts` | Extracted CV fields → profile fields, including which trade the evidence supports. |
 | `src/conversation/validate.ts` | Boot-time copy and flow assertions. |
 | `src/whatsapp/` | Signature check, webhook parsing, Graph API client, rate limiter. |
 | `src/ocr/veris.ts` | Veris OCR client, upload inspection, and queue handler. |
@@ -267,6 +267,34 @@ sentence. The smoke checks pin both directions, including that *"registering
 does not guarantee selection"* still gets through. That one is not hypothetical:
 the first version of the guard blocked it, which would have silenced the exact
 sentence §27 wants said.
+
+**A trade is weighed, not raced.** `classifyTrade` scores every trade over
+everything the CV gave us — designation, industry, skills, certifications,
+machinery, previous titles, employers — with a trade's own vocabulary worth
+three times a generic job-title word, and a tie returning nothing so the
+candidate is asked. It replaced a first-pattern-wins race over the job title
+alone, which classified a pressure-vessel planning manager as factory/warehouse
+because `production` appeared in his title, while SMAW, GTAW, GMAW, SAW, PWHT,
+ASNT Level-II and PEB sat unread in the same extraction.
+
+**A specialist pack loads on evidence or on an answer, never on being the only
+one.** `resolvePacks` used to take a trade's single pack as settled — nothing to
+choose between, so no need to ask. There was nothing to choose *from*, which is
+not the same thing: `factory_warehouse` has exactly one pack, so that manager was
+asked which CNC machines he had operated. Now an unsupported pack is either
+disambiguated, where the trade has a question for it, or skipped. Trade questions
+sharpen a match; a sharpened match built on an invented answer is worse than an
+unsharpened one.
+
+**A question narrower than "some text" says so.** A free-text step may declare
+`expects` — what its answers have to be about — and the interpreter is given that
+subject and judges the reply against it. "Tailor machine" at the CNC question
+comes back `related`, so the candidate is told what the question is asking and
+gets it again, instead of having a sewing machine recorded as machining
+experience and never being asked again (§1 cuts both ways). It is a subject, not
+a blacklist: rough spelling, an unfamiliar model number and an answer in Tamil
+all still count, because the model is told what the question is about rather than
+which answers are wrong. Any step can declare it.
 
 **A job the candidate names is an answer, not an off-topic message.** Steps about
 work carry `acceptsOccupation`, and the interpreter is told to test for a named
