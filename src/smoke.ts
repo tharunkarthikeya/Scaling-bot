@@ -25,7 +25,7 @@ import {
   TRADE_CHOICES,
 } from './conversation/flow.js';
 import { validateCopy } from './conversation/validate.js';
-import { interpret, resolveOfferedIds } from './conversation/interpret.js';
+import { detectGlobalCommand, interpret, resolveOfferedIds } from './conversation/interpret.js';
 import {
   ageFrom,
   buildProfileWrite,
@@ -48,7 +48,8 @@ import { acceptedChoices } from './conversation/render.js';
 import { looksLikeApplicationId, normaliseApplicationId } from './conversation/engine.js';
 import { REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
-import { inspectUpload } from './ocr/veris.js';
+import { inspectUpload, resumeCompleteness } from './ocr/veris.js';
+import { INTERPRETER_PROMPT, TUNABLES } from './conversation/rules.js';
 import type { CandidateDoc, OcrField } from './db/models.js';
 
 let passed = 0;
@@ -1218,6 +1219,104 @@ await check('machinery on the CV picks the trade pack without asking (§8)', () 
   // Two packs serve fabrication_welding, so without a signal this would ask a
   // disambiguation question. The CV already answered it.
   assert.deepEqual(inferTradePacks(c), ['welder']);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nan upload that is not the document that was asked for (§5, §14)');
+
+const cvField = (key: string, value: string): OcrField => ({ key, value, confidence: null });
+
+await check('a CV that read is never sent back to be re-taken', () => {
+  const outcome = resumeCompleteness({ name: 'Ravi Kumar' }, [cvField('name', 'Ravi Kumar')]);
+  assert.equal(outcome.complete, true);
+  assert.equal(outcome.verdict, 'ok');
+});
+
+await check('a CV read only as far as its skills still counts as read', () => {
+  // The extractor missing the name is not the candidate sending the wrong file.
+  const outcome = resumeCompleteness({ skills: ['TIG', 'MIG'] }, [cvField('skills', 'TIG, MIG')]);
+  assert.equal(outcome.complete, true);
+});
+
+await check('an Aadhaar card sent as a CV is identified rather than filed as one', () => {
+  const outcome = resumeCompleteness(
+    { page_text: 'Government of India — Unique Identification Authority. Aadhaar 4321 8765 2109' },
+    [],
+  );
+  assert.equal(outcome.complete, false);
+  assert.equal(outcome.verdict, 'wrong_document');
+  assert.equal(outcome.looksLike, 'aadhaar');
+});
+
+await check('a passport sent as a CV is identified from its MRZ', () => {
+  const outcome = resumeCompleteness(
+    { page_text: 'P<INDSREENU<<ERITAM<<<<<<<<<<<<<<<<<<<<<<<<<< C40197166IND7605254M3410108' },
+    [],
+  );
+  assert.equal(outcome.verdict, 'wrong_document');
+  assert.equal(outcome.looksLike, 'passport');
+});
+
+await check('a file nothing could be read from is not accused of being another document', () => {
+  // "empty" and "wrong_document" are different sentences to the candidate: one
+  // asks for a clearer photo, the other says they picked the wrong file.
+  const outcome = resumeCompleteness({}, []);
+  assert.equal(outcome.complete, false);
+  assert.equal(outcome.verdict, 'empty');
+  assert.equal(outcome.looksLike, undefined);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nreaching a person (§24)');
+
+await check('an unreadable reply is re-asked once, then handed over', () => {
+  // The ladder itself lives in the engine; this pins the number it counts to.
+  // Three meant a candidate the bot could not read sat through two retries.
+  assert.equal(TUNABLES.maxAsksPerStep, 2);
+});
+
+await check('a job title is not a request for a person', () => {
+  // Every one of these used to hand the candidate to staff before the
+  // interpreter was reached, for answering a question with their own job.
+  for (const said of [
+    'production manager',
+    'planning and production manager',
+    'i was a site manager for 5 years',
+    'my passport is with the agent',
+    'agent asked me to send it',
+  ]) {
+    assert.equal(detectGlobalCommand(said), undefined, said);
+  }
+});
+
+await check('a number given at the contact question is not a request for a call', () => {
+  assert.equal(detectGlobalCommand('you can call me at 9876543210'), undefined);
+  assert.equal(detectGlobalCommand('call me back please'), 'staff');
+});
+
+await check('asking for a person is understood in all three languages', () => {
+  for (const said of [
+    'talk to staff',
+    'speak to someone',
+    'i want to talk to a person',
+    'connect me to a human',
+    'customer care',
+    // The Tamil and Hindi labels of the button itself. Anchored with \b these
+    // never matched: there is no ASCII word boundary before a Tamil letter.
+    'ஊழியருடன் பேச',
+    'स्टाफ से बात करें',
+  ]) {
+    assert.equal(detectGlobalCommand(said), 'staff', said);
+  }
+});
+
+await check('the interpreter is told what "related" is, and what "unclear" now costs', () => {
+  // The tool accepts the classification; the prompt is what makes it usable.
+  // A classification the tool offers and the prompt never explains is dead.
+  assert.match(INTERPRETER_PROMPT, /- related/);
+  assert.match(INTERPRETER_PROMPT, /handed to a member of staff/);
 });
 
 /* ------------------------------------------------------------------ */

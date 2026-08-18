@@ -68,6 +68,7 @@ real traffic before going live.
 | `src/conversation/interpret.ts` | The only model call that reads a candidate: reply → option id. |
 | `src/conversation/translate.ts` | Fixed copy in a language we do not ship. |
 | `src/conversation/faq.ts` | **What the bot may answer in its own words, and the guardrail around it.** |
+| `src/conversation/respond.ts` | Replies to a message that is about the open question, and to a file that is not the document asked for. |
 | `src/conversation/engine.ts` | Orchestrates one inbound message end to end. |
 | `src/conversation/render.ts` | Step → WhatsApp shape (text, ≤3 buttons, or a list). |
 | `src/conversation/checklist.ts` | Deterministic document state machine. |
@@ -101,18 +102,26 @@ confirmation and acknowledgement is written by a person in `flow.ts` or
 the candidate typed and say which of the offered options it corresponds to — it
 cannot steer the conversation because it has no channel through which to do so.
 
-It writes to a candidate in exactly two places, and both are fenced:
+It writes to a candidate in exactly three places, and all three are fenced:
 
 | Where | What it may write | The fence |
 |---|---|---|
 | `translate.ts` | Fixed copy, in a language we do not ship | One sentence in, the same sentence out. Never given a topic, so it cannot introduce one. |
 | `faq.ts` | An answer to a question the candidate asked | Grounded in `FAQ` and nothing else, then guard-checked for money amounts, promises and timelines before it is sent. |
+| `respond.ts` | A reply to a message that is about the open question, and the sentence telling someone their upload is not the document asked for | Same grounding and the same guard as `faq.ts`. It is told the question, the options and the message — never the candidate's record — and it is forbidden to answer the question on their behalf. The question is re-sent underneath whatever it writes. |
 
 `faq.ts` is what stops the bot deflecting every question to staff. A candidate
-who asks *"is there any fee?"* gets the agency's actual answer; one who asks
-something no approved entry covers gets the staff line, and that is now the only
-thing that produces it. The answer is sent with the open question underneath it,
-so answering never costs the candidate their place in the flow.
+who asks *"is there any fee?"* gets the agency's actual answer. `respond.ts`
+covers the other half: a message that is about the question in front of them
+without being an answer to it — *"my passport is with the agent"*, *"what is
+FCAW?"*, *"I have TIG but the certificate expired"*. Both send their reply with
+the open question underneath it, so being answered never costs the candidate
+their place in the flow.
+
+Neither can move the flow, record an answer, or state a fact it was not given.
+When either declines — nothing approved covers it, or the guard trips — the
+candidate gets fixed copy and the question again, which is a worse reply and
+never a wrong one.
 
 Most turns never reach a model at all. A tapped button already carries its
 option id; a typed reply matching an offered label in any of the three
@@ -205,6 +214,19 @@ from the same person. Without it, two rapid messages both read the same stale
 checklist and both ask for the CV. The lock is in-memory, so **running more than
 one instance needs it backed by Redis.**
 
+**A file that is not the document asked for is said out loud.** The commonest
+document mistake by far is the right person sending the wrong scan — the CV
+question is answered with an Aadhaar card picked out of a gallery of them. With
+no filename or caption naming another document there is nothing to re-attribute
+it by, so it lands in the slot that was asked for. When the extraction then
+yields nothing usable, `resumeCompleteness` asks the markers what the file
+actually is: an identified document is a `wrong_document` and the candidate is
+told which one they sent, an unidentifiable one is `empty` and they are asked
+for a clearer photo. Nothing is written to the profile from a file filed as
+something it is not, and the upload itself is kept either way. §5's rule that a
+CV is never re-requested for being *hard to read* is unchanged — this is about
+files that are not CVs.
+
 **OCR routes per document kind.** Veris exposes three extractors, each with its
 own route, form field, and response shape — `passport` (MRZ + check digits),
 `resume` (structured CV fields), and `document` (per-page text). Which one runs
@@ -227,8 +249,7 @@ with `tool_choice` forced, so its answer is always a parseable object rather
 than prose, and every error — no tool call, an unknown classification, a network
 failure — returns `unclear`. An unclear answer costs one re-asked question; a
 confidently wrong one is written into a candidate's permanent record. Past
-`maxAsksPerStep` the conversation goes to a person rather than asking a fourth
-time.
+`maxAsksPerStep` the conversation goes to a person rather than asking again.
 
 **Option ids the model invents are dropped, not trusted.** The prompt forbids
 returning an id that was not offered; `interpret.ts` filters the returned ids
@@ -263,12 +284,16 @@ normally when they ask *whether there is a fee*. Collapsing the two sent every
 worried candidate to a human instead of telling them registration is free — the
 harness drives that question specifically.
 
-**The staff offer is not attached to every retry.** A misread reply is re-asked
-on its own the first time; the offer to reach a person appears on the second,
-one attempt before `maxAsksPerStep` hands over anyway. A staff button on the
-first typo reads as the bot giving up immediately. Typing "talk to staff" still
-works at any point, and distress, payment and legal matters still escalate on
-the first message.
+**There are two ways to reach a person, and neither is a shrug.** A candidate
+asks for one — the button, or "talk to staff" typed at any point — or the bot
+could not read two replies in a row, at which point it says so and hands over.
+The staff line is attached to nothing else: not to a retry, not to a question
+with no approved answer, not to a reply the bot understood but could not record.
+A message the bot *did* understand is answered by `faq.ts` or `respond.ts` and
+never counted towards the handoff, so engaging with the bot can no longer walk a
+candidate towards being passed off. Distress, a report that someone has demanded
+money, and legal or medical matters still escalate on the first message —
+that is a safeguarding route, not a fallback for the bot having nothing to say.
 
 **The interpreter prompt is deterministic and sees no candidate data.** It is
 the cached prefix of every interpretation call, and it is handed one question,
@@ -292,10 +317,13 @@ These are deliberate — flagging rather than hiding them:
   branch, and only for a candidate who asked something — a tapped button never
   reaches it. The FAQ is in the cached prefix, so the marginal cost is the
   question and the answer, not the knowledge base.
-- **A question the interpreter reads as `unclear` rather than `unrelated` is not
-  answered.** It is re-asked instead, which is the safer failure. If candidates
-  are visibly asking things and being re-asked the question, that routing is
-  where to look first.
+- **Everything rests on the interpreter's `related` / `unrelated` / `unclear`
+  split.** `related` and `unrelated` both get the candidate a written reply;
+  `unclear` re-asks once and then hands to a person. A message misfiled as
+  `unclear` therefore costs more than it used to — two of them end the automated
+  conversation. If candidates are reaching staff without asking to, that
+  classification is where to look first, and the wording that governs it is in
+  `INTERPRETER_PROMPT`.
 - **Storage is a local volume.** Fine on a mounted Dokploy volume; move to
   S3/R2 before this holds real volume. The `storage/` interface is the seam.
 - **The candidate lock is per-process.** Single instance only until it is moved

@@ -307,7 +307,8 @@ const ANSWER_TOOL: Anthropic.Tool = {
   },
 };
 
-function faqContext(): string {
+/** The approved list, as the cached grounding block. Shared with `respond.ts`. */
+export function faqContext(): string {
   return FAQ.map((e) => `[${e.id}]\nAsked as: ${e.asks}\nApproved answer: ${e.answer}`).join('\n\n');
 }
 

@@ -65,6 +65,13 @@ export interface OcrOutcome {
     verdict: CompletenessVerdict;
     problems: string[];
     missingPages?: number[];
+    /**
+     * On `wrong_document`: the id of the document the upload appears to be,
+     * where the markers identified one. Absent means "not this document, and we
+     * cannot say what it is" — which the candidate is still owed a sentence
+     * about, just a vaguer one.
+     */
+    looksLike?: string;
   };
 }
 
@@ -156,6 +163,11 @@ function fromExtractedFields(raw: any): OcrField[] {
  * confident enough to be trusted (see `identifyDocument`).
  */
 const DOCUMENT_MARKERS: Record<string, RegExp[]> = {
+  passport: [
+    /\bP<[A-Z]{3}[A-Z<]+/, // the MRZ first line, which nothing else carries
+    /republic\s+of\s+india.{0,40}passport|passport\s+no\.?\s*[:#]?\s*[A-Z]\d{7}/i,
+    /\b(?:place|date)\s+of\s+issue\b.{0,60}\bdate\s+of\s+expiry\b/i,
+  ],
   aadhaar: [
     /\b\d{4}\s?\d{4}\s?\d{4}\b/, // the 12-digit UID, spaced or not
     /aadhaar|aadhar|adhaar|uidai|unique\s+identification/i,
@@ -561,6 +573,15 @@ function normaliseResume(payload: any): OcrOutcome {
   if (!payload?.name) reasons.push('no candidate name extracted');
   for (const w of payload?.warnings ?? []) reasons.push(String(w));
 
+  const completeness = resumeCompleteness(payload, fields);
+  if (completeness.verdict === 'wrong_document') {
+    reasons.push(
+      completeness.looksLike
+        ? `the upload reads as a ${completeness.looksLike}, not a CV`
+        : 'the upload does not read as a CV',
+    );
+  }
+
   return {
     raw: payload,
     fields,
@@ -569,10 +590,91 @@ function normaliseResume(payload: any): OcrOutcome {
     // CRM shows it as unverified until then.
     needsReview: true,
     reviewReasons: reasons,
-    // A CV is never sent back to be re-taken. Whatever it yields skips a
-    // question, and whatever it does not, the flow simply asks (§5).
-    completeness: { complete: true, verdict: 'ok', problems: [] },
+    completeness,
   };
+}
+
+/**
+ * Whether what came back is a CV at all.
+ *
+ * §5 says a CV is never re-requested for being *hard to read* — whatever it
+ * yields skips a question, and whatever it does not, the flow simply asks. That
+ * is still true here. What this catches is the other thing: the file is not a CV
+ * in the first place.
+ *
+ * It happens constantly. The candidate is asked for a CV, taps the attach
+ * button, and picks the wrong scan out of a gallery of them. With no filename
+ * or caption naming another document, `attributeInboundDocument` has nothing to
+ * go on and files it in the slot that was asked for — so their Aadhaar card
+ * went through the resume extractor, produced nothing, and the bot moved
+ * silently to the next question with the CV slot marked done. The candidate was
+ * never told, and staff got a CV slot holding an Aadhaar card.
+ *
+ * "Nothing usable" is the test, not "low confidence" — the resume extractor
+ * reports no confidence at all, so there is no score to threshold.
+ *
+ * Exported for the smoke checks: this decides whether a candidate is told they
+ * sent the wrong file, so both directions are worth pinning.
+ */
+export function resumeCompleteness(payload: any, fields: OcrField[]): OcrOutcome['completeness'] {
+  const USABLE = [
+    'name',
+    'designation',
+    'highest_qualification',
+    'employer',
+    'previous_designation',
+    'skills',
+    'total_experience_human',
+    'total_experience_years',
+  ];
+
+  const readSomething = fields.some(
+    (f) => USABLE.includes(f.key) && String(f.value ?? '').trim().length > 1,
+  );
+  if (readSomething) return { complete: true, verdict: 'ok', problems: [] };
+
+  const looksLike = identifyFromMarkers(payload, fields);
+  if (looksLike) {
+    return {
+      complete: false,
+      verdict: 'wrong_document',
+      problems: [`the upload reads as a ${looksLike} rather than a CV`],
+      looksLike,
+    };
+  }
+
+  // A CV we could not read and a photo of a wall are indistinguishable from
+  // here, and the re-ask covers both — the same reasoning `passportCompleteness`
+  // uses for its own `empty`.
+  return {
+    complete: false,
+    verdict: 'empty',
+    problems: ['nothing that reads as a CV came back from the extractor'],
+  };
+}
+
+/**
+ * Which known document an upload appears to be, from its markers.
+ *
+ * The inverse of `identifyDocument`, which asks "is this the one we wanted?".
+ * Only consulted once the extraction has produced nothing usable for the slot,
+ * which is what keeps it off real documents: a CV that read cleanly never
+ * reaches here, so its author's own passport number cannot make it "a passport".
+ */
+function identifyFromMarkers(payload: unknown, fields: OcrField[]): string | undefined {
+  let haystack = textOf(fields);
+  try {
+    haystack += ' ' + JSON.stringify(payload ?? {});
+  } catch {
+    // A payload that will not serialise tells us nothing; the fields still might.
+  }
+
+  if (haystack.trim().length < MIN_TEXT_TO_JUDGE) return undefined;
+
+  for (const [docType, markers] of Object.entries(DOCUMENT_MARKERS)) {
+    if (markers.some((m) => m.test(haystack))) return docType;
+  }
+  return undefined;
 }
 
 function normaliseDocument(payload: any, docType?: string): OcrOutcome {
@@ -899,7 +1001,12 @@ export async function processOcrJob(payload: { documentId: string }): Promise<vo
           ? extractFromCv(outcome.fields, doc.waId).patch
           : profileFromIdentityDocument(doc.docType, outcome.fields);
 
-      if (Object.keys(patch).length) {
+      // Nothing is written from a file that is not the document it was filed
+      // as. Whatever an Aadhaar card yields under the resume extractor is not
+      // this candidate's CV, and a profile is harder to correct than a slot.
+      const trustworthy = outcome.completeness.verdict !== 'wrong_document';
+
+      if (trustworthy && Object.keys(patch).length) {
         await mergeExtractedProfile(
           doc.candidateId,
           patch,

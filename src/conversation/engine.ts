@@ -59,6 +59,7 @@ import {
 import { attributeInboundDocument, initialSlots, withMissingSlots } from './checklist.js';
 import { detectGlobalCommand, interpret } from './interpret.js';
 import { answerFromFaq } from './faq.js';
+import { explainWrongDocument, respondInContext } from './respond.js';
 import {
   acceptedChoices,
   choices as renderChoices,
@@ -1619,9 +1620,10 @@ export async function handleInboundMessage(payload: {
       return;
     }
 
-    // A question asked at a menu is still a question. Answering it here as well
-    // is what stops "is there any fee?" being met with "sorry, I could not use
-    // that as an answer" purely because of where in the conversation it landed.
+    // A question asked at a menu is still a question, and a remark about the
+    // menu is still a remark. Both are answered here as well as in the flow —
+    // otherwise "is there any fee?" is met with "sorry, I could not use that as
+    // an answer" purely because of where in the conversation it landed.
     let answer: string | undefined;
     if (interpretation.kind === 'unrelated') {
       const answered = await answerFromFaq({
@@ -1634,6 +1636,19 @@ export async function handleInboundMessage(payload: {
         return;
       }
       if (answered.kind === 'answered') answer = answered.text;
+    } else if (interpretation.kind === 'related') {
+      const replied = await respondInContext({
+        question: menu.prompt.en,
+        options: options.map((o) => o.label.en),
+        message: interpretation.raw,
+        language: candidate.language,
+        languageOther: candidate.languageOther,
+      });
+      if (replied.kind === 'staff') {
+        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        return;
+      }
+      if (replied.kind === 'answered') answer = replied.text;
     }
 
     // Same rule as a flow question: one message carrying both the lead line and
@@ -1677,7 +1692,7 @@ export async function handleInboundMessage(payload: {
   if (voiceNoteUnread) {
     await reply(
       candidate,
-      await renderRetry(step, candidate, copy.VOICE_NOT_UNDERSTOOD, { offerStaff: true }),
+      await renderRetry(step, candidate, copy.VOICE_NOT_UNDERSTOOD),
       step.id,
     );
     return;
@@ -1703,6 +1718,37 @@ export async function handleInboundMessage(payload: {
         interpretation.command === 'delete' ? MENU.delete : MENU.update,
       );
       return;
+
+    case 'related': {
+      // They engaged with the question without answering it — asked what an
+      // option means, described a condition, queried the question itself.
+      // Re-asking it with "I could not use that as an answer" on top is a lie:
+      // it was a usable message, just not an answer, and it deserves a reply.
+      const replied = await respondInContext({
+        question: step.prompt.en,
+        options: acceptedChoices(step, candidate).map((c) => c.label.en),
+        message: interpretation.raw,
+        language: candidate.language,
+        languageOther: candidate.languageOther,
+      });
+
+      if (replied.kind === 'staff') {
+        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        return;
+      }
+
+      if (replied.kind === 'answered') {
+        // The question goes back underneath, unchanged, so replying to them
+        // never costs them their place in the flow.
+        await reply(candidate, await renderRetry(step, candidate, replied.text), step.id);
+        return;
+      }
+
+      // Nothing safe to say. Not counted as a reply we could not read — we read
+      // it fine — so this cannot walk the candidate towards a handoff.
+      await reply(candidate, await renderRetry(step, candidate, copy.UNCLEAR), step.id);
+      return;
+    }
 
     case 'unrelated': {
       // The candidate asked a question of their own. Answer it where we have an
@@ -1730,13 +1776,11 @@ export async function handleInboundMessage(payload: {
         return;
       }
 
-      // Nothing approved covers it. *This* is the doubt case, and the only one
-      // that still sends "our staff will answer that".
-      await reply(
-        candidate,
-        await renderRetry(step, candidate, copy.OUT_OF_SCOPE, { offerStaff: true }),
-        step.id,
-      );
+      // Nothing approved covers it. They are told staff will pick it up — which
+      // is true — but no button is attached: a person is reached by asking for
+      // one, and hanging the offer off every unanswerable question is what made
+      // the bot feel like it was showing them the door.
+      await reply(candidate, await renderRetry(step, candidate, copy.OUT_OF_SCOPE), step.id);
       return;
     }
 
@@ -1749,15 +1793,12 @@ export async function handleInboundMessage(payload: {
         await handOffToStaff(candidate, `could not understand ${count} replies at "${step.id}"`);
         return;
       }
-      // The first misread reply is just re-asked. A typo in a city name is not
-      // a reason to offer a human, and a staff button on every retry is what
-      // made the bot feel like it gave up immediately. The offer arrives on the
-      // second failure, one attempt before the handoff does it anyway.
-      await reply(
-        candidate,
-        await renderRetry(step, candidate, copy.UNCLEAR, { offerStaff: count > 1 }),
-        step.id,
-      );
+      // The first unreadable reply is re-asked on its own, with no staff button:
+      // a typo in a city name is not a reason to offer a human, and the handoff
+      // above catches the second one anyway. Note what does *not* reach here —
+      // a question of their own, or a comment on the question asked. Those are
+      // answered, so only a genuinely unreadable message walks this ladder.
+      await reply(candidate, await renderRetry(step, candidate, copy.UNCLEAR), step.id);
       return;
     }
 
@@ -1815,11 +1856,7 @@ export async function handleInboundMessage(payload: {
     }
 
     logger.warn({ waId: candidate.waId, step: step.id, count }, 'answer left the step unsatisfied');
-    await reply(
-      candidate,
-      await renderRetry(step, candidate, copy.UNCLEAR, { offerStaff: count > 1 }),
-      step.id,
-    );
+    await reply(candidate, await renderRetry(step, candidate, copy.UNCLEAR), step.id);
     return;
   }
 
@@ -1839,6 +1876,51 @@ export async function handleInboundMessage(payload: {
  * not called "received" until it has been read, because §14 forbids saying so
  * before the upload is known to be usable.
  */
+/**
+ * Tells the candidate the file they sent is not the document that was asked for.
+ *
+ * Written by `respond.ts` rather than taken from `copy.ts`, because the useful
+ * sentence names both halves — "that looks like your Aadhaar card, could you
+ * send your CV?" — and fixed copy cannot name something the engine only found
+ * out at runtime. It is fenced and guard-checked there, and it decides nothing:
+ * the slot, the verdict and the next question are all settled before it is
+ * called. When it declines, or the model call fails, the fixed copy says the
+ * same thing in fewer words and in all three languages.
+ */
+async function sendWrongDocument(
+  candidate: CandidateDoc,
+  docType: string,
+  looksLike?: string,
+): Promise<void> {
+  const name = (
+    await renderMessage(requirementFor(docType)?.label ?? copy.DOCUMENT_THIS_ONE, candidate)
+  ).body;
+
+  const appearsToBe = looksLike
+    ? (await renderMessage(requirementFor(looksLike)?.label ?? copy.DOCUMENT_THIS_ONE, candidate))
+        .body
+    : undefined;
+
+  const written = await explainWrongDocument({
+    expected: name,
+    appearsToBe,
+    language: candidate.language,
+    languageOther: candidate.languageOther,
+  });
+
+  if (written.kind === 'answered') {
+    await reply(candidate, { kind: 'text', body: written.text });
+    return;
+  }
+
+  // `DOCUMENT_WRONG_TYPE` claims to know what the file is not; without an
+  // identification the honest fixed line is the one that only says it could not
+  // be read.
+  await tell(candidate, looksLike ? copy.DOCUMENT_WRONG_TYPE : copy.DOCUMENT_NOT_READ, {
+    document: name,
+  });
+}
+
 async function acknowledgeDocument(candidate: CandidateDoc, docType: string): Promise<void> {
   if (docType === 'cv') {
     await tell(candidate, copy.CV_RECEIVED);
@@ -1864,6 +1946,8 @@ export interface DocumentOutcome {
   /** Plain-language problems, for the candidate-facing re-ask. */
   problems: string[];
   missingPages?: number[];
+  /** On `wrong_document`: which document the upload appears to be, if known. */
+  looksLike?: string;
 }
 
 /** Records the extraction verdict against the slot. Called by the OCR worker. */
@@ -1943,7 +2027,29 @@ export async function resumeAfterDocument(
 
   // A CV is never re-requested for being hard to read. It is a convenience: what
   // it yields skips questions, and what it does not, the flow simply asks (§5).
+  //
+  // A file that is not a CV at all is a different matter, and it used to be
+  // silent: the wrong scan picked out of a gallery went through the resume
+  // extractor, yielded nothing, and the slot was marked done while the bot
+  // moved on to the next question. The candidate was never told they had sent
+  // the wrong file, and the CV they meant to send never arrived.
   if (docType === 'cv') {
+    if (outcome.complete) {
+      await askNextQuestion(candidate);
+      return;
+    }
+
+    const slot = candidate.documents.cv!;
+    await markSlot(candidate, 'cv', 'incomplete', outcome.problems.join('; '));
+
+    // Asked for twice already — the CV is optional, so stop chasing it and let
+    // the flow collect the same details by question instead (§5).
+    if (slot.askedCount >= TUNABLES.maxAsksPerDocument) {
+      await askNextQuestion(candidate);
+      return;
+    }
+
+    await sendWrongDocument(candidate, 'cv', outcome.looksLike);
     await askNextQuestion(candidate);
     return;
   }
@@ -1974,7 +2080,7 @@ export async function resumeAfterDocument(
     if (outcome.verdict === 'empty') {
       await tell(candidate, copy.DOCUMENT_NOT_READ, { document: documentName });
     } else if (outcome.verdict === 'wrong_document') {
-      await tell(candidate, copy.DOCUMENT_WRONG_TYPE, { document: documentName });
+      await sendWrongDocument(candidate, docType, outcome.looksLike);
     } else if (outcome.verdict === 'unreadable') {
       await tell(candidate, copy.DOCUMENT_UNREADABLE);
     } else {

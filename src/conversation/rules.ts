@@ -194,8 +194,17 @@ export const TUNABLES = {
    * are written from.
    */
   maxAnswerTokens: 400,
-  /** Stop re-asking a question after this many attempts and hand to staff. */
-  maxAsksPerStep: 3,
+  /**
+   * Replies we could not read before the conversation goes to a person.
+   *
+   * Two: the first unreadable reply is re-asked, the second hands over. The
+   * staff line is not offered anywhere in between — a candidate reaches a human
+   * by asking for one, or because the bot genuinely could not read them twice,
+   * and never as a shrug attached to a retry. Everything the bot *did*
+   * understand — a question of their own, a comment on the question asked — is
+   * answered by `faq.ts` or `respond.ts` and never counted here.
+   */
+  maxAsksPerStep: 2,
   /** Stop chasing a document after this many asks. */
   maxAsksPerDocument: 2,
   /** OCR field confidence below this routes the document to human review. */
@@ -265,10 +274,18 @@ Return exactly one classification by calling the interpret tool:
                medical or safety matter.
 - command      the reply is the word UPDATE or DELETE, or plainly asks to change
                or remove their profile.
+- related      the reply is about the question you were given, but it is not an
+               answer to it — a query about what the question or one of its
+               options means, a condition attached to their own situation, a
+               comment on it. "What is FCAW?", "my passport is with the agent",
+               "I have TIG but the certificate expired", "is 6 years enough for
+               Europe?". Something else writes them a reply and then asks the
+               question again, so nothing is lost by using this.
 - unrelated    the reply has nothing to do with the question and is not any of
                the above — small talk, a question about salary or visas, a
                forwarded message, a greeting.
-- unclear      you cannot tell. Prefer this over guessing.
+- unclear      the message cannot be read as anything at all: keysmash, a
+               fragment with no meaning, a language you cannot parse.
 
 Rules:
 
@@ -333,9 +350,17 @@ their experience while you asked for their city — classify what they said
 against the question that was actually asked. Extra information they offer is
 captured elsewhere; do not force it into this answer.
 
-Prefer "unclear" to a confident wrong answer. A re-asked question costs one
-message. A wrong answer written into a candidate's permanent record costs a
-placement.
+"unclear" now costs more than it used to. A reply you cannot read is re-asked
+once and then handed to a member of staff, because a bot that cannot read
+someone twice running is wasting their time. So keep it for messages that carry
+no meaning you can find — not for a message you understood and could not fit
+into an option. Something you understood but cannot record is "related"; a
+question about the agency is "unrelated"; both get the candidate a reply and
+another go at the question.
+
+Within that, still prefer "unclear" to a confident wrong answer. A re-asked
+question costs one message. A wrong answer written into a candidate's permanent
+record costs a placement.
 `.trim();
 
 /* ─────────────────────────────────────────────────────────────────────────────

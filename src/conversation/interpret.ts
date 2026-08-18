@@ -29,6 +29,8 @@ export type Interpretation =
   | { kind: 'staff'; reason: string }
   | { kind: 'command'; command: 'update' | 'delete'; raw: string }
   | { kind: 'unrelated'; raw: string }
+  /** About the question we asked, but not an answer to it. See `respond.ts`. */
+  | { kind: 'related'; raw: string }
   | { kind: 'unclear'; raw: string };
 
 export interface InterpretParams {
@@ -51,9 +53,41 @@ export interface InterpretParams {
 const UPDATE_WORDS = /^\s*(update|अपडेट|புதுப்பி)\s*$/i;
 const DELETE_WORDS = /^\s*(delete|remove|डिलीट|हटाओ|நீக்கு)\s*$/i;
 
-/** Typed requests for a person. The button is separate; this catches free text. */
-const STAFF_WORDS =
-  /\b(talk to (staff|someone|a person|human)|speak to (staff|someone|a person)|customer care|call me|agent|manager|ஊழிய|ஆள்\s*கிட்ட|स्टाफ|इंसान|बात कर)/i;
+/**
+ * Typed requests for a person. The button is separate; this catches free text.
+ *
+ * Every one of these needs the *asking* as well as the noun, and that is the
+ * whole point. "Agent" and "manager" on their own are ordinary words in this
+ * conversation — "my passport is with the agent", "I was a production manager
+ * for five years" — and matching them bare handed a candidate to staff for
+ * answering the trade question with their own job title. Silently: the handoff
+ * happens before the interpreter is ever called, so nothing downstream could
+ * undo it, and what staff saw was someone who had said nothing to them.
+ *
+ * The window between verb and noun is short on purpose. "Speak" fourteen
+ * characters from "manager" is a request; the same two words in a sentence
+ * about a previous job are further apart.
+ *
+ * The Tamil and Hindi phrases carry no `\b`, because JavaScript's `\b` is
+ * ASCII-only: there is never a word boundary before a Tamil or Devanagari
+ * letter, so anchoring them that way meant a candidate typing the Tamil label
+ * of the Talk to staff button was not understood in the language the button
+ * was written in.
+ */
+const STAFF_REQUESTS: RegExp[] = [
+  /\b(?:talk|speak|chat|connect|transfer|put me through|pass me|forward me)\b[^.?!\n]{0,14}\b(?:staff|someone|somebody|person|human|agent|manager|executive|representative|operator)\b/i,
+  /\b(?:need|want|get|give)\b[^.?!\n]{0,16}\b(?:staff|human|real person|customer care)\b/i,
+  /\bcustomer\s*(?:care|service|support)\b|\bhelp\s*?line\b/i,
+  // "call me back" is a request. "call me at 98765" is a phone number they are
+  // giving us at the contact question, and used to be read as one.
+  /\b(?:call|ring|phone)\s+me\b(?!\s*(?:at|on|as)\b)/i,
+  /ஊழிய|ஆள்\s*கிட்ட|நபரிடம்|மனிதர்|स्टाफ|इंसान|किसी\s*व्यक्ति|बात\s*कर/,
+];
+
+/** Whether a typed message is asking to be put through to a person. */
+export function asksForStaff(text: string): boolean {
+  return STAFF_REQUESTS.some((p) => p.test(text));
+}
 
 function normalise(text: string): string {
   return text
@@ -97,7 +131,7 @@ export function detectGlobalCommand(
 
   if (UPDATE_WORDS.test(raw)) return 'update';
   if (DELETE_WORDS.test(raw)) return 'delete';
-  if (STAFF_WORDS.test(raw)) return 'staff';
+  if (asksForStaff(raw)) return 'staff';
   return undefined;
 }
 
@@ -121,7 +155,7 @@ function resolveLocally(params: InterpretParams): Interpretation | undefined {
 
   if (UPDATE_WORDS.test(raw)) return { kind: 'command', command: 'update', raw };
   if (DELETE_WORDS.test(raw)) return { kind: 'command', command: 'delete', raw };
-  if (STAFF_WORDS.test(raw)) return { kind: 'staff', reason: 'asked for a person' };
+  if (asksForStaff(raw)) return { kind: 'staff', reason: 'asked for a person' };
 
   if (!choices.length) return undefined;
 
@@ -164,7 +198,7 @@ const INTERPRET_TOOL: Anthropic.Tool = {
     properties: {
       classification: {
         type: 'string',
-        enum: ['matched', 'value', 'staff', 'command', 'unrelated', 'unclear'],
+        enum: ['matched', 'value', 'staff', 'command', 'related', 'unrelated', 'unclear'],
       },
       option_ids: {
         type: 'array',
@@ -402,6 +436,9 @@ export async function interpret(params: InterpretParams): Promise<Interpretation
         return input.command === 'delete'
           ? { kind: 'command', command: 'delete', raw }
           : { kind: 'command', command: 'update', raw };
+
+      case 'related':
+        return { kind: 'related', raw };
 
       case 'unrelated':
         return { kind: 'unrelated', raw };
