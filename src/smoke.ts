@@ -292,8 +292,11 @@ await check('B2B records and uploads are routed to their own collections', () =>
 });
 
 await check('only the Aadhaar sides are read; the certificate is filed as it arrived', () => {
-  assert.equal(requirementFor('b2b_aadhaar_front')?.ocr, 'document');
-  assert.equal(requirementFor('b2b_aadhaar_back')?.ocr, 'document');
+  // The Aadhaar endpoint, not the generic document one: it returns the number,
+  // the name and the date of birth under their own names.
+  assert.equal(requirementFor('b2b_aadhaar_front')?.ocr, 'aadhaar');
+  assert.equal(requirementFor('b2b_aadhaar_back')?.ocr, 'aadhaar');
+  assert.equal(requirementFor('aadhaar')?.ocr, 'aadhaar');
   assert.equal(requirementFor('company_registration')?.ocr, 'none');
 });
 

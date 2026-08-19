@@ -36,8 +36,12 @@ export interface DocumentRequirement {
   keywords: string[];
   /**
    * Which Veris extractor to run. 'none' skips OCR entirely.
+   *
+   * Each is a different endpoint with a different response shape, so this is a
+   * routing decision and not a hint: an Aadhaar sent to the generic 'document'
+   * extractor comes back as page text with the number buried in it.
    */
-  ocr: 'passport' | 'resume' | 'document' | 'none';
+  ocr: 'passport' | 'resume' | 'aadhaar' | 'document' | 'none';
   /**
    * Extracted values from this document are personal identifiers and must never
    * be echoed back to the candidate or shown unmasked in ordinary CRM screens
@@ -114,7 +118,7 @@ export const DOCUMENTS: DocumentRequirement[] = [
     },
     required: false,
     keywords: ['aadhaar', 'aadhar', 'adhar', 'uid', 'ஆதார்', 'आधार'],
-    ocr: 'document',
+    ocr: 'aadhaar',
     sensitive: true,
   },
   {
@@ -180,7 +184,7 @@ export const DOCUMENTS: DocumentRequirement[] = [
     },
     required: false,
     keywords: [],
-    ocr: 'document',
+    ocr: 'aadhaar',
     sensitive: true,
     branch: 'b2b',
     identityAs: 'aadhaar',
@@ -196,7 +200,7 @@ export const DOCUMENTS: DocumentRequirement[] = [
     },
     required: false,
     keywords: [],
-    ocr: 'document',
+    ocr: 'aadhaar',
     sensitive: true,
     branch: 'b2b',
     identityAs: 'aadhaar',

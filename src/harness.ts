@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import type { CandidateDoc } from './db/models.js';
 
 const mongo = await MongoMemoryServer.create();
 
@@ -201,6 +202,30 @@ async function outboundCount(waId = WA_ID): Promise<number> {
 async function lastOutbound(waId = WA_ID): Promise<string> {
   const sent = (await turnsFor(waId)).filter((t) => t.direction === 'outbound');
   return sent.at(-1)?.text ?? '';
+}
+
+/**
+ * Waits until the stored record satisfies a condition.
+ *
+ * A gated document acknowledges on arrival — "one moment, I am checking" — and
+ * only moves the conversation on once the extraction returns, up to two minutes
+ * later. Reading `currentStep` straight after the acknowledgement therefore
+ * reads it mid-extraction, which is a race the test loses at whatever speed the
+ * OCR service happens to be running at.
+ */
+async function waitForRecord(
+  waId: string,
+  ready: (c: CandidateDoc) => boolean,
+  timeoutMs = 150_000,
+): Promise<CandidateDoc | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const record =
+      (await candidates().findOne({ waId })) ?? (await b2bEnquiries().findOne({ waId }));
+    if (record && ready(record)) return record;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return undefined;
 }
 
 /** Waits for the bot to say something new. */
@@ -624,7 +649,12 @@ let blurredOk = false;
   await postWebhook(documentMessage('aadhaar-front.pdf', undefined, BLURRED_WA_ID), BLURRED_WA_ID);
   await waitForReply(before, BLURRED_WA_ID);
 
-  const afterGood = await b2bEnquiries().findOne({ waId: BLURRED_WA_ID });
+  // The acknowledgement arrives first and the extraction follows, so this waits
+  // for the question to actually move rather than for the next message.
+  const afterGood = await waitForRecord(
+    BLURRED_WA_ID,
+    (c) => c.currentStep !== 'b2b_aadhaar_front',
+  );
   const movedOn = afterGood?.currentStep === 'b2b_aadhaar_back';
   console.log(`  ${movedOn ? green('ok') : red('FAIL')}  a readable one is accepted and moves on`);
 

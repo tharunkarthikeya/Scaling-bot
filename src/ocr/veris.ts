@@ -28,21 +28,30 @@ import type { CandidateProfile } from '../db/models.js';
 /**
  * Veris (RecursAI) OCR client — https://veris.recursai.in
  *
- * Three extractors, each with its own route, form field, and response shape:
+ * Four extractors, each with its own route, form field, and response shape:
  *
  *   passport  POST /v1/passport/extract   field "image"  → MRZ + check digits
  *   resume    POST /v1/resume/extract     field "image"  → structured CV fields
+ *   aadhaar   POST /v1/aadhaar/extract    field "image"  → named Aadhaar fields
  *   document  POST /v1/document/extract   field "file"   → per-page text + key fields
+ *
+ * Aadhaar cards used to go through the generic `document` extractor, which
+ * returns page text and whatever key/value pairs it happened to find — so the
+ * number, the name and the date of birth had to be picked back out of a bag of
+ * strings, and a card that read cleanly could still yield nothing usable. The
+ * dedicated endpoint returns them named, tells us which side of the card it
+ * read, and validates the number's checksum.
  *
  * OCR is slow (the configured timeout is 120s), so this only ever runs from a
  * queue worker — never inside the webhook request.
  */
 
-export type Extractor = 'passport' | 'resume' | 'document';
+export type Extractor = 'passport' | 'resume' | 'aadhaar' | 'document';
 
 const ROUTES: Record<Extractor, { path: string; field: string }> = {
   passport: { path: '/v1/passport/extract', field: 'image' },
   resume: { path: '/v1/resume/extract', field: 'image' },
+  aadhaar: { path: '/v1/aadhaar/extract', field: 'image' },
   document: { path: '/v1/document/extract', field: 'file' },
 };
 
@@ -786,11 +795,114 @@ function normaliseDocument(payload: any, docType?: string): OcrOutcome {
   };
 }
 
+/**
+ * The Aadhaar endpoint's own response.
+ *
+ * `payload.aadhaar` carries the card's fields under their own names, so unlike
+ * the generic document extractor there is nothing to guess at: the keys pushed
+ * here are the ones `identityFromDocument` already looks for, which is what puts
+ * the number and the date of birth on the profile.
+ *
+ * Two things this endpoint knows that the generic one could not:
+ *
+ *   `aadhaar_number_valid`  the number's checksum. A card whose number does not
+ *                           validate is not refused — a misread digit is far
+ *                           likelier than a forged card — but it is a review
+ *                           task, because the number is what staff will key in.
+ *   `document_side`         which side was read. Recorded rather than enforced:
+ *                           the B2B branch asks for the two sides separately and
+ *                           a mismatch is worth a person's eye, not a rejection.
+ */
+function normaliseAadhaar(payload: any): OcrOutcome {
+  const card = payload?.aadhaar ?? {};
+  const fields: OcrField[] = [];
+  const reasons: string[] = [];
+
+  const pageScores = (payload?.pages ?? [])
+    .map((pg: any) => pg?.average_confidence)
+    .filter((c: unknown): c is number => typeof c === 'number');
+
+  // Worst page governs, as everywhere else: one unreadable side is enough.
+  const overall = pageScores.length ? Math.min(...pageScores) : null;
+
+  // Named exactly as the endpoint names them. `aadhaar_number` normalises to
+  // "aadhaarnumber", which is one of the keys `identityFromDocument` picks up.
+  for (const key of [
+    'name',
+    'aadhaar_number',
+    'masked_aadhaar_number',
+    'date_of_birth',
+    'year_of_birth',
+    'gender',
+    'mobile_number',
+    'address',
+    'care_of',
+    'pincode',
+    'vid',
+    'enrollment_id',
+    'document_side',
+  ]) {
+    pushField(fields, key, card[key], overall, { category: 'aadhaar' });
+  }
+
+  for (const page of payload?.pages ?? []) {
+    if (page?.text) {
+      pushField(fields, `page_${page.page_number}_text`, page.text, page.average_confidence ?? null, {
+        page: page.page_number,
+        category: 'text',
+      });
+    }
+  }
+
+  if (card.aadhaar_number && card.aadhaar_number_valid === false) {
+    reasons.push('the Aadhaar number read off the card failed its checksum');
+  }
+  if (overall !== null && overall < TUNABLES.ocrReviewThreshold) {
+    reasons.push(`weakest page confidence ${overall.toFixed(2)} below ${TUNABLES.ocrReviewThreshold}`);
+  }
+  if (overall === null) reasons.push('no page confidence reported');
+  for (const w of payload?.warnings ?? []) reasons.push(String(w));
+
+  // What makes the upload usable: something that identifies the holder. A back
+  // side carries an address and the number but no name or date of birth, and it
+  // is a perfectly good upload — so either identifier is enough.
+  const identified = !!(card.name || card.aadhaar_number);
+  const anyText = fields.some((f) => f.category === 'text' && f.value.trim().length > 0);
+
+  const problems: string[] = [];
+  let verdict: CompletenessVerdict = 'ok';
+
+  if (!identified && !anyText) {
+    problems.push('nothing could be read from the image');
+    verdict = 'empty';
+  } else if (!identified && overall !== null && overall >= TUNABLES.ocrReviewThreshold) {
+    // Text came back clean and none of it was an Aadhaar's. That is a different
+    // card, not a bad photo — and this endpoint only ever reads Aadhaars, so it
+    // is the one thing it can say with confidence.
+    problems.push('this does not look like an Aadhaar card');
+    reasons.push('the Aadhaar extractor found no Aadhaar fields in a page that read clearly');
+    verdict = 'wrong_document';
+  } else if (!identified || (overall !== null && overall < TUNABLES.ocrReviewThreshold)) {
+    problems.push('the text was too unclear to read');
+    verdict = 'unreadable';
+  }
+
+  return {
+    raw: payload,
+    fields,
+    confidence: overall,
+    needsReview: reasons.length > 0,
+    reviewReasons: reasons,
+    completeness: { complete: problems.length === 0, verdict, problems },
+  };
+}
+
 type Normaliser = (payload: any, docType?: string, inspection?: UploadInspection) => OcrOutcome;
 
 const NORMALISERS: Record<Extractor, Normaliser> = {
   passport: normalisePassport,
   resume: normaliseResume,
+  aadhaar: normaliseAadhaar,
   document: normaliseDocument,
 };
 
