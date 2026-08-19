@@ -38,9 +38,8 @@ process.env.MONGODB_URI = mongo.getUri();
 process.env.MONGODB_DB = 'mountroad_wa_bot';
 
 const { connectDb, closeDb } = await import('./db/client.js');
-const { candidates, storedDocuments, uploadsFor, flattenUploads } = await import(
-  './db/models.js'
-);
+const { b2bDocuments, b2bEnquiries, candidates, findConversation, storedDocuments, uploadsFor, flattenUploads } =
+  await import('./db/models.js');
 
 await connectDb();
 
@@ -61,7 +60,10 @@ function fieldTable(fields: Array<{ key: string; value: string; confidence: numb
 if (reviewOnly) {
   // Assembled from the sections: the flag lives on an upload, and uploads live
   // inside one record per candidate.
-  const docs = (await storedDocuments().find({}).toArray())
+  const docs = [
+    ...(await storedDocuments().find({}).toArray()),
+    ...(await b2bDocuments().find({}).toArray()),
+  ]
     .flatMap(flattenUploads)
     .filter((u) => u.ocr?.needsReview)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -74,11 +76,16 @@ if (reviewOnly) {
     console.log('');
   }
 } else if (waIdArg) {
-  const candidate = await candidates().findOne({ waId: waIdArg });
+  // Either collection — the inspector is asked about a number, and the number
+  // does not know which branch it ended up in.
+  const candidate = await findConversation(waIdArg);
   if (!candidate) {
-    console.log(`no candidate with waId ${waIdArg}`);
+    console.log(`nothing on file for waId ${waIdArg}`);
   } else {
-    console.log(`\n${B}${candidate.profileName ?? 'unknown'}${R}  ${candidate.waId}`);
+    console.log(
+      `\n${B}${candidate.profileName ?? 'unknown'}${R}  ${candidate.waId}` +
+        (candidate.enquiry === 'b2b' ? `  ${Y}B2B enquiry${R}` : ''),
+    );
     console.log(`  candidate id  ${candidate.candidateId ?? '—'}`);
     console.log(`  stage         ${candidate.stage}`);
     console.log(`  status        ${candidate.status}`);
@@ -131,6 +138,19 @@ if (reviewOnly) {
         `${(c.profileName ?? '').padEnd(16)} ${c.stage.padEnd(24)} ` +
         `${D}${docCount} docs, on ${c.currentStep ?? '—'}${R}`,
     );
+  }
+
+  // Listed separately, because that is how they are stored.
+  const enquiries = await b2bEnquiries().find({}).sort({ updatedAt: -1 }).limit(50).toArray();
+  if (enquiries.length) {
+    console.log(`\n${B}B2B enquiries: ${enquiries.length}${R}\n`);
+    for (const e of enquiries) {
+      const docCount = (await uploadsFor(e.waId)).length;
+      console.log(
+        `  ${e.waId.padEnd(16)} ${(e.profile?.fullName ?? e.profileName ?? '').padEnd(28)} ` +
+          `${e.stage.padEnd(24)} ${D}${docCount} docs, on ${e.currentStep ?? '—'}${R}`,
+      );
+    }
   }
   console.log(`\n${D}  npm run inspect <waId>     full detail with OCR fields`);
   console.log(`  npm run inspect --review   documents needing a human${R}\n`);

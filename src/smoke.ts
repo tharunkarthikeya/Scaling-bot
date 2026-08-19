@@ -15,7 +15,7 @@ import { config } from './config.js';
 import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import { chunkText } from './whatsapp/client.js';
-import { attributeInboundDocument, initialSlots } from './conversation/checklist.js';
+import { attributeInboundDocument, initialSlots, requirementFor } from './conversation/checklist.js';
 import { DOCUMENTS } from './conversation/rules.js';
 import {
   disambiguationChoices,
@@ -56,12 +56,13 @@ import {
 } from './conversation/cv.js';
 import { acceptedChoices } from './conversation/render.js';
 import { looksLikeApplicationId, normaliseApplicationId } from './conversation/engine.js';
-import { REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
+import { OTHER_CHOICES, REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
 import { inspectUpload, resumeCompleteness } from './ocr/veris.js';
 import { offLimits } from './conversation/tradeQuestions.js';
 import { hasForeignScript } from './conversation/language.js';
 import { INTERPRETER_PROMPT, TUNABLES } from './conversation/rules.js';
+import { documentCollectionFor, recordCollectionFor } from './db/models.js';
 import type { CandidateDoc, OcrField } from './db/models.js';
 
 let passed = 0;
@@ -247,7 +248,69 @@ await check('starts at the three-option opening menu (§2)', () => {
   assert.equal(step?.id, 'entry');
   assert.deepEqual(
     step!.choices!.map((o) => o.id),
-    ['b2b', 'track', 'apply'],
+    ['other', 'track', 'apply'],
+  );
+});
+
+await check('"Other" opens the second menu, not a branch of its own (§2)', () => {
+  assert.deepEqual(
+    OTHER_CHOICES.map((o) => o.id),
+    ['b2b', 'staff'],
+  );
+});
+
+await check('a B2B contact is asked the B2B questions and none of registration', () => {
+  const contact = candidate({ enquiry: 'b2b', profile: {}, consent: undefined });
+  assert.equal(nextStep(contact)?.id, 'b2b_name');
+
+  // Name in hand, the flow moves to the card rather than to the language or
+  // consent questions — a business contact is not registering.
+  contact.profile = { fullName: 'Priya Raman' };
+  assert.equal(nextStep(contact)?.id, 'b2b_aadhaar_front');
+});
+
+await check('registration never reaches the B2B questions', () => {
+  const c = candidate({ enquiry: 'apply', profile: {}, consent: undefined });
+  for (const step of STEPS) {
+    if (step.section === 'b2b') assert.equal(step.when?.(c), false);
+  }
+});
+
+await check('B2B records and uploads are routed to their own collections', () => {
+  // Routing is by branch, and it is what keeps a business contact out of the
+  // candidate list, the reminder sweep and the matching indexes.
+  assert.equal(recordCollectionFor('b2b'), 'b2b_enquiries');
+  assert.equal(recordCollectionFor('apply'), 'candidates');
+  assert.equal(recordCollectionFor(undefined), 'candidates');
+
+  for (const id of ['b2b_aadhaar_front', 'b2b_aadhaar_back', 'company_registration']) {
+    assert.equal(documentCollectionFor(id), 'b2b_documents');
+  }
+  for (const id of ['cv', 'passport', 'aadhaar', 'pan', 'certificate']) {
+    assert.equal(documentCollectionFor(id), 'documents');
+  }
+});
+
+await check('only the Aadhaar sides are read; the certificate is filed as it arrived', () => {
+  assert.equal(requirementFor('b2b_aadhaar_front')?.ocr, 'document');
+  assert.equal(requirementFor('b2b_aadhaar_back')?.ocr, 'document');
+  assert.equal(requirementFor('company_registration')?.ocr, 'none');
+});
+
+await check('a B2B caption cannot re-file an upload into a candidate slot', () => {
+  // "aadhaar" is a keyword on the candidate slot too, and it is listed first.
+  // Attribution is scoped to the branch, so the open question wins.
+  const contact = candidate({ enquiry: 'b2b', currentStep: 'b2b_aadhaar_front' });
+  assert.equal(
+    attributeInboundDocument(contact, { caption: 'aadhaar front', expecting: 'b2b_aadhaar_front' }),
+    'b2b_aadhaar_front',
+  );
+
+  // And the reverse: a candidate's Aadhaar still goes to the candidate slot.
+  const applicant = candidate({ enquiry: 'apply', currentStep: 'aadhaar_upload' });
+  assert.equal(
+    attributeInboundDocument(applicant, { caption: 'my aadhaar', expecting: 'aadhaar' }),
+    'aadhaar',
   );
 });
 

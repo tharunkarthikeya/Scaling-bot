@@ -26,12 +26,16 @@ import {
   addUpload,
   appendTurn,
   supersedeAllUploads,
+  b2bEnquiries,
   candidates,
   closeOpenSession,
+  refileConversation,
+  findConversation,
+  findConversationById,
   findTurn,
   nextCandidateId,
   recordAudit,
-  storedDocuments,
+  recordsFor,
   CANDIDATE_ID_DIGITS,
   CANDIDATE_ID_PREFIX,
   type ApplicationStatus,
@@ -91,6 +95,8 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
  */
 const MENU = {
   returning: 'menu:returning',
+  /** The second menu, behind "Other" on the opening one (§2). */
+  other: 'menu:other',
   update: 'menu:update',
   edit: 'menu:edit',
   delete: 'menu:delete',
@@ -110,7 +116,14 @@ const OTHER_SUFFIX = '#other';
  * §5 wants the CV confirmed immediately but its questions skipped, and §14
  * forbids saying "Passport received" before the upload is known to be usable.
  */
-const GATED = new Set(['cv', 'passport', 'aadhaar', 'pan']);
+const GATED = new Set([
+  'cv',
+  'passport',
+  'aadhaar',
+  'pan',
+  'b2b_aadhaar_front',
+  'b2b_aadhaar_back',
+]);
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Candidate lifecycle
@@ -142,11 +155,13 @@ export async function getOrCreateCandidate(params: {
   phone: string;
   profileName?: string;
 }): Promise<{ candidate: CandidateDoc; created: boolean }> {
-  const existing = await candidates().findOne({ waId: params.waId });
+  // Both stores. A business contact's record has moved out of `candidates`, and
+  // looking only there would create a second one for a number already on file.
+  const existing = await findConversation(params.waId);
 
   if (existing) {
     if (params.profileName && params.profileName !== existing.profileName) {
-      await candidates().updateOne(
+      await recordsFor(existing.enquiry).updateOne(
         { _id: existing._id },
         { $set: { profileName: params.profileName, updatedAt: new Date() } },
       );
@@ -170,7 +185,7 @@ export async function getOrCreateCandidate(params: {
     // Lost a race with a concurrent first message. §2 is explicit that a number
     // already on file must never produce a second candidate.
     if ((err as { code?: number }).code === 11000) {
-      const raced = await candidates().findOne({ waId: params.waId });
+      const raced = await findConversation(params.waId);
       if (raced) {
         raced.documents = withMissingSlots(raced.documents);
         return { candidate: raced, created: false };
@@ -184,7 +199,9 @@ export async function getOrCreateCandidate(params: {
 async function setState(candidate: CandidateDoc, patch: Partial<CandidateDoc>): Promise<void> {
   const update = { ...patch, updatedAt: new Date() };
   Object.assign(candidate, update);
-  await candidates().updateOne({ _id: candidate._id }, { $set: update });
+  // Routed on what the contact chose, so a B2B enquiry is never written back
+  // into the candidate collection it was moved out of.
+  await recordsFor(candidate.enquiry).updateOne({ _id: candidate._id }, { $set: update });
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -268,6 +285,7 @@ async function ask(
 
 const STAGE_BY_SECTION: Record<Section, ConversationStage> = {
   start: 'LANGUAGE_PENDING',
+  b2b: 'B2B_PENDING',
   language: 'LANGUAGE_PENDING',
   consent: 'CONSENT_PENDING',
   cv: 'CV_PENDING',
@@ -307,6 +325,10 @@ function statusForStage(stage: ConversationStage, current: CandidateStatus): Can
       return 'consent_pending';
     case 'CV_PENDING':
       return 'registration_started';
+    // Not a candidate at all (§2). `profile_incomplete` would put a business
+    // contact in the queue of people whose registration needs chasing.
+    case 'B2B_PENDING':
+      return 'new_enquiry';
     case 'DOCUMENTS_PENDING':
       return 'documents_pending';
     case 'REGISTRATION_COMPLETED':
@@ -361,7 +383,7 @@ async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
     languageOther: candidate.languageOther,
   });
 
-  await candidates().updateOne(
+  await recordsFor(candidate.enquiry).updateOne(
     { _id: candidate._id },
     {
       $set: {
@@ -388,7 +410,7 @@ async function askNextQuestion(candidate: CandidateDoc, lead?: Localised): Promi
   // record that now so the disambiguation question is skipped entirely (§8).
   const packs = inferTradePacks(candidate);
   if (packs) {
-    await candidates().updateOne(
+    await recordsFor(candidate.enquiry).updateOne(
       { _id: candidate._id },
       { $set: { 'profile.tradePacks': packs, updatedAt: new Date() } },
     );
@@ -410,7 +432,7 @@ async function askNextQuestion(candidate: CandidateDoc, lead?: Localised): Promi
       meta[`tradeAnswers.${key}`] = { source: 'cv', at: now, confidence: null };
     }
 
-    await candidates().updateOne(
+    await recordsFor(candidate.enquiry).updateOne(
       { _id: candidate._id },
       { $set: { 'profile.tradeAnswers': merged, fieldMeta: meta, updatedAt: now } },
     );
@@ -426,6 +448,10 @@ async function askNextQuestion(candidate: CandidateDoc, lead?: Localised): Promi
   const step = nextStep(candidate);
 
   if (!step) {
+    if (candidate.enquiry === 'b2b') {
+      await completeB2bEnquiry(candidate);
+      return;
+    }
     if (candidate.stage === 'REGISTRATION_COMPLETED') {
       // Already registered and there is nothing outstanding — this is the tail
       // of an update, not a second registration.
@@ -507,9 +533,46 @@ async function handOffToStaff(
   logger.warn({ waId: candidate.waId, reason }, 'conversation handed to staff');
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * The B2B branch (§2)
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * Opens the branch: `enquiry` is what makes `nextStep` walk the B2B questions
+ * instead of registration, so it is written before anything is asked.
+ *
+ * The greeting rides on the first question rather than arriving as its own
+ * bubble — the same rule the rest of the bot follows for a lead line.
+ */
+async function startB2bEnquiry(candidate: CandidateDoc): Promise<void> {
+  // Moves the record out of `candidates` and into `b2b_enquiries` first, so
+  // every write from here on — the name, the document slots, the stage — lands
+  // in the B2B collection and nothing of theirs is left behind in the other.
+  await refileConversation(candidate, 'b2b');
+  await setState(candidate, { currentStep: undefined, unclearCount: 0 });
+  await recordAudit({ waId: candidate.waId, event: 'b2b_enquiry_started' });
+  await askNextQuestion(candidate, copy.B2B_WELCOME);
+}
+
+/**
+ * Closes it: everything asked for is in, and a person takes over.
+ *
+ * Not `completeRegistration` — a business contact has no application, so there
+ * is no Application ID to issue and nothing for §25 tracking to read. What they
+ * get is the promise that someone will call, and §24 silence behind it.
+ */
+async function completeB2bEnquiry(candidate: CandidateDoc): Promise<void> {
+  await tell(candidate, copy.B2B_COMPLETE);
+  await handOffToStaff(candidate, 'B2B enquiry: details and documents collected', {
+    announce: false,
+  });
+  await closeOpenSession(candidate.waId);
+  logger.info({ waId: candidate.waId }, 'b2b enquiry collected and handed to staff');
+}
+
 /** Staff returning the conversation to the bot (§24). */
 export async function returnConversationToBot(waId: string): Promise<boolean> {
-  const candidate = await candidates().findOne({ waId });
+  const candidate = await findConversation(waId);
   if (!candidate || candidate.stage !== 'HUMAN_HANDOFF') return false;
 
   candidate.documents = withMissingSlots(candidate.documents);
@@ -517,7 +580,13 @@ export async function returnConversationToBot(waId: string): Promise<boolean> {
   candidate.fieldMeta ??= {};
 
   await setState(candidate, {
-    stage: candidate.completedAt ? 'REGISTRATION_COMPLETED' : 'BASIC_DETAILS_PENDING',
+    stage: candidate.completedAt
+      ? 'REGISTRATION_COMPLETED'
+      : // A business contact handed back mid-branch resumes the B2B questions,
+        // not registration — they have none to be part-way through.
+        candidate.enquiry === 'b2b'
+        ? 'B2B_PENDING'
+        : 'BASIC_DETAILS_PENDING',
     humanHandoff: { ...candidate.humanHandoff!, returnedAt: new Date() },
     unclearCount: 0,
   });
@@ -642,7 +711,8 @@ async function startTracking(candidate: CandidateDoc): Promise<void> {
 async function lookUpApplication(candidate: CandidateDoc, typed: string): Promise<void> {
   const id = normaliseApplicationId(typed);
   const record = id
-    ? await candidates().findOne({ candidateId: id, waId: candidate.waId })
+    ? // Only ever a candidate: a business enquiry has no Application ID to quote.
+      await candidates().findOne({ candidateId: id, waId: candidate.waId })
     : null;
 
   if (record) {
@@ -679,7 +749,7 @@ async function deleteProfile(candidate: CandidateDoc): Promise<void> {
   // the files and their history stay for the audit record §23 requires.
   await supersedeAllUploads(candidate.waId, now);
 
-  await candidates().updateOne(
+  await recordsFor(candidate.enquiry).updateOne(
     { _id: candidate._id },
     {
       $set: {
@@ -886,7 +956,7 @@ async function recordAnswer(
 
   if (!Object.keys(write.set).length) return;
 
-  await candidates().updateOne(
+  await recordsFor(candidate.enquiry).updateOne(
     { _id: candidate._id },
     {
       $set: { ...write.set, updatedAt: new Date() },
@@ -933,14 +1003,14 @@ async function handleSpecialStep(
     // never reach the registration flow at all.
     case 'entry':
       switch (chosen) {
-        case 'b2b':
-          // Not a candidate. No consent notice, no profile, no questions — the
-          // bot's entire job is to stop and fetch a person.
-          await setState(candidate, { enquiry: 'b2b' });
-          await tell(candidate, copy.B2B_HANDOFF);
-          await handOffToStaff(candidate, 'B2B enquiry from the opening menu', {
-            announce: false,
-          });
+        case 'other':
+          // Neither of the two things behind this is a job application, so
+          // nothing is recorded yet — the second menu decides which it is.
+          await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
+          return true;
+
+        case 'staff':
+          await handOffToStaff(candidate, 'asked for a person at the opening menu');
           return true;
 
         case 'track':
@@ -1131,7 +1201,7 @@ async function appendOtherAnswer(
     { source: 'chat', raw: value, overwrite: true },
   );
 
-  await candidates().updateOne(
+  await recordsFor(candidate.enquiry).updateOne(
     { _id: candidate._id },
     {
       $set: { ...write.set, updatedAt: new Date() },
@@ -1146,6 +1216,7 @@ async function appendOtherAnswer(
 
 const MENU_CHOICES: Record<string, Choice[]> = {
   [MENU.returning]: copy.RETURNING_CHOICES,
+  [MENU.other]: copy.OTHER_CHOICES,
   [MENU.update]: copy.UPDATE_CHOICES,
   [MENU.edit]: copy.EDIT_CHOICES,
   [MENU.delete]: copy.DELETE_CHOICES,
@@ -1159,6 +1230,7 @@ const MENU_CHOICES: Record<string, Choice[]> = {
 
 const MENU_PROMPTS: Record<string, Localised> = {
   [MENU.returning]: copy.RETURNING_NO_ID,
+  [MENU.other]: copy.OTHER_PROMPT,
   [MENU.update]: copy.UPDATE_PROMPT,
   [MENU.edit]: copy.EDIT_PROMPT,
   [MENU.delete]: copy.DELETE_CONFIRM,
@@ -1215,7 +1287,7 @@ async function startEdit(candidate: CandidateDoc, section: Section): Promise<voi
   }
 
   if (Object.keys(unset).length) {
-    await candidates().updateOne({ _id: candidate._id }, { $unset: unset });
+    await recordsFor(candidate.enquiry).updateOne({ _id: candidate._id }, { $unset: unset });
   }
 
   await setState(candidate, {
@@ -1231,6 +1303,15 @@ async function handleMenuAnswer(
   choiceId: string,
 ): Promise<void> {
   switch (menu) {
+    // "Other" (§2). Two ways out: the B2B branch, or straight to a person.
+    case MENU.other:
+      if (choiceId === 'b2b') {
+        await startB2bEnquiry(candidate);
+        return;
+      }
+      await handOffToStaff(candidate, 'asked for a person from the "Other" menu');
+      return;
+
     case MENU.returning:
       switch (choiceId) {
         case 'track':
@@ -1338,6 +1419,7 @@ const RESUMABLE_STAGES: ReadonlySet<ConversationStage> = new Set<ConversationSta
   'JOB_PREFERENCE_PENDING',
   'DOCUMENTS_PENDING',
   'CONFIRMATION_PENDING',
+  'B2B_PENDING',
 ]);
 
 function sessionTimedOut(lastInboundAt: Date | undefined, now = new Date()): boolean {
@@ -1353,7 +1435,7 @@ function sessionTimedOut(lastInboundAt: Date | undefined, now = new Date()): boo
  * never close this candidate's session again.
  */
 async function reopenSession(candidate: CandidateDoc): Promise<void> {
-  await candidates().updateOne(
+  await recordsFor(candidate.enquiry).updateOne(
     { _id: candidate._id },
     { $unset: { sessionEndedAt: '' }, $set: { updatedAt: new Date() } },
   );
@@ -1379,7 +1461,7 @@ async function restartRegistration(candidate: CandidateDoc): Promise<void> {
 
   // $unset, not $set to {} — a stale `currentStep` left behind would have the
   // next tap answer the question they abandoned.
-  await candidates().updateOne(
+  await recordsFor(candidate.enquiry).updateOne(
     { _id: candidate._id },
     { $unset: { currentStep: '', pendingMulti: '', sessionEndedAt: '' } },
   );
@@ -1421,14 +1503,22 @@ async function restartRegistration(candidate: CandidateDoc): Promise<void> {
 export async function endIdleSessions(limit = 200): Promise<number> {
   const cutoff = new Date(Date.now() - TUNABLES.sessionTimeoutMinutes * 60_000);
 
-  const stale = await candidates()
-    .find({
-      sessionEndedAt: { $exists: false },
-      lastInboundAt: { $lt: cutoff },
-      stage: { $in: [...RESUMABLE_STAGES] },
-    })
-    .limit(limit)
-    .toArray();
+  const query = {
+    sessionEndedAt: { $exists: false },
+    lastInboundAt: { $lt: cutoff },
+    stage: { $in: [...RESUMABLE_STAGES] },
+  };
+
+  // Both stores: a business contact who goes quiet part-way through the B2B
+  // branch has an open sitting worth closing, exactly like a candidate does.
+  const stale = (
+    await Promise.all([
+      candidates().find(query).limit(limit).toArray(),
+      b2bEnquiries().find(query).limit(limit).toArray(),
+    ])
+  )
+    .flat()
+    .slice(0, limit);
 
   let ended = 0;
 
@@ -1439,13 +1529,13 @@ export async function endIdleSessions(limit = 200): Promise<number> {
     ended += await withCandidateLock(row.waId, async () => {
       // Re-read under the lock: they may have replied while we queued behind
       // their own turn, and the row in hand is a snapshot from before that.
-      const candidate = await candidates().findOne({ _id: row._id });
+      const candidate = await recordsFor(row.enquiry).findOne({ _id: row._id });
       if (!candidate) return 0;
       if (candidate.sessionEndedAt != null) return 0;
       if (!RESUMABLE_STAGES.has(candidate.stage)) return 0;
       if (!sessionTimedOut(candidate.lastInboundAt)) return 0;
 
-      const claimed = await candidates().updateOne(
+      const claimed = await recordsFor(candidate.enquiry).updateOne(
         { _id: candidate._id, sessionEndedAt: { $exists: false } },
         { $set: { sessionEndedAt: new Date(), updatedAt: new Date() } },
       );
@@ -1529,7 +1619,12 @@ export async function handleInboundMessage(payload: {
 
   // A deleted candidate messaging again is starting over, not resuming (§23).
   if (candidate.stage === 'DELETED') {
+    // Back to a blank conversation, which means back to the collection blank
+    // conversations live in: they get the opening menu again, and what they
+    // choose this time decides where the record is filed.
+    await refileConversation(candidate, undefined);
     await setState(candidate, {
+      enquiry: undefined,
       stage: 'NEW',
       status: 'new_enquiry',
       profile: {},
@@ -1663,7 +1758,7 @@ export async function handleInboundMessage(payload: {
         value.includes('@') ? { email: value } : { alternateNumber: value },
         { source: 'chat', raw: value, overwrite: true },
       );
-      await candidates().updateOne(
+      await recordsFor(candidate.enquiry).updateOne(
         { _id: candidate._id },
         {
           $set: { ...write.set, updatedAt: new Date() },
@@ -2119,7 +2214,10 @@ export async function markSlotFromOcr(
   docType: string,
   status: 'ocr_done' | 'ocr_failed' | 'needs_review' | 'incomplete',
 ): Promise<void> {
-  await candidates().updateOne(
+  const record = await findConversationById(candidateId);
+  if (!record) return;
+
+  await recordsFor(record.enquiry).updateOne(
     { _id: candidateId },
     { $set: { [`documents.${docType}.status`]: status, updatedAt: new Date() } },
   );
@@ -2138,7 +2236,7 @@ export async function mergeExtractedProfile(
   source: 'cv' | 'document',
   confidence: number | null,
 ): Promise<void> {
-  const candidate = await candidates().findOne({ _id: candidateId });
+  const candidate = await findConversationById(candidateId);
   if (!candidate) return;
 
   candidate.profile ??= {};
@@ -2147,7 +2245,7 @@ export async function mergeExtractedProfile(
   const write = buildProfileWrite(candidate, patch, { source, confidence });
   if (!Object.keys(write.set).length) return;
 
-  await candidates().updateOne(
+  await recordsFor(candidate.enquiry).updateOne(
     { _id: candidateId },
     {
       $set: { ...write.set, updatedAt: new Date() },
@@ -2176,7 +2274,7 @@ export async function resumeAfterDocument(
   docType: string,
   outcome: DocumentOutcome,
 ): Promise<void> {
-  const candidate = await candidates().findOne({ _id: candidateId });
+  const candidate = await findConversationById(candidateId);
   if (!candidate) return;
 
   candidate.documents = withMissingSlots(candidate.documents);
@@ -2224,7 +2322,7 @@ export async function resumeAfterDocument(
     // Asking a third time for the same unreadable document is worse for the
     // candidate than letting staff sort it out on a call.
     if (slot.askedCount >= TUNABLES.maxAsksPerDocument) {
-      await candidates().updateOne(
+      await recordsFor(candidate.enquiry).updateOne(
         { _id: candidateId },
         { $set: { status: 'documents_incomplete' as CandidateStatus, updatedAt: new Date() } },
       );
@@ -2264,6 +2362,8 @@ export async function resumeAfterDocument(
     passport: copy.PASSPORT_RECEIVED,
     aadhaar: copy.AADHAAR_RECEIVED,
     pan: copy.PAN_RECEIVED,
+    b2b_aadhaar_front: copy.AADHAAR_RECEIVED,
+    b2b_aadhaar_back: copy.AADHAAR_RECEIVED,
   };
 
   if (acknowledgement[docType]) await tell(candidate, acknowledgement[docType]!);
@@ -2275,13 +2375,13 @@ export async function flagIdentityMismatch(
   candidateId: ObjectId,
   differences: string[],
 ): Promise<void> {
-  const candidate = await candidates().findOne({ _id: candidateId });
+  const candidate = await findConversationById(candidateId);
   if (!candidate || candidate.profile?.identityFlagged) return;
 
   candidate.documents = withMissingSlots(candidate.documents);
   candidate.profile ??= {};
 
-  await candidates().updateOne(
+  await recordsFor(candidate.enquiry).updateOne(
     { _id: candidateId },
     {
       $set: {
@@ -2315,6 +2415,9 @@ export async function flagIdentityMismatch(
 export async function sendReminders(limit = 50): Promise<number> {
   const cutoff = new Date(Date.now() - TUNABLES.reminderAfterHours * 60 * 60 * 1000);
 
+  // Candidates only. §21's reminder is written for someone part-way through a
+  // registration; a business contact has none to be reminded about, and
+  // `B2B_PENDING` is deliberately absent from the stages below.
   const stalled = await candidates()
     .find({
       reminderSentAt: { $exists: false },

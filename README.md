@@ -33,8 +33,9 @@ candidate record, the extracted OCR fields, and a pass/fail verdict per
 subsystem, and exits non-zero if any of them fail.
 
 Four numbers are driven, so every opening branch is covered: one registers end to
-end and is then tracked and edited, one taps B2B and must reach a person without
-a profile being written, one is abandoned mid-registration to exercise the
+end and is then tracked and edited, one goes Other → B2B and must give a name,
+both sides of an Aadhaar and a company registration certificate before reaching a
+person, one is abandoned mid-registration to exercise the
 idle-session timeout and "start from first", and one asks questions of its own
 instead of answering — including the salary question, which must come back
 answered and without a figure.
@@ -136,9 +137,59 @@ much of the machinery runs at all:
 
 | Option | What happens |
 |---|---|
-| B2B enquiry | Straight to a person. No consent notice, no profile, no questions. |
+| Other | Opens a second, two-option menu: **B2B enquiry** or **Talk to staff**. |
 | Track application | Reads back the outcome staff recorded. Nothing else. |
 | Apply for a job | The registration flow. |
+
+### Other → B2B enquiry
+
+A business contact is not a candidate, so none of registration runs for them —
+no consent notice, no CV, no trade questions. Four questions, in the order a
+person ringing back needs them:
+
+1. their full name;
+2. the **front** of their Aadhaar card, as a photo or a PDF;
+3. the **back** of the same card;
+4. their company registration certificate.
+
+The two sides are two questions rather than one because a photo answers whichever
+question is open — a single ask would have the second photo land in the next slot.
+
+Only the Aadhaar goes to OCR. The registration certificate is stored exactly as it
+arrived (`ocr: 'none'` in `conversation/rules.ts`); there is nothing on it the bot
+needs to read. When all four are in, the contact is told staff will be in touch and
+the conversation goes to a person — no Application ID is issued, because a business
+enquiry is not an application for §25 to track.
+
+Uploads are attributed within the branch they arrived in: a business contact
+captioning a photo "aadhaar" means the B2B slot the bot just asked for, never the
+candidate Aadhaar slot nothing in their conversation will ever ask about.
+
+**B2B data is stored apart from candidate data.** Two collections of its own:
+
+| | Candidates | B2B enquiries |
+|---|---|---|
+| record | `candidates` | `b2b_enquiries` |
+| uploads | `documents` | `b2b_documents` |
+| read through | `GET /api/candidates`, `/api/candidates/:waId` | `GET /api/b2b`, `/api/b2b/:waId` |
+
+Every conversation starts in `candidates` — until the opening menu is answered
+there is nothing to say it is anything else. Choosing **B2B enquiry** moves the
+record, keeping its `_id` so the uploads still point at it, *before* the first
+question is asked; no business contact's name or Aadhaar is ever written to the
+candidate collection, not even briefly. A deleted record starting over (§23) moves
+back, because it is a blank conversation again.
+
+Two functions in `db/models.ts` decide all of it — `recordCollectionFor(enquiry)`
+and `documentCollectionFor(docType)` — and every read and write goes through them,
+so the split is one decision in one place rather than a rule each caller has to
+remember. Uploads route on the *kind*, because the two branches ask for disjoint
+kinds: a `company_registration` can only have come from a business contact.
+
+What this buys: a recruiter's candidate list, the §21 reminder sweep, the
+matching indexes and the document review queue contain candidates and nothing
+else. The transcript stays in `messages`, keyed by `waId` like every other
+conversation — it is the log of a conversation, not enquiry data.
 
 An application id also works on its own, typed at any point — `ADR-00042`,
 `adr 42`, or a bare `42` at the tracking question. A **bare number elsewhere is
@@ -217,7 +268,9 @@ session per candidate is a unique partial index rather than a convention.
 `documents` holds one record per candidate with a section per kind — cv,
 passport, aadhaar, pan, driving_licence, certificate — each an array of versions,
 oldest first, nothing ever removed (§22). The current version of anything is the
-last entry without a `supersededAt`.
+last entry without a `supersededAt`. `b2b_documents` is the same shape for the
+three kinds only a business contact sends; see **Other → B2B enquiry** above for
+why those are filed apart.
 
 **Deliveries are deduped.** Meta retries. `claimEvent()` inserts the `wamid`
 into a unique index, and a duplicate is dropped — otherwise a retry re-runs the

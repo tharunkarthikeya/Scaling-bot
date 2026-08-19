@@ -105,6 +105,7 @@ export function validateCopy(): void {
   // Menus are rendered by the same code path as steps, so they get the same
   // treatment — the interpreter never sees them, but the candidate does.
   checkChoices('opening menu', copy.ENTRY_CHOICES);
+  checkChoices('"Other" menu', copy.OTHER_CHOICES);
   checkChoices('resume prompt', copy.RESUME_CHOICES);
   checkChoices('confirmation', copy.CONFIRM_CHOICES);
   checkChoices('edit menu', copy.EDIT_CHOICES);
@@ -137,7 +138,8 @@ export function validateCopy(): void {
   checkMessage('consent declined', copy.CONSENT_DECLINED);
   checkMessage('identity mismatch', copy.IDENTITY_MISMATCH);
   checkMessage('staff handoff', copy.STAFF_HANDOFF);
-  checkMessage('b2b handoff', copy.B2B_HANDOFF);
+  checkMessage('b2b welcome', copy.B2B_WELCOME);
+  checkMessage('b2b complete', copy.B2B_COMPLETE);
   checkMessage('deleted', copy.DELETED);
   checkMessage('restarted', copy.RESTARTED);
 
@@ -152,4 +154,5 @@ export function validateCopy(): void {
   checkInteractive('resume prompt', copy.RESUME_PROMPT);
   checkInteractive('reminder', copy.REMINDER);
   checkInteractive('expired option', copy.OPTION_EXPIRED);
+  checkInteractive('"Other" menu prompt', copy.OTHER_PROMPT);
 }

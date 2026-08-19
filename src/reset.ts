@@ -58,14 +58,23 @@ console.log(`\ndatabase  ${config.MONGODB_URI}`);
 console.log(`           ${config.MONGODB_DB}\n`);
 
 const waIds: string[] = all
-  ? await db.collection('candidates').distinct('waId')
+  ? [
+      // Both stores: a business contact's record lives in `b2b_enquiries`, and
+      // a reset that missed it would leave their Aadhaar on disk.
+      ...new Set([
+        ...(await db.collection('candidates').distinct('waId')),
+        ...(await db.collection('b2b_enquiries').distinct('waId')),
+      ]),
+    ]
   : variantsOf(target!);
 
 let totalRows = 0;
 
 for (const waId of waIds) {
   const q = { waId };
-  const candidate = await db.collection('candidates').findOne(q);
+  const candidate =
+    (await db.collection('candidates').findOne(q)) ??
+    (await db.collection('b2b_enquiries').findOne(q));
 
   // The wamid claims are keyed by message id, not by waId, so they have to be
   // found through this number's messages before those messages are deleted.
@@ -78,10 +87,12 @@ for (const waId of waIds) {
 
   const counts: Record<string, number> = {
     candidates: await db.collection('candidates').countDocuments(q),
+    b2b_enquiries: await db.collection('b2b_enquiries').countDocuments(q),
     // Sessions now, not messages — one document per sitting.
     messages: await db.collection('messages').countDocuments(q),
-    // One record per candidate now, holding every upload in its section.
+    // One record per contact now, holding every upload in its section.
     documents: await db.collection('documents').countDocuments(q),
+    b2b_documents: await db.collection('b2b_documents').countDocuments(q),
     audit_events: await db.collection('audit_events').countDocuments(q),
     processed_events: wamids.length
       ? await db.collection('processed_events').countDocuments({ wamid: { $in: wamids } })
@@ -121,8 +132,10 @@ for (const waId of waIds) {
   if (!commit) continue;
 
   await db.collection('candidates').deleteMany(q);
+  await db.collection('b2b_enquiries').deleteMany(q);
   await db.collection('messages').deleteMany(q);
   await db.collection('documents').deleteMany(q);
+  await db.collection('b2b_documents').deleteMany(q);
   await db.collection('audit_events').deleteMany(q);
   if (wamids.length) {
     await db.collection('processed_events').deleteMany({ wamid: { $in: wamids } });

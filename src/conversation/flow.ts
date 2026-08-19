@@ -58,6 +58,8 @@ import {
 
 export type Section =
   | 'start'
+  /** The B2B branch (§2). Nothing in it is part of registration. */
+  | 'b2b'
   | 'language'
   | 'consent'
   | 'cv'
@@ -475,6 +477,103 @@ const START_STEPS: FlowStep[] = [
     hiddenChoices: DOCUMENT_FALLBACKS,
     allowStaff: true,
     satisfied: (c) => documentSatisfied(c, 'cv'),
+  },
+];
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §2  The B2B branch
+ *
+ * A separate, short flow behind "Other → B2B enquiry". A business contact is not
+ * a candidate, so none of the registration questions below apply to them and
+ * none of these apply to a candidate — `nextStep` picks one list or the other
+ * from `enquiry`, and the `when` guards here say the same thing a second time so
+ * a stray lookup cannot cross the two.
+ *
+ * Three things, in the order a person ringing back needs them: who they are, an
+ * identity document, and proof the company exists. Only the Aadhaar is read; the
+ * registration certificate is filed as it arrived (`ocr: 'none'` in `rules.ts`).
+ *
+ * They come as four questions, because the two sides of the Aadhaar are asked for
+ * one at a time. A photo answers whichever question is open, so a single ask
+ * would have the second photo land in the next slot — which here is the
+ * company's certificate.
+ * ─────────────────────────────────────────────────────────────────────────────*/
+
+const isB2b = (c: CandidateDoc): boolean => c.enquiry === 'b2b';
+
+export const B2B_STEPS: FlowStep[] = [
+  {
+    id: 'b2b_name',
+    section: 'b2b',
+    prompt: {
+      en: 'May I have your full name?',
+      ta: 'உங்கள் முழுப் பெயரைச் சொல்லுங்கள்.',
+      hi: 'कृपया अपना पूरा नाम बताइए।',
+      te: 'మీ పూర్తి పేరు చెప్పండి.',
+      ml: 'നിങ്ങളുടെ പൂർണ്ണ പേര് പറയാമോ?',
+    },
+    input: 'text',
+    when: isB2b,
+    satisfied: (c) => has(p(c).fullName),
+    apply: (a) => ({ fullName: a.value }),
+    clears: ['fullName'],
+  },
+
+  {
+    id: 'b2b_aadhaar_front',
+    section: 'b2b',
+    prompt: {
+      en: 'Please send the front of your Aadhaar card — a clear photo or a PDF.',
+      ta: 'உங்கள் ஆதார் அட்டையின் முன்புறத்தைத் தெளிவான புகைப்படமாகவோ PDF ஆகவோ அனுப்பவும்.',
+      hi: 'कृपया अपने आधार कार्ड का अगला हिस्सा भेजें — साफ़ फ़ोटो या PDF।',
+      te: 'దయచేసి మీ ఆధార్ కార్డు ముందు భాగాన్ని క్లియర్ ఫోటో గా లేదా PDF గా పంపండి.',
+      ml: 'നിങ്ങളുടെ ആധാർ കാർഡിന്റെ മുൻവശം വ്യക്തമായ ഫോട്ടോ PDF ആയിട്ടോ അയക്കൂ.',
+    },
+    input: 'document',
+    document: 'b2b_aadhaar_front',
+    allowMedia: true,
+    allowStaff: true,
+    hiddenChoices: DOCUMENT_FALLBACKS,
+    when: isB2b,
+    satisfied: (c) => documentSatisfied(c, 'b2b_aadhaar_front'),
+  },
+
+  {
+    id: 'b2b_aadhaar_back',
+    section: 'b2b',
+    prompt: {
+      en: 'Now the back of the same card, please — a photo or a PDF.',
+      ta: 'இப்போது அதே அட்டையின் பின்புறத்தைப் புகைப்படமாகவோ PDF ஆகவோ அனுப்பவும்.',
+      hi: 'अब उसी कार्ड का पिछला हिस्सा भेजें — फ़ोटो या PDF।',
+      te: 'ఇప్పుడు అదే కార్డు వెనుక భాగం పంపండి — ఫోటో లేదా PDF.',
+      ml: 'ഇനി അതേ കാർഡിന്റെ പിൻവശം അയക്കൂ — ഫോട്ടോ PDF ആയിട്ടോ.',
+    },
+    input: 'document',
+    document: 'b2b_aadhaar_back',
+    allowMedia: true,
+    allowStaff: true,
+    hiddenChoices: DOCUMENT_FALLBACKS,
+    when: isB2b,
+    satisfied: (c) => documentSatisfied(c, 'b2b_aadhaar_back'),
+  },
+
+  {
+    id: 'b2b_company_registration',
+    section: 'b2b',
+    prompt: {
+      en: 'Finally, please send your company registration certificate — a PDF or a clear photo.',
+      ta: 'கடைசியாக, உங்கள் நிறுவனப் பதிவுச் சான்றிதழை PDF ஆகவோ தெளிவான புகைப்படமாகவோ அனுப்பவும்.',
+      hi: 'आखिर में, अपनी कंपनी का रजिस्ट्रेशन सर्टिफिकेट भेजें — PDF या साफ़ फ़ोटो।',
+      te: 'చివరగా, మీ కంపెనీ రిజిస్ట్రేషన్ సర్టిఫికెట్ పంపండి — PDF లేదా క్లియర్ ఫోటో.',
+      ml: 'ഒടുവിലായി, നിങ്ങളുടെ കമ്പനി രജിസ്ട്രേഷൻ സർട്ടിഫിക്കറ്റ് അയക്കൂ — PDF ആയിട്ടോ വ്യക്തമായ ഫോട്ടോ ആയിട്ടോ.',
+    },
+    input: 'document',
+    document: 'company_registration',
+    allowMedia: true,
+    allowStaff: true,
+    hiddenChoices: DOCUMENT_FALLBACKS,
+    when: isB2b,
+    satisfied: (c) => documentSatisfied(c, 'company_registration'),
   },
 ];
 
@@ -1557,6 +1656,7 @@ const ALL_TRADE_STEPS: FlowStep[] = [
  */
 export const STEPS: FlowStep[] = [
   ...START_STEPS,
+  ...B2B_STEPS,
   ...PERSONAL_STEPS,
   ...EXPERIENCE_STEPS,
   ...ALL_TRADE_STEPS,
@@ -1586,7 +1686,10 @@ export function nextStep(c: CandidateDoc): FlowStep | undefined {
   }
   if ((c.editQueue ?? []).length) return CONFIRM_STEP;
 
-  for (const step of STEPS) {
+  // A business contact is walked through their own four questions and none of
+  // registration's. Branching here rather than guarding every step below is what
+  // keeps the two flows from having to know about each other.
+  for (const step of c.enquiry === 'b2b' ? B2B_STEPS : STEPS) {
     if (step.when && !step.when(c)) continue;
     if (step.satisfied(c)) continue;
     return step;

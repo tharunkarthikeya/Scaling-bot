@@ -6,6 +6,8 @@ import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import {
   appendTurn,
+  b2bDocuments,
+  b2bEnquiries,
   claimEvent,
   markTurnFailed,
   sessionsFor,
@@ -248,13 +250,52 @@ export async function buildServer(): Promise<FastifyInstance> {
       return { waId, candidateId: result.candidateId, application: result.application };
     });
 
+    /* --------------------------------------------------------------- */
+    /* B2B enquiries (§2)                                                */
+    /*                                                                   */
+    /* A business contact is not a candidate and is filed in its own     */
+    /* collections, so it is read through its own endpoints. Nothing     */
+    /* here is reachable through /api/candidates, and nothing there is   */
+    /* reachable here — which is the whole point of the split.           */
+    /* --------------------------------------------------------------- */
+
+    app.get('/api/b2b', async (req) => {
+      const q = req.query as { stage?: string; limit?: string };
+      const filter = q.stage ? { stage: q.stage as never } : {};
+      const limit = Math.min(Number(q.limit) || 50, 200);
+
+      const rows = await b2bEnquiries()
+        .find(filter)
+        .sort({ updatedAt: -1 })
+        .limit(limit)
+        .toArray();
+
+      return { count: rows.length, enquiries: rows };
+    });
+
+    app.get('/api/b2b/:waId', async (req, res) => {
+      const { waId } = req.params as { waId: string };
+      const enquiry = await b2bEnquiries().findOne({ waId });
+      if (!enquiry) return res.code(404).send({ error: 'not found' });
+
+      const [transcript, record] = await Promise.all([
+        sessionsFor(waId),
+        b2bDocuments().findOne({ waId }),
+      ]);
+
+      const documents = withoutRawOcr(record ? flattenUploads(record) : []);
+
+      return { enquiry, documents, transcript };
+    });
+
     /** The review queue: documents whose extraction a human must confirm. */
     app.get('/api/documents', async (req) => {
       const q = req.query as { needsReview?: string; waId?: string; limit?: string };
       const limit = Math.min(Number(q.limit) || 50, 200);
 
       // One record per candidate now, so the review queue is assembled from the
-      // sections rather than read straight off matching rows.
+      // sections rather than read straight off matching rows. Candidates only —
+      // a business contact's uploads are reviewed through /api/b2b/:waId.
       const records = await storedDocuments()
         .find(q.waId ? { waId: q.waId } : {})
         .sort({ updatedAt: -1 })

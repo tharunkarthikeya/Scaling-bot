@@ -64,12 +64,11 @@ export const WELCOME: Localised = {
  * The three things anyone messaging this number can want (§2).
  *
  * Everything downstream hangs off this one tap. "Apply" opens registration,
- * "Track" reads a decision staff have already recorded, and "B2B" is not a
- * candidate at all and goes straight to a person — so the bot never collects
- * personal data from someone who came to talk business.
+ * "Track" reads a decision staff have already recorded, and "Other" opens the
+ * short second menu below — the two things that are not a job application.
  */
 export const ENTRY_CHOICES: Choice[] = [
-  { id: 'b2b', label: { en: 'B2B enquiry', ta: 'B2B விசாரணை', hi: 'B2B पूछताछ', te: 'B2B విచారణ', ml: 'B2B അന്വേഷണം' } },
+  { id: 'other', label: OTHER },
   {
     id: 'track',
     label: { en: 'Track application', ta: 'விண்ணப்ப நிலை', hi: 'आवेदन ट्रैक करें', te: 'దరఖాస్తు ట్రాక్', ml: 'അപേക്ഷ ട്രാക്ക്' },
@@ -90,17 +89,53 @@ export const NOT_LOOKING: Localised = {
 };
 
 /**
+ * The second menu, behind "Other" (§2).
+ *
+ * Two things reach it: a business contact, and someone who simply wants a
+ * person. Kept off the opening menu because neither is what most people
+ * messaging this number are here for, and three buttons is the whole design.
+ */
+export const OTHER_PROMPT: Localised = {
+  en: 'Please choose one of these.',
+  ta: 'இவற்றில் ஒன்றைத் தேர்ந்தெடுக்கவும்.',
+  hi: 'इनमें से एक चुनें।',
+  te: 'వీటిలో ఒకటి ఎంచుకోండి.',
+  ml: 'ഇവയിൽ ഒന്ന് തിരഞ്ഞെടുക്കൂ.',
+};
+
+export const CHOICE_B2B: Choice = {
+  id: 'b2b',
+  label: { en: 'B2B enquiry', ta: 'B2B விசாரணை', hi: 'B2B पूछताछ', te: 'B2B విచారణ', ml: 'B2B അന്വേഷണം' },
+};
+
+export const OTHER_CHOICES: Choice[] = [CHOICE_B2B, CHOICE_STAFF];
+
+/**
  * B2B (§2).
  *
- * A business contact is not a candidate: no consent notice, no profile, no
- * questions. The bot's whole job here is to stop and fetch a person.
+ * A business contact is not a candidate, so none of the registration flow runs
+ * for them: no consent notice, no CV, no trade questions. What is collected is
+ * the short list a person needs before ringing back — a name, an Aadhaar, and
+ * the company's registration certificate — and then it stops and fetches a
+ * person, exactly as it did before there were any questions at all.
+ *
+ * This line leads into the first of those questions, in the same message.
  */
-export const B2B_HANDOFF: Localised = {
-  en: 'Thank you for your interest in working with Adira Enterprises. I am passing you to our business team — they will reply here shortly.',
-  ta: 'அதிரா என்டர்பிரைசஸுடன் இணைந்து பணியாற்ற ஆர்வம் காட்டியதற்கு நன்றி. உங்களை எங்கள் வணிகக் குழுவிடம் இணைக்கிறேன் — விரைவில் இங்கே பதிலளிப்பார்கள்.',
-  hi: 'अदिरा एंटरप्राइजेज के साथ काम करने में रुचि दिखाने के लिए धन्यवाद। मैं आपको हमारी बिज़नेस टीम से जोड़ रहा हूँ — वे जल्द ही यहीं जवाब देंगे।',
-  te: 'Adira Enterprises తో పని చేయాలనుకున్నందుకు ధన్యవాదాలు. మిమ్మల్ని మా బిజినెస్ టీమ్‌కి పంపిస్తున్నాను — వాళ్లు కాసేపట్లో ఇక్కడ రిప్లై ఇస్తారు.',
-  ml: 'Adira Enterprises ഒപ്പം ജോലി ചെയ്യാൻ താൽപ്പര്യം കാണിച്ചതിന് നന്ദി. ഞാൻ നിങ്ങളെ ഞങ്ങളുടെ ബിസിനസ് ടീമിലേക്ക് കൈമാറുന്നു — അവർ ഇവിടെ തന്നെ വൈകാതെ മറുപടി തരും.',
+export const B2B_WELCOME: Localised = {
+  en: 'Thank you for your interest in working with Adira Enterprises. I will take a few details and pass them to our business team.',
+  ta: 'அதிரா என்டர்பிரைசஸுடன் இணைந்து பணியாற்ற ஆர்வம் காட்டியதற்கு நன்றி. சில விவரங்களைப் பெற்று எங்கள் வணிகக் குழுவிடம் அனுப்புகிறேன்.',
+  hi: 'अदिरा एंटरप्राइजेज के साथ काम करने में रुचि दिखाने के लिए धन्यवाद। मैं कुछ जानकारी लेकर हमारी बिज़नेस टीम को भेज दूँगा।',
+  te: 'Adira Enterprises తో పని చేయాలనుకున్నందుకు ధన్యవాదాలు. నేను కొన్ని వివరాలు తీసుకుని మా బిజినెస్ టీమ్‌కి పంపిస్తాను.',
+  ml: 'Adira Enterprises ഒപ്പം ജോലി ചെയ്യാൻ താൽപ്പര്യം കാണിച്ചതിന് നന്ദി. ഞാൻ കുറച്ച് വിവരങ്ങൾ വാങ്ങി ഞങ്ങളുടെ ബിസിനസ് ടീമിന് കൈമാറാം.',
+};
+
+/** The end of the B2B branch: everything is in, and a person takes it from here. */
+export const B2B_COMPLETE: Localised = {
+  en: 'Thank you — that is everything we need. Our staff will contact you soon.',
+  ta: 'நன்றி — எங்களுக்குத் தேவையான அனைத்தும் கிடைத்துவிட்டது. எங்கள் ஊழியர் விரைவில் உங்களைத் தொடர்பு கொள்வார்கள்.',
+  hi: 'धन्यवाद — हमें जो चाहिए था वह मिल गया। हमारा स्टाफ जल्द ही आपसे संपर्क करेगा।',
+  te: 'ధన్యవాదాలు — మాకు కావలసినవన్నీ వచ్చాయి. మా సిబ్బంది త్వరలో మిమ్మల్ని సంప్రదిస్తారు.',
+  ml: 'നന്ദി — ഞങ്ങൾക്ക് വേണ്ടതെല്ലാം കിട്ടി. ഞങ്ങളുടെ സ്റ്റാഫ് ഉടൻ നിങ്ങളെ ബന്ധപ്പെടും.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────

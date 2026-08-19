@@ -35,9 +35,8 @@ process.env.ADMIN_API_KEY ??= 'harness-admin-key-0123456789';
 
 const { config } = await import('./config.js');
 const { connectDb, closeDb } = await import('./db/client.js');
-const { ensureIndexes, turnsFor, uploadsFor, candidates, auditEvents } = await import(
-  './db/models.js'
-);
+const { ensureIndexes, turnsFor, uploadsFor, candidates, b2bEnquiries, b2bDocuments, storedDocuments, auditEvents } =
+  await import('./db/models.js');
 const { ensureStorageRoot } = await import('./storage/index.js');
 const { queue, withCandidateLock } = await import('./queue/index.js');
 const { handleInboundMessage } = await import('./conversation/engine.js');
@@ -234,6 +233,7 @@ const TYPED: Record<string, string> = {
   passport_expiry: '03/2031',
   passport_applied_when: 'Last month',
   language_other: 'Malayalam',
+  b2b_name: 'Priya Raman',
 };
 
 /**
@@ -242,8 +242,11 @@ const TYPED: Record<string, string> = {
  * Returns undefined when there is nothing sensible to send, which ends the run
  * rather than looping on a question the driver does not understand.
  */
-async function answerCurrentQuestion(): Promise<Record<string, unknown> | undefined> {
-  const candidate = await candidates().findOne({ waId: WA_ID });
+async function answerCurrentQuestion(
+  waId = WA_ID,
+): Promise<Record<string, unknown> | undefined> {
+  const candidate =
+    (await candidates().findOne({ waId })) ?? (await b2bEnquiries().findOne({ waId }));
   if (!candidate) return undefined;
 
   const stepId = candidate.currentStep;
@@ -252,12 +255,12 @@ async function answerCurrentQuestion(): Promise<Record<string, unknown> | undefi
   // A menu, not a flow question.
   if (stepId.startsWith('menu:') || stepId.startsWith('ask:')) return undefined;
 
-  if (stepId.endsWith('#other')) return textMessage('Orbital welding');
+  if (stepId.endsWith('#other')) return textMessage('Orbital welding', waId);
 
   const step = stepById(stepId);
   if (!step) return undefined;
 
-  if (step.document) return documentMessage(`${step.document}.pdf`, step.document);
+  if (step.document) return documentMessage(`${step.document}.pdf`, step.document, waId);
 
   if (step.input === 'choice' || step.input === 'multi_choice') {
     const options = acceptedChoices(step, candidate).filter(
@@ -268,9 +271,9 @@ async function answerCurrentQuestion(): Promise<Record<string, unknown> | undefi
     // is exactly the two-step interaction a candidate performs.
     if (step.input === 'multi_choice') {
       const alreadyChosen = candidate.pendingMulti?.step === stepId;
-      if (alreadyChosen) return tapMessage('__done', 'Done');
+      if (alreadyChosen) return tapMessage('__done', 'Done', waId);
       const first = options[0];
-      return first ? tapMessage(first.id, first.label.en) : tapMessage('__done', 'Done');
+      return first ? tapMessage(first.id, first.label.en, waId) : tapMessage('__done', 'Done', waId);
     }
 
     // Prefer an answer that keeps the run going through the interesting
@@ -296,10 +299,10 @@ async function answerCurrentQuestion(): Promise<Record<string, unknown> | undefi
 
     const wanted = preferred[stepId];
     const choice = options.find((o) => o.id === wanted) ?? options[0];
-    return choice ? tapMessage(choice.id, choice.label.en) : undefined;
+    return choice ? tapMessage(choice.id, choice.label.en, waId) : undefined;
   }
 
-  return textMessage(TYPED[stepId] ?? 'yes');
+  return textMessage(TYPED[stepId] ?? 'yes', waId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -445,28 +448,108 @@ if (registered?.candidateId) {
 /* The other two things the opening menu can mean                      */
 /* ------------------------------------------------------------------ */
 
-heading('Opening menu: B2B (§2, §24)');
+heading('Opening menu: Other → B2B (§2, §24)');
 
 let b2bOk = false;
 {
   await postWebhook(textMessage('hello, we are a manpower agency', B2B_WA_ID), B2B_WA_ID);
   await waitForReply(0, B2B_WA_ID);
 
-  const before = await outboundCount(B2B_WA_ID);
+  // The opening menu's third option is now a second menu, not a branch.
+  let before = await outboundCount(B2B_WA_ID);
+  await postWebhook(tapMessage('other', 'Other', B2B_WA_ID), B2B_WA_ID);
+  await waitForReply(before, B2B_WA_ID);
+
+  const atMenu = await candidates().findOne({ waId: B2B_WA_ID });
+  const menuOk = atMenu?.currentStep === 'menu:other';
+  console.log(`  ${menuOk ? green('ok') : red('FAIL')}  "Other" opens the second menu`);
+
+  before = await outboundCount(B2B_WA_ID);
   await postWebhook(tapMessage('b2b', 'B2B enquiry', B2B_WA_ID), B2B_WA_ID);
   await waitForReply(before, B2B_WA_ID);
 
-  const contact = await candidates().findOne({ waId: B2B_WA_ID });
-  // The point of the branch: a business contact reaches a person without one
-  // personal question being asked and without a consent notice being needed.
+  // Read from `b2b_enquiries`: choosing B2B moves the record out of `candidates`
+  // before the first question is asked.
+  const atName = await b2bEnquiries().findOne({ waId: B2B_WA_ID });
+  const leftCandidates = !(await candidates().findOne({ waId: B2B_WA_ID }));
+  const startedOk = atName?.enquiry === 'b2b' && atName?.currentStep === 'b2b_name';
+  console.log(`  ${startedOk ? green('ok') : red('FAIL')}  B2B asks for a name first`);
+  console.log(
+    `  ${leftCandidates ? green('ok') : red('FAIL')}  the record moved out of the candidate collection`,
+  );
+
+  // From here the same adaptive driver walks the branch: a name, both sides of
+  // the Aadhaar, and the company's registration certificate.
+  let b2bTurns = 0;
+  while (b2bTurns < 12) {
+    const contact = await b2bEnquiries().findOne({ waId: B2B_WA_ID });
+    if (!contact || contact.stage === 'HUMAN_HANDOFF') break;
+
+    const message = await answerCurrentQuestion(B2B_WA_ID);
+    if (!message) break;
+
+    const sent = await outboundCount(B2B_WA_ID);
+    await postWebhook(message, B2B_WA_ID);
+    if (!(await waitForReply(sent, B2B_WA_ID))) break;
+    b2bTurns++;
+  }
+
+  const contact = await b2bEnquiries().findOne({ waId: B2B_WA_ID });
+  const uploads = await uploadsFor(B2B_WA_ID);
+  const filed = new Set(uploads.map((u) => u.docType));
+
+  // Separation, checked from the other side: nothing of this contact's is left
+  // in either candidate collection.
+  const storedApart =
+    !(await candidates().findOne({ waId: B2B_WA_ID })) &&
+    !(await storedDocuments().findOne({ waId: B2B_WA_ID })) &&
+    !!(await b2bDocuments().findOne({ waId: B2B_WA_ID }));
+
+  // Only the Aadhaar is read. The certificate is stored exactly as it arrived,
+  // which is what `ocr: 'none'` in rules.ts is there to guarantee.
+  const certificate = uploads.find((u) => u.docType === 'company_registration');
+  const certificateNotRead = !!certificate && certificate.ocr?.status === 'skipped';
+  const aadhaarRead = uploads
+    .filter((u) => u.docType.startsWith('b2b_aadhaar'))
+    .every((u) => u.ocr?.status === 'done' || u.ocr?.status === 'failed');
+
+  const collectedOk =
+    !!contact?.profile?.fullName &&
+    filed.has('b2b_aadhaar_front') &&
+    filed.has('b2b_aadhaar_back') &&
+    filed.has('company_registration');
+
+  // §4 still holds: nothing was asked of them as a candidate, so no consent
+  // notice was needed and no registration was opened.
   b2bOk =
+    menuOk &&
+    startedOk &&
+    leftCandidates &&
+    storedApart &&
+    collectedOk &&
+    certificateNotRead &&
+    aadhaarRead &&
     contact?.stage === 'HUMAN_HANDOFF' &&
     !contact.consent &&
-    Object.keys(contact.profile ?? {}).length === 0;
+    !contact.candidateId;
 
-  console.log(`  ${b2bOk ? green('ok') : red('FAIL')}  B2B goes straight to staff`);
   console.log(
-    dim(`       stage=${contact?.stage} profile fields=${Object.keys(contact?.profile ?? {}).length}`),
+    `  ${collectedOk ? green('ok') : red('FAIL')}  name, both Aadhaar sides and the certificate are on file`,
+  );
+  console.log(
+    `  ${certificateNotRead ? green('ok') : red('FAIL')}  the certificate is stored without OCR`,
+  );
+  console.log(
+    `  ${storedApart ? green('ok') : red('FAIL')}  record and files are in the B2B collections, not the candidate ones`,
+  );
+  console.log(
+    `  ${contact?.stage === 'HUMAN_HANDOFF' ? green('ok') : red('FAIL')}  it ends with a person, not an Application ID`,
+  );
+  console.log(
+    dim(
+      `       stage=${contact?.stage} name=${contact?.profile?.fullName ?? '—'} ` +
+        `filed=${[...filed].join(', ')} certificate.ocr=${certificate?.ocr?.status ?? '—'}`,
+    ),
   );
 
   for (const m of await turnsFor(B2B_WA_ID)) {
@@ -912,9 +995,11 @@ verdict(
 );
 
 verdict(
-  'B2B reaches staff without collecting data (§2, §24)',
+  'B2B collects its three things, filed apart, then fetches a person (§2, §24)',
   b2bOk,
-  b2bOk ? 'handed over, no profile written' : 'did not behave as specified',
+  b2bOk
+    ? 'name, Aadhaar and certificate in b2b_enquiries / b2b_documents, then handed over'
+    : 'did not behave as specified',
 );
 
 verdict(

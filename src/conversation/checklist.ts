@@ -71,9 +71,10 @@ export function attributeInboundDocument(
   hints: { caption?: string; filename?: string; expecting?: string },
 ): string {
   const haystack = `${hints.caption ?? ''} ${hints.filename ?? ''}`.toLowerCase();
+  const reachable = documentsInBranch(candidate);
 
   if (haystack.trim()) {
-    for (const req of DOCUMENTS) {
+    for (const req of reachable) {
       if (req.keywords.some((kw) => haystack.includes(kw.toLowerCase()))) return req.id;
     }
   }
@@ -84,7 +85,19 @@ export function attributeInboundDocument(
     if (expected) return expected;
   }
 
-  return DOCUMENTS[0]!.id;
+  return reachable[0]!.id;
+}
+
+/**
+ * The slots this conversation can actually put a file in.
+ *
+ * A business contact never reaches the candidate checklist and a candidate never
+ * reaches the B2B one, so neither should have a caption re-file their upload
+ * into the other's slots — where nothing would ever ask for it again.
+ */
+function documentsInBranch(candidate: CandidateDoc): DocumentRequirement[] {
+  const branch = candidate.enquiry === 'b2b' ? 'b2b' : 'candidate';
+  return DOCUMENTS.filter((d) => (d.branch ?? 'candidate') === branch);
 }
 
 /** The slot a `document` step is asking for, derived from its id. */
@@ -95,7 +108,7 @@ function documentForStep(stepId: string): string | undefined {
 
 export function documentsOutstanding(candidate: CandidateDoc): DocumentRequirement[] {
   const slots = withMissingSlots(candidate.documents);
-  return DOCUMENTS.filter((d) => !isResolved(slots[d.id]));
+  return documentsInBranch(candidate).filter((d) => !isResolved(slots[d.id]));
 }
 
 /** A one-line summary of document state for the confirmation message (§18). */

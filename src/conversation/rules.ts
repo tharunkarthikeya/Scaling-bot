@@ -44,6 +44,28 @@ export interface DocumentRequirement {
    * (§15, §16, §27).
    */
   sensitive?: boolean;
+  /**
+   * Which conversation this slot belongs to. Defaults to the candidate flow.
+   *
+   * An inbound file is normally re-attributed by its caption — a candidate who
+   * sends their passport while we are asking for a CV should not have it filed
+   * as a CV. That rule has to stay inside one branch: a business contact
+   * captioning their photo "aadhaar" means the B2B slot the bot just asked for,
+   * not the candidate Aadhaar slot nothing in their conversation will ever ask
+   * about.
+   */
+  branch?: 'candidate' | 'b2b';
+  /**
+   * Which document's identity this slot actually holds. Defaults to `id`.
+   *
+   * A slot is a place in the conversation, not a kind of card: the B2B branch
+   * asks for the two sides of an Aadhaar separately, so it has two slots and one
+   * document. This is what tells the OCR worker that both carry Aadhaar markers
+   * and that the number read off either is an Aadhaar number — without it, a
+   * perfectly good card is reported as "not the document we asked for" purely
+   * because the slot has a different name.
+   */
+  identityAs?: string;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -135,6 +157,74 @@ export const DOCUMENTS: DocumentRequirement[] = [
     ],
     ocr: 'document',
     sensitive: true,
+  },
+  /**
+   * The B2B branch (§2).
+   *
+   * Two slots for one card, because the two sides are asked for one at a time.
+   * Sending a photo answers whichever question is open, and a single ask that
+   * accepted both would have the second photo land in the next slot — which,
+   * here, is the company's registration certificate.
+   *
+   * Both read as an Aadhaar (`identityAs`), so the extractor judges them against
+   * Aadhaar markers and what it finds is filed as an Aadhaar number.
+   */
+  {
+    id: 'b2b_aadhaar_front',
+    label: {
+      en: 'Aadhaar card (front)',
+      ta: 'ஆதார் அட்டை (முன்புறம்)',
+      hi: 'आधार कार्ड (आगे)',
+      te: 'ఆధార్ కార్డ్ (ముందు)',
+      ml: 'ആധാർ കാർഡ് (മുൻവശം)',
+    },
+    required: false,
+    keywords: [],
+    ocr: 'document',
+    sensitive: true,
+    branch: 'b2b',
+    identityAs: 'aadhaar',
+  },
+  {
+    id: 'b2b_aadhaar_back',
+    label: {
+      en: 'Aadhaar card (back)',
+      ta: 'ஆதார் அட்டை (பின்புறம்)',
+      hi: 'आधार कार्ड (पीछे)',
+      te: 'ఆధార్ కార్డ్ (వెనుక)',
+      ml: 'ആധാർ കാർഡ് (പിൻവശം)',
+    },
+    required: false,
+    keywords: [],
+    ocr: 'document',
+    sensitive: true,
+    branch: 'b2b',
+    identityAs: 'aadhaar',
+  },
+  {
+    /**
+     * Stored, not read. §2's B2B branch wants the certificate on file for the
+     * person who rings back; there is nothing on it the bot needs to know, and
+     * `ocr: 'none'` is what keeps a company's registration document out of an
+     * extractor it has no reason to be in.
+     */
+    id: 'company_registration',
+    label: {
+      en: 'company registration certificate',
+      ta: 'நிறுவனப் பதிவுச் சான்றிதழ்',
+      hi: 'कंपनी रजिस्ट्रेशन सर्टिफिकेट',
+      te: 'కంపెనీ రిజిస్ట్రేషన్ సర్టిఫికెట్',
+      ml: 'കമ്പനി രജിസ്ട്രേഷൻ സർട്ടിഫിക്കറ്റ്',
+    },
+    required: false,
+    // Whole words only. A three-letter key like "cin" or "roc" matches inside
+    // ordinary words, and a caption is matched as a substring.
+    keywords: [
+      'company registration', 'company certificate', 'registration certificate',
+      'incorporation', 'certificate of incorporation', 'udyam', 'gst certificate',
+    ],
+    ocr: 'none',
+    branch: 'b2b',
   },
   {
     // Never asked for by the flow. It exists so a certificate the candidate

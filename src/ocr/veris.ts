@@ -3,9 +3,9 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
   documentsFor,
+  documentStoreFor,
   findUpload,
   flattenUploads,
-  storedDocuments,
   updateUpload,
   type OcrField,
 } from '../db/models.js';
@@ -187,6 +187,19 @@ const DOCUMENT_MARKERS: Record<string, RegExp[]> = {
   ],
 };
 
+/**
+ * The document a slot actually holds.
+ *
+ * Slots are places in the conversation, not kinds of card: the B2B branch asks
+ * for the two sides of an Aadhaar separately, so `b2b_aadhaar_front` is an
+ * Aadhaar and has to be judged as one. Without this the markers below are looked
+ * up under a name they were never filed under, no opinion comes back, and a
+ * perfectly good card is neither confirmed nor questioned.
+ */
+function identityKind(docType: string): string {
+  return requirementFor(docType)?.identityAs ?? docType;
+}
+
 /** Every readable string the extractor gave us, as one haystack. */
 function textOf(fields: OcrField[]): string {
   return fields.map((f) => `${f.key} ${f.value}`).join('\n');
@@ -206,7 +219,7 @@ function identifyDocument(
   overall: number | null,
 ): boolean | null {
   if (!docType) return null;
-  const markers = DOCUMENT_MARKERS[docType];
+  const markers = DOCUMENT_MARKERS[identityKind(docType)];
   if (!markers) return null;
 
   const haystack = textOf(fields);
@@ -866,8 +879,11 @@ export async function ocrHealth(): Promise<{ ok: boolean; detail: string }> {
  * a second document exists. Nothing is rejected on the strength of it — a
  * difference raises a flag for the documentation team and nothing else.
  */
-async function runIdentityComparison(candidateId: ObjectId): Promise<void> {
-  const record = await storedDocuments().findOne({ candidateId });
+async function runIdentityComparison(candidateId: ObjectId, docType: string): Promise<void> {
+  // `docType` says which store to read: a business contact's uploads live in
+  // `b2b_documents`, and comparing across a store they are not in would find
+  // nothing to compare.
+  const record = await documentStoreFor(docType).findOne({ candidateId });
   if (!record) return;
 
   // The current version of each kind — a superseded upload is a previous
@@ -906,9 +922,10 @@ function profileFromIdentityDocument(
   // Stored so staff can verify them, masked everywhere else, and never read back
   // to the candidate (§15, §16, §27).
   if (identity.number) {
-    if (docType === 'passport') patch.passportNumber = identity.number;
-    if (docType === 'aadhaar') patch.aadhaarNumber = identity.number;
-    if (docType === 'pan') patch.panNumber = identity.number;
+    const kind = identityKind(docType);
+    if (kind === 'passport') patch.passportNumber = identity.number;
+    if (kind === 'aadhaar') patch.aadhaarNumber = identity.number;
+    if (kind === 'pan') patch.panNumber = identity.number;
   }
 
   return patch;
@@ -928,7 +945,7 @@ export async function processOcrJob(payload: {
     return;
   }
 
-  const record = await documentsFor(waId);
+  const record = await documentsFor(waId, docType);
   const candidateId = record?.candidateId;
   if (!candidateId) {
     logger.warn(payload, 'ocr job for an upload with no candidate');
@@ -1023,7 +1040,7 @@ export async function processOcrJob(payload: {
         );
       }
 
-      await runIdentityComparison(candidateId);
+      await runIdentityComparison(candidateId, docType);
 
       // Moves the conversation on: the acknowledgement, or the re-ask (§14).
       await resumeAfterDocument(candidateId, docType, outcome.completeness);

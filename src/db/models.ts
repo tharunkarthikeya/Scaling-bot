@@ -21,6 +21,8 @@ export type ConversationStage =
   | 'JOB_PREFERENCE_PENDING'
   | 'DOCUMENTS_PENDING'
   | 'CONFIRMATION_PENDING'
+  /** Mid-way through the B2B branch (§2): name, Aadhaar, company certificate. */
+  | 'B2B_PENDING'
   | 'REGISTRATION_COMPLETED'
   | 'HUMAN_HANDOFF'
   | 'CONSENT_REFUSED'
@@ -561,6 +563,9 @@ export interface CandidateDocumentsDoc {
   pan?: DocumentSection;
   driving_licence?: DocumentSection;
   certificate?: DocumentSection;
+  b2b_aadhaar_front?: DocumentSection;
+  b2b_aadhaar_back?: DocumentSection;
+  company_registration?: DocumentSection;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -600,16 +605,32 @@ export interface AuditEventDoc {
     | 'registration_restarted'
     | 'reminder_sent'
     | 'session_timed_out'
-    | 'application_status_changed';
+    | 'application_status_changed'
+    /** A business contact chose the B2B branch (§2), so data collection began. */
+    | 'b2b_enquiry_started';
   detail?: string;
   at: Date;
 }
 
 export const candidates = (): Collection<CandidateDoc> =>
-  getDb().collection<CandidateDoc>('candidates');
+  getDb().collection<CandidateDoc>(COLLECTIONS.candidates);
+/**
+ * Business contacts (§2), kept out of `candidates` entirely.
+ *
+ * The record has the same shape — it is still a conversation, with a stage, a
+ * current step and a document checklist — but it is not a candidate, has no
+ * application and never gets an Application ID. Filing it separately is what
+ * keeps a recruiter's candidate list, the §21 reminder sweep and the matching
+ * indexes free of people who wrote in to sell something.
+ */
+export const b2bEnquiries = (): Collection<CandidateDoc> =>
+  getDb().collection<CandidateDoc>(COLLECTIONS.b2bEnquiries);
 export const messages = (): Collection<SessionDoc> => getDb().collection<SessionDoc>('messages');
 export const storedDocuments = (): Collection<CandidateDocumentsDoc> =>
-  getDb().collection<CandidateDocumentsDoc>('documents');
+  getDb().collection<CandidateDocumentsDoc>(COLLECTIONS.documents);
+/** The same, for the files a business contact sends. */
+export const b2bDocuments = (): Collection<CandidateDocumentsDoc> =>
+  getDb().collection<CandidateDocumentsDoc>(COLLECTIONS.b2bDocuments);
 export const processedEvents = (): Collection<ProcessedEventDoc> =>
   getDb().collection<ProcessedEventDoc>('processed_events');
 export const auditEvents = (): Collection<AuditEventDoc> =>
@@ -617,6 +638,109 @@ export const auditEvents = (): Collection<AuditEventDoc> =>
 /** Single-document counter behind the human-facing candidate id. */
 const counters = (): Collection<{ _id: string; seq: number }> =>
   getDb().collection<{ _id: string; seq: number }>('counters');
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Which collection a record lives in
+ *
+ * Two branches, two sets of collections. Everything that reads or writes a
+ * conversation goes through `recordsFor`, and everything that reads or writes an
+ * upload goes through `documentStoreFor`, so "B2B is filed apart" is one
+ * decision made in one place rather than a rule every caller has to remember.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * The names, separately from the collections.
+ *
+ * Both routing rules are pure functions of a string, and naming them that way
+ * is what lets them be asserted without a database — the two decisions this
+ * whole split rests on are worth a unit test.
+ */
+export const COLLECTIONS = {
+  candidates: 'candidates',
+  b2bEnquiries: 'b2b_enquiries',
+  documents: 'documents',
+  b2bDocuments: 'b2b_documents',
+} as const;
+
+/** Which collection this conversation's record lives in, from what they chose (§2). */
+export function recordCollectionFor(enquiry: CandidateDoc['enquiry']): string {
+  return enquiry === 'b2b' ? COLLECTIONS.b2bEnquiries : COLLECTIONS.candidates;
+}
+
+/** Document kinds only the B2B branch asks for, from `rules.ts`. */
+const B2B_DOCUMENT_KINDS: ReadonlySet<string> = new Set(
+  DOCUMENTS.filter((d) => d.branch === 'b2b').map((d) => d.id),
+);
+
+/**
+ * Which collection an upload is filed in.
+ *
+ * Routed on the kind rather than on the contact, because the two branches ask
+ * for disjoint kinds — a `company_registration` can only have come from a
+ * business contact — and every caller that writes an upload already has one.
+ */
+export function documentCollectionFor(docType: string): string {
+  return B2B_DOCUMENT_KINDS.has(docType) ? COLLECTIONS.b2bDocuments : COLLECTIONS.documents;
+}
+
+export function recordsFor(enquiry: CandidateDoc['enquiry']): Collection<CandidateDoc> {
+  return getDb().collection<CandidateDoc>(recordCollectionFor(enquiry));
+}
+
+export function documentStoreFor(docType: string): Collection<CandidateDocumentsDoc> {
+  return getDb().collection<CandidateDocumentsDoc>(documentCollectionFor(docType));
+}
+
+/**
+ * The conversation record for a number, whichever collection holds it.
+ *
+ * A number is in exactly one of the two — `refileConversation` moves a record,
+ * it never copies one. Candidates are checked first because they are the
+ * overwhelming majority.
+ */
+export async function findConversation(waId: string): Promise<CandidateDoc | null> {
+  return (await candidates().findOne({ waId })) ?? (await b2bEnquiries().findOne({ waId }));
+}
+
+/** The same lookup by `_id`, for the OCR worker's callbacks. */
+export async function findConversationById(id: ObjectId): Promise<CandidateDoc | null> {
+  return (await candidates().findOne({ _id: id })) ?? (await b2bEnquiries().findOne({ _id: id }));
+}
+
+/**
+ * Moves a conversation into the collection its branch belongs to.
+ *
+ * Every conversation starts in `candidates`, because until the opening menu is
+ * answered there is nothing to say it is anything else. This runs the instant
+ * that answer is "B2B enquiry" — before a single question is asked, so no
+ * business contact's name or document is ever written to the candidate
+ * collection, not even briefly — and it runs the other way when a deleted
+ * record starts over and is a blank conversation again (§23).
+ *
+ * `_id` is preserved: uploads point at it, and a new one would orphan them.
+ * `replaceOne` with an upsert rather than an insert, so a repeat is a no-op
+ * rather than a duplicate-key error. A record is never left in both: the
+ * delete follows a write that has already succeeded.
+ */
+export async function refileConversation(
+  candidate: CandidateDoc,
+  enquiry: CandidateDoc['enquiry'],
+): Promise<void> {
+  const from = recordCollectionFor(candidate.enquiry);
+  const to = recordCollectionFor(enquiry);
+  if (from === to) return;
+
+  const now = new Date();
+  const record: CandidateDoc = { ...candidate, enquiry, updatedAt: now };
+
+  await recordsFor(enquiry).replaceOne({ _id: record._id! }, record, { upsert: true });
+  await getDb().collection<CandidateDoc>(from).deleteOne({ _id: record._id! });
+
+  // The caller holds this object and keeps using it after we return; without
+  // this its next write would go back to the collection we just left.
+  candidate.enquiry = enquiry;
+  candidate.updatedAt = now;
+}
 
 /**
  * Creates indexes, replacing any that already exist with different options.
@@ -667,6 +791,14 @@ export async function ensureIndexes(): Promise<void> {
     },
   ]);
 
+  // A business contact has no Application ID and no matching profile, so this
+  // carries only the indexes a conversation actually needs.
+  await createIndexes(b2bEnquiries(), [
+    { key: { waId: 1 }, unique: true, name: 'waId_unique' },
+    { key: { stage: 1, updatedAt: -1 }, name: 'stage_updatedAt' },
+    { key: { sessionEndedAt: 1, lastInboundAt: 1 }, name: 'session_sweep' },
+  ]);
+
   await createIndexes(messages(), [
     { key: { waId: 1, startedAt: -1 }, name: 'waId_startedAt' },
     // At most one open sitting per candidate, enforced rather than assumed —
@@ -692,7 +824,16 @@ export async function ensureIndexes(): Promise<void> {
     { key: { candidateId: 1 }, name: 'candidateId' },
     // The CRM's review queue reads across sections, so it needs one index per
     // kind — a multikey index cannot span sibling fields.
-    ...DOCUMENTS.map((d) => ({
+    ...DOCUMENTS.filter((d) => d.branch !== 'b2b').map((d) => ({
+      key: { [`${d.id}.uploads.ocr.needsReview`]: 1 },
+      name: `${d.id}_needsReview`,
+    })),
+  ]);
+
+  await createIndexes(b2bDocuments(), [
+    { key: { waId: 1 }, unique: true, name: 'waId_unique' },
+    { key: { candidateId: 1 }, name: 'candidateId' },
+    ...DOCUMENTS.filter((d) => d.branch === 'b2b').map((d) => ({
       key: { [`${d.id}.uploads.ocr.needsReview`]: 1 },
       name: `${d.id}_needsReview`,
     })),
@@ -852,13 +993,15 @@ export async function addUpload(params: {
   // when the path is absent — "the path must exist in the document in order to
   // apply array updates" — so the first upload of a kind would throw rather
   // than supersede the nothing that is there.
-  await storedDocuments().updateOne(
+  const store = documentStoreFor(params.docType);
+
+  await store.updateOne(
     { waId: params.waId, [`${section}.uploads.0`]: { $exists: true } },
     { $set: { [`${section}.uploads.$[current].supersededAt`]: now } },
     { arrayFilters: [{ 'current.supersededAt': { $exists: false } }] },
   );
 
-  await storedDocuments().updateOne(
+  await store.updateOne(
     { waId: params.waId },
     {
       $push: { [`${section}.uploads`]: { ...params.upload, uploadId, createdAt: now, updatedAt: now } },
@@ -878,7 +1021,7 @@ export async function findUpload(
   uploadId: ObjectId,
 ): Promise<DocumentUpload | undefined> {
   const section = sectionFor(docType);
-  const record = await storedDocuments().findOne(
+  const record = await documentStoreFor(docType).findOne(
     { waId },
     { projection: { [`${section}.uploads`]: 1 } },
   );
@@ -903,7 +1046,7 @@ export async function updateUpload(
     set[`${section}.uploads.$[u].${key}`] = value;
   }
 
-  await storedDocuments().updateOne(
+  await documentStoreFor(docType).updateOne(
     { waId, [`${section}.uploads.0`]: { $exists: true } },
     { $set: set },
     { arrayFilters: [{ 'u.uploadId': uploadId }] },
@@ -919,7 +1062,9 @@ export async function updateUpload(
  */
 export async function supersedeAllUploads(waId: string, at = new Date()): Promise<void> {
   for (const requirement of DOCUMENTS) {
-    await storedDocuments().updateOne(
+    // §23 is about everything this number sent, so it reaches into whichever
+    // store each kind is filed in rather than assuming the candidate one.
+    await documentStoreFor(requirement.id).updateOne(
       { waId, [`${requirement.id}.uploads.0`]: { $exists: true } },
       {
         $set: { updatedAt: at, [`${requirement.id}.uploads.$[current].supersededAt`]: at },
@@ -929,9 +1074,19 @@ export async function supersedeAllUploads(waId: string, at = new Date()): Promis
   }
 }
 
-/** Everything one candidate has sent, as stored. */
-export async function documentsFor(waId: string): Promise<CandidateDocumentsDoc | null> {
-  return storedDocuments().findOne({ waId });
+/**
+ * Everything one contact has sent, as stored.
+ *
+ * `docType` says which store to look in. Callers always have one — it is the
+ * kind they are working on — and passing it avoids a second query for the
+ * overwhelming majority of reads, which are about a candidate.
+ */
+export async function documentsFor(
+  waId: string,
+  docType?: string,
+): Promise<CandidateDocumentsDoc | null> {
+  if (docType) return documentStoreFor(docType).findOne({ waId });
+  return (await storedDocuments().findOne({ waId })) ?? (await b2bDocuments().findOne({ waId }));
 }
 
 /**
@@ -941,9 +1096,16 @@ export async function documentsFor(waId: string): Promise<CandidateDocumentsDoc 
  * inspector, the harness.
  */
 export async function uploadsFor(waId: string): Promise<LocatedUpload[]> {
-  const record = await storedDocuments().findOne({ waId });
-  if (!record) return [];
-  return flattenUploads(record);
+  // Both stores, because this answers "what has this number sent us?" and the
+  // caller asking that has no reason to know which branch the number is in.
+  const records = await Promise.all([
+    storedDocuments().findOne({ waId }),
+    b2bDocuments().findOne({ waId }),
+  ]);
+
+  return records
+    .flatMap((record) => (record ? flattenUploads(record) : []))
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 }
 
 /** The same flattening, for a record already in hand. */
