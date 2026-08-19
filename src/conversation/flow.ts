@@ -10,7 +10,7 @@
  * Reading a step:
  *
  *   when       whether this step applies at all. Skipped entirely when false —
- *              a driver is never asked about welding, a GCC candidate is never
+ *              a driver is never asked about welding, a Gulf candidate is never
  *              asked for their PAN card.
  *   satisfied  whether we already know the answer, from any source.
  *   apply      what the answer means, as fields to write.
@@ -232,6 +232,33 @@ function documentSatisfied(c: CandidateDoc, docId: string): boolean {
   );
 }
 
+/**
+ * The same, minus the "we have asked enough times" escape.
+ *
+ * That escape is what let the B2B branch walk past an Aadhaar it had just told
+ * the contact was too blurred to read: the re-ask went out, the second attempt
+ * failed too, the slot hit the ceiling, and running out of asks counted as an
+ * answer — so the very next message asked for the back of the card, before the
+ * contact had a chance to send anything.
+ *
+ * Here the only thing that satisfies the question is a file that arrived and
+ * could be read, or the contact saying plainly that they cannot send one. An
+ * unreadable upload leaves the question open, and `resumeAfterDocument` fetches
+ * a person once asking again has stopped being useful.
+ */
+function b2bDocumentSatisfied(c: CandidateDoc, docId: string): boolean {
+  const slot = c.documents?.[docId];
+  if (!slot) return false;
+  return (
+    slot.status === 'received' ||
+    slot.status === 'ocr_done' ||
+    slot.status === 'ocr_failed' ||
+    slot.status === 'needs_review' ||
+    slot.status === 'unavailable' ||
+    slot.status === 'promised'
+  );
+}
+
 /** Everything the candidate has told us about their trade, in their own words. */
 export function tradeSignals(c: CandidateDoc): Array<string | undefined> {
   const meta = c.fieldMeta ?? {};
@@ -311,7 +338,19 @@ export const GENERAL_JOB_CHOICES: Choice[] = [
 ];
 
 export const COUNTRY_CHOICES: Choice[] = [
-  { id: 'gcc', label: { en: 'GCC', ta: 'வளைகுடா நாடுகள் (GCC)', hi: 'GCC देश', te: 'GCC', ml: 'GCC' } },
+  // Labelled the way candidates say it. The id stays `gcc`: it is written into
+  // every record that has already answered this question, and renaming it would
+  // orphan their stored preference.
+  {
+    id: 'gcc',
+    label: {
+      en: 'Gulf',
+      ta: 'வளைகுடா நாடுகள்',
+      hi: 'गल्फ देश',
+      te: 'గల్ఫ్ దేశాలు',
+      ml: 'ഗൾഫ് രാജ്യങ്ങൾ',
+    },
+  },
   { id: 'europe', label: { en: 'Europe', ta: 'ஐரோப்பா', hi: 'यूरोप', te: 'యూరప్', ml: 'യൂറോപ്പ്' } },
   { id: 'russia_cis', label: { en: 'Russia / CIS', ta: 'ரஷ்யா/CIS', hi: 'रूस/CIS', te: 'రష్యా / CIS', ml: 'റഷ്യ / CIS' } },
   {
@@ -535,7 +574,7 @@ export const B2B_STEPS: FlowStep[] = [
     allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     when: isB2b,
-    satisfied: (c) => documentSatisfied(c, 'b2b_aadhaar_front'),
+    satisfied: (c) => b2bDocumentSatisfied(c, 'b2b_aadhaar_front'),
   },
 
   {
@@ -554,7 +593,7 @@ export const B2B_STEPS: FlowStep[] = [
     allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     when: isB2b,
-    satisfied: (c) => documentSatisfied(c, 'b2b_aadhaar_back'),
+    satisfied: (c) => b2bDocumentSatisfied(c, 'b2b_aadhaar_back'),
   },
 
   {
@@ -573,7 +612,7 @@ export const B2B_STEPS: FlowStep[] = [
     allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     when: isB2b,
-    satisfied: (c) => documentSatisfied(c, 'company_registration'),
+    satisfied: (c) => b2bDocumentSatisfied(c, 'company_registration'),
   },
 ];
 
@@ -1195,21 +1234,37 @@ const PASSPORT_STEPS: FlowStep[] = [
   },
 
   {
-    id: 'passport_expiry',
+    /**
+     * The passport itself, rather than facts about it (§12).
+     *
+     * This used to ask "when does your passport expire?" and take the answer as
+     * typed. A date typed from memory is the least reliable thing on the record
+     * — people misremember the year, read the issue date, or type today's — and
+     * the document that settles it is one they can send in a single tap. So the
+     * question is the upload, and the expiry, the number and the name are read
+     * off the page (`profileFromIdentityDocument` in `ocr/veris.ts`).
+     *
+     * Satisfied by the passport slot rather than by `passportExpiry`, so a
+     * candidate who already sent their passport — including inside their CV,
+     * which `ocr/veris.ts` files against this slot — is never asked for it again
+     * (§1).
+     */
+    id: 'passport_document',
     section: 'passport',
     prompt: {
-      en: 'When does your passport expire?',
-      ta: 'உங்கள் பாஸ்போர்ட் எப்போது காலாவதியாகும்?',
-      hi: 'आपका पासपोर्ट कब एक्सपायर हो रहा है?',
-      te: 'మీ పాస్‌పోర్ట్ గడువు ఎప్పుడు అయిపోతుంది?',
-      ml: 'നിങ്ങളുടെ പാസ്‌പോർട്ടിന്റെ കാലാവധി എപ്പോൾ തീരും?',
+      en: 'Please send a clear photo or scan of your passport — the page with your photo and details.',
+      ta: 'உங்கள் பாஸ்போர்ட்டின் புகைப்படம் மற்றும் விவரங்கள் உள்ள பக்கத்தைத் தெளிவாக அனுப்பவும்.',
+      hi: 'कृपया अपने पासपोर्ट की साफ़ फ़ोटो या स्कैन भेजें — जिस पेज पर आपकी फ़ोटो और जानकारी है।',
+      te: 'దయచేసి మీ పాస్‌పోర్ట్ ఫోటో లేదా స్కాన్ పంపండి — మీ ఫోటో, వివరాలు ఉన్న పేజీ.',
+      ml: 'ദയവായി നിങ്ങളുടെ പാസ്‌പോർട്ടിന്റെ വ്യക്തമായ ഫോട്ടോ സ്കാൻ അയക്കൂ — ഫോട്ടോയും വിവരങ്ങളും ഉള്ള പേജ്.',
     },
-    hint: { en: 'Example: 03/2031', ta: 'எடுத்துக்காட்டு: 03/2031', hi: 'उदाहरण: 03/2031', te: 'ఉదాహరణ: 03/2031', ml: 'ഉദാഹരണം: 03/2031' },
-    input: 'month_year',
+    input: 'document',
+    document: 'passport',
+    allowMedia: true,
+    allowStaff: true,
+    hiddenChoices: DOCUMENT_FALLBACKS,
     when: (c) => p(c).passportStatus === 'yes',
-    satisfied: (c) => has(p(c).passportExpiry),
-    apply: (a) => ({ passportExpiry: a.value }),
-    clears: ['passportExpiry'],
+    satisfied: (c) => documentSatisfied(c, 'passport'),
   },
 
   {
@@ -1283,7 +1338,7 @@ const PASSPORT_STEPS: FlowStep[] = [
 /* ─────────────────────────────────────────────────────────────────────────────
  * §13–§16  Europe / Russia document branch
  *
- * Every step here is gated on `inEuropeRussiaBranch`. A GCC candidate never
+ * Every step here is gated on `inEuropeRussiaBranch`. A Gulf candidate never
  * sees any of it and is never asked for an identity document.
  * ───────────────────────────────────────────────────────────────────────────*/
 

@@ -56,6 +56,8 @@ const IDLE_WA_ID = '919000000003';
 const FAQ_WA_ID = '919000000004';
 /** A fifth, which names a job instead of tapping one of the offered categories. */
 const JOB_WA_ID = '919000000005';
+/** A sixth, whose first Aadhaar photo cannot be read. */
+const BLURRED_WA_ID = '919000000006';
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -230,7 +232,6 @@ const TYPED: Record<string, string> = {
   selected_countries: 'Romania, Serbia and Russia',
   availability_date: 'After Diwali, around November',
   desired_job: 'Warehouse supervisor',
-  passport_expiry: '03/2031',
   passport_applied_when: 'Last month',
   language_other: 'Malayalam',
   b2b_name: 'Priya Raman',
@@ -566,6 +567,75 @@ let b2bOk = false;
   b2bOk = b2bOk && !spoke;
 }
 
+heading('An unreadable B2B document (§2, §14)')
+
+let blurredOk = false;
+{
+  // The reported bug: the bot said the Aadhaar was too unclear to read, asked
+  // for it again, and then asked for the back of the card in the very next
+  // message — so the contact never got the chance to resend, and the flow moved
+  // on from a document it did not have.
+  await postWebhook(textMessage('hi, we supply manpower', BLURRED_WA_ID), BLURRED_WA_ID);
+  await waitForReply(0, BLURRED_WA_ID);
+
+  for (const tap of [['other', 'Other'], ['b2b', 'B2B enquiry']] as const) {
+    const before = await outboundCount(BLURRED_WA_ID);
+    await postWebhook(tapMessage(tap[0], tap[1], BLURRED_WA_ID), BLURRED_WA_ID);
+    await waitForReply(before, BLURRED_WA_ID);
+  }
+
+  let before = await outboundCount(BLURRED_WA_ID);
+  await postWebhook(textMessage('Ravi Menon', BLURRED_WA_ID), BLURRED_WA_ID);
+  await waitForReply(before, BLURRED_WA_ID);
+
+  // A file that does not read as an Aadhaar — the mock serves the CV fixture for
+  // any filename that does not name one, which is what an unusable photo of a
+  // card looks like to the extractor: text came back, none of it an Aadhaar's.
+  before = await outboundCount(BLURRED_WA_ID);
+  await postWebhook(documentMessage('photo-1234.pdf', undefined, BLURRED_WA_ID), BLURRED_WA_ID);
+  await waitForReply(before, BLURRED_WA_ID);
+
+  const afterBad = await b2bEnquiries().findOne({ waId: BLURRED_WA_ID });
+  const stillOnFront = afterBad?.currentStep === 'b2b_aadhaar_front';
+  const said = (await turnsFor(BLURRED_WA_ID))
+    .filter((t) => t.direction === 'outbound')
+    .map((t) => t.text ?? '')
+    .join('\n');
+  const neverAskedBack = !said.includes('back of the same card');
+
+  console.log(`  ${stillOnFront ? green('ok') : red('FAIL')}  the front is still the open question`);
+  console.log(
+    `  ${neverAskedBack ? green('ok') : red('FAIL')}  it did not move on to the back of the card`,
+  );
+
+  // Nothing read off an unusable file is kept — a half-right Aadhaar number is
+  // worse than none.
+  const rejected = (await uploadsFor(BLURRED_WA_ID)).find(
+    (u) => u.docType === 'b2b_aadhaar_front',
+  );
+  const nothingStored = !!rejected && !rejected.ocr?.fields?.length && !rejected.ocr?.raw;
+  console.log(
+    `  ${nothingStored ? green('ok') : red('FAIL')}  no extracted values were stored for it`,
+  );
+
+  // And a readable one moves the conversation on, so this is insistence and not
+  // a dead end.
+  before = await outboundCount(BLURRED_WA_ID);
+  await postWebhook(documentMessage('aadhaar-front.pdf', undefined, BLURRED_WA_ID), BLURRED_WA_ID);
+  await waitForReply(before, BLURRED_WA_ID);
+
+  const afterGood = await b2bEnquiries().findOne({ waId: BLURRED_WA_ID });
+  const movedOn = afterGood?.currentStep === 'b2b_aadhaar_back';
+  console.log(`  ${movedOn ? green('ok') : red('FAIL')}  a readable one is accepted and moves on`);
+
+  blurredOk = stillOnFront && neverAskedBack && nothingStored && movedOn;
+
+  for (const m of await turnsFor(BLURRED_WA_ID)) {
+    const who = m.direction === 'inbound' ? '\x1b[36mcontact  \x1b[0m' : '\x1b[35mbot      \x1b[0m';
+    console.log(`  ${who} │ ${(m.text ?? `[${m.type}]`).replace(/\n/g, ' / ')}`);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Answering a question the flow did not ask                           */
 /* ------------------------------------------------------------------ */
@@ -626,6 +696,21 @@ let faqOk = false;
     console.log(`  ${handedOver ? green('ok') : red('FAIL')}  an uncovered question goes to staff`);
     console.log(dim(`       ${said.replace(/\n/g, ' / ').slice(0, 150)}`));
     faqOk = faqOk && handedOver;
+  }
+
+  {
+    // A message about the open question that is not an answer to it. It used to
+    // land on a fixed line — "I could not use that as an answer", or the staff
+    // deflection — over something anybody reading it understands perfectly well.
+    const said = await asks('can you send me the messages in both tamil and english?');
+    const canned =
+      deflected(said) ||
+      /could not use that|use that as an answer|பயன்படுத்த|इस्तेमाल/i.test(said);
+    console.log(
+      `  ${!canned ? green('ok') : red('FAIL')}  a remark about the question gets a real reply`,
+    );
+    console.log(dim(`       ${said.replace(/\n/g, ' / ').slice(0, 170)}`));
+    faqOk = faqOk && !canned;
   }
 
   const stillGoing = await candidates().findOne({ waId: FAQ_WA_ID });
@@ -921,7 +1006,7 @@ verdict(
 // §28 asks for roughly 7–10 questions for a typical registration, and this run
 // is not typical: the driver deliberately takes every expensive branch. Europe
 // adds `europe_docs` and three uploads, "Fabrication/Welding" runs two trade
-// packs, and a valid passport adds its expiry — about ten steps a GCC candidate
+// packs, and a valid passport adds its expiry — about ten steps a Gulf candidate
 // with a clean CV never sees. The ceiling below is for that branch-maximal path;
 // exceeding it means questions are being asked that the CV already answered.
 verdict(
@@ -1003,6 +1088,14 @@ verdict(
 );
 
 verdict(
+  'an unreadable B2B document is asked for again, not walked past (§2, §14)',
+  blurredOk,
+  blurredOk
+    ? 'question stayed open, nothing stored, a good copy moved it on'
+    : 'did not behave as specified',
+);
+
+verdict(
   'idle session closes and can be resumed',
   idleOk,
   idleOk ? 'closed, kept, and restartable' : 'did not behave as specified',
@@ -1028,7 +1121,15 @@ await closeDb();
 await mongo.stop();
 console.log('');
 process.exit(
-  completed && trackingOk && statusApiOk && b2bOk && idleOk && faqOk && occupationOk && specialistOk
+  completed &&
+  trackingOk &&
+  statusApiOk &&
+  b2bOk &&
+  blurredOk &&
+  idleOk &&
+  faqOk &&
+  occupationOk &&
+  specialistOk
     ? 0
     : 1,
 );

@@ -405,7 +405,10 @@ async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
  * two: on a phone the question can otherwise arrive above the sentence
  * explaining it.
  */
-async function askNextQuestion(candidate: CandidateDoc, lead?: Localised): Promise<void> {
+async function askNextQuestion(
+  candidate: CandidateDoc,
+  lead?: Localised | string,
+): Promise<void> {
   // If what the candidate has already told us decides their trade questions,
   // record that now so the disambiguation question is skipped entirely (§8).
   const packs = inferTradePacks(candidate);
@@ -818,7 +821,7 @@ async function ingestDocument(candidate: CandidateDoc, msg: MessageDoc): Promise
 
   let media;
   try {
-    media = await downloadMedia(msg.mediaId);
+    media = await downloadMedia(msg.mediaId, msg.filename);
   } catch (err) {
     logger.error({ err, mediaId: msg.mediaId, waId: candidate.waId }, 'media download failed');
     return { failed: true };
@@ -2051,12 +2054,44 @@ export async function handleInboundMessage(payload: {
         await handOffToStaff(candidate, `could not understand ${count} replies at "${step.id}"`);
         return;
       }
-      // The first unreadable reply is re-asked on its own, with no staff button:
-      // a typo in a city name is not a reason to offer a human, and the handoff
-      // above catches the second one anyway. Note what does *not* reach here —
-      // a question of their own, or a comment on the question asked. Those are
-      // answered, so only a genuinely unreadable message walks this ladder.
-      await reply(candidate, await renderRetry(step, candidate, copy.UNCLEAR), step.id);
+
+      // The classifier could not fit the reply into an answer. That is not the
+      // same as the reply being meaningless, and the two used to get the same
+      // sentence: "Sorry, I could not use that as an answer", over a message
+      // like "I will upload my passport" — which anybody reading it understands
+      // perfectly well, and which deserves an answer about the upload rather
+      // than a shrug.
+      //
+      // So the same fenced reply `related` uses is tried here too. It is
+      // grounded in the open question, the options, and the approved answers,
+      // its output is guard-checked, and it records nothing. When it has
+      // nothing safe to say — a genuine keysmash, a fragment — it declines and
+      // the fixed line below is sent exactly as before.
+      const replied = await respondInContext({
+        question: step.prompt.en,
+        options: acceptedChoices(step, candidate).map((c) => c.label.en),
+        context: step.expects?.context,
+        message: interpretation.raw,
+        language: candidate.language,
+        languageOther: candidate.languageOther,
+      });
+
+      if (replied.kind === 'staff') {
+        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        return;
+      }
+
+      // No staff button either way: a typo in a city name is not a reason to
+      // offer a human, and the handoff above catches the second one anyway.
+      await reply(
+        candidate,
+        await renderRetry(
+          step,
+          candidate,
+          replied.kind === 'answered' ? replied.text : copy.UNCLEAR,
+        ),
+        step.id,
+      );
       return;
     }
 
@@ -2145,11 +2180,11 @@ export async function handleInboundMessage(payload: {
  * called. When it declines, or the model call fails, the fixed copy says the
  * same thing in fewer words and in all three languages.
  */
-async function sendWrongDocument(
+async function wrongDocumentLead(
   candidate: CandidateDoc,
   docType: string,
   looksLike?: string,
-): Promise<void> {
+): Promise<string> {
   const name = (
     await renderMessage(requirementFor(docType)?.label ?? copy.DOCUMENT_THIS_ONE, candidate)
   ).body;
@@ -2166,17 +2201,59 @@ async function sendWrongDocument(
     languageOther: candidate.languageOther,
   });
 
-  if (written.kind === 'answered') {
-    await reply(candidate, { kind: 'text', body: written.text });
-    return;
-  }
+  if (written.kind === 'answered') return written.text;
 
   // `DOCUMENT_WRONG_TYPE` claims to know what the file is not; without an
   // identification the honest fixed line is the one that only says it could not
   // be read.
-  await tell(candidate, looksLike ? copy.DOCUMENT_WRONG_TYPE : copy.DOCUMENT_NOT_READ, {
-    document: name,
-  });
+  return (
+    await renderMessage(
+      looksLike ? copy.DOCUMENT_WRONG_TYPE : copy.DOCUMENT_NOT_READ,
+      candidate,
+      { document: name },
+    )
+  ).body;
+}
+
+/**
+ * What to say about an upload that could not be used, in the contact's language.
+ *
+ * Returned rather than sent, so the caller can put it on the same message as the
+ * question it belongs to. What went wrong decides the wording: telling someone
+ * to "resend all pages" when the extractor got nothing at all — or when they
+ * sent the wrong card — is advice they cannot act on, and they send the same
+ * file again.
+ */
+async function unusableUploadLead(
+  candidate: CandidateDoc,
+  docType: string,
+  outcome: DocumentOutcome,
+): Promise<string> {
+  if (outcome.verdict === 'wrong_document') {
+    return wrongDocumentLead(candidate, docType, outcome.looksLike);
+  }
+
+  if (outcome.verdict === 'unreadable') {
+    return (await renderMessage(copy.DOCUMENT_UNREADABLE, candidate)).body;
+  }
+
+  const documentName = (
+    await renderMessage(requirementFor(docType)?.label ?? copy.DOCUMENT_THIS_ONE, candidate)
+  ).body;
+
+  if (outcome.verdict === 'empty') {
+    return (await renderMessage(copy.DOCUMENT_NOT_READ, candidate, { document: documentName })).body;
+  }
+
+  const detail = outcome.missingPages?.length
+    ? (
+        await renderMessage(copy.DOCUMENT_PAGES, candidate, {
+          pages: outcome.missingPages.join(', '),
+        })
+      ).body
+    : (await renderMessage(copy.DOCUMENT_ALL_PAGES, candidate)).body;
+
+  return (await renderMessage(copy.DOCUMENT_INCOMPLETE, candidate, { detail })).body;
 }
 
 async function acknowledgeDocument(candidate: CandidateDoc, docType: string): Promise<void> {
@@ -2212,7 +2289,7 @@ export interface DocumentOutcome {
 export async function markSlotFromOcr(
   candidateId: ObjectId,
   docType: string,
-  status: 'ocr_done' | 'ocr_failed' | 'needs_review' | 'incomplete',
+  status: 'ocr_queued' | 'ocr_done' | 'ocr_failed' | 'needs_review' | 'incomplete',
 ): Promise<void> {
   const record = await findConversationById(candidateId);
   if (!record) return;
@@ -2260,6 +2337,38 @@ export async function mergeExtractedProfile(
 }
 
 /**
+ * Whether this upload is still the one the slot is waiting on.
+ *
+ * People send the front and the back together, seconds apart. Both land in the
+ * slot the bot last asked for, the second superseding the first, and both are
+ * read — so two verdicts come back about a slot that now holds only the second
+ * file. Acting on the older one talks over the newer, and marks a good upload
+ * unreadable because a file it replaced was.
+ *
+ * The current upload is the one the slot points at. Anything else is history.
+ */
+function isCurrentUpload(candidate: CandidateDoc, docType: string, uploadId: ObjectId): boolean {
+  const current = withMissingSlots(candidate.documents)[docType]?.documentId;
+  return !!current && current.equals(uploadId);
+}
+
+/**
+ * The same question, for the OCR worker, which holds an id rather than a record.
+ *
+ * Asked once under the candidate lock, before anything an extraction produces is
+ * written anywhere — the slot status, the profile, the identity comparison and
+ * the reply all belong to the upload the slot is actually waiting on.
+ */
+export async function uploadStillCurrent(
+  candidateId: ObjectId,
+  docType: string,
+  uploadId: ObjectId,
+): Promise<boolean> {
+  const candidate = await findConversationById(candidateId);
+  return !!candidate && isCurrentUpload(candidate, docType, uploadId);
+}
+
+/**
  * Called by the OCR worker once a document has been read.
  *
  * This is what moves the conversation on after a gated upload: an unusable
@@ -2273,6 +2382,7 @@ export async function resumeAfterDocument(
   candidateId: ObjectId,
   docType: string,
   outcome: DocumentOutcome,
+  uploadId?: ObjectId,
 ): Promise<void> {
   const candidate = await findConversationById(candidateId);
   if (!candidate) return;
@@ -2285,6 +2395,14 @@ export async function resumeAfterDocument(
   // Staff have it, or the record is gone — either way, do not interject.
   if (candidate.stage === 'HUMAN_HANDOFF' || candidate.stage === 'DELETED') return;
   if (!GATED.has(docType)) return;
+
+  if (uploadId && !isCurrentUpload(candidate, docType, uploadId)) {
+    logger.info(
+      { waId: candidate.waId, docType, uploadId: uploadId.toHexString() },
+      'ignored an extraction verdict for an upload that has since been replaced',
+    );
+    return;
+  }
 
   // A CV is never re-requested for being hard to read. It is a convenience: what
   // it yields skips questions, and what it does not, the flow simply asks (§5).
@@ -2310,8 +2428,7 @@ export async function resumeAfterDocument(
       return;
     }
 
-    await sendWrongDocument(candidate, 'cv', outcome.looksLike);
-    await askNextQuestion(candidate);
+    await askNextQuestion(candidate, await wrongDocumentLead(candidate, 'cv', outcome.looksLike));
     return;
   }
 
@@ -2319,9 +2436,24 @@ export async function resumeAfterDocument(
     const slot = candidate.documents[docType]!;
     await markSlot(candidate, docType, 'incomplete', outcome.problems.join('; '));
 
-    // Asking a third time for the same unreadable document is worse for the
-    // candidate than letting staff sort it out on a call.
-    if (slot.askedCount >= TUNABLES.maxAsksPerDocument) {
+    const b2b = candidate.enquiry === 'b2b';
+    const ceiling = b2b ? TUNABLES.maxAsksPerB2bDocument : TUNABLES.maxAsksPerDocument;
+
+    if (slot.askedCount >= ceiling) {
+      // The B2B branch never walks past a document it could not read — there is
+      // no next question worth asking without it — so it stops and fetches a
+      // person instead of moving on.
+      if (b2b) {
+        await tell(candidate, copy.STUCK);
+        await handOffToStaff(
+          candidate,
+          `"${docType}" was still unreadable after ${slot.askedCount} attempts`,
+        );
+        return;
+      }
+
+      // A candidate's is optional: asking a third time for the same unreadable
+      // document is worse for them than letting staff sort it out on a call.
       await recordsFor(candidate.enquiry).updateOne(
         { _id: candidateId },
         { $set: { status: 'documents_incomplete' as CandidateStatus, updatedAt: new Date() } },
@@ -2330,31 +2462,11 @@ export async function resumeAfterDocument(
       return;
     }
 
-    // What went wrong decides what to say. Telling someone to "resend all pages"
-    // when the extractor got nothing at all — or when they sent the wrong card —
-    // is advice they cannot act on, and they send the same file again.
-    const documentName = (await renderMessage(
-      requirementFor(docType)?.label ?? copy.DOCUMENT_THIS_ONE,
-      candidate,
-    )).body;
-
-    if (outcome.verdict === 'empty') {
-      await tell(candidate, copy.DOCUMENT_NOT_READ, { document: documentName });
-    } else if (outcome.verdict === 'wrong_document') {
-      await sendWrongDocument(candidate, docType, outcome.looksLike);
-    } else if (outcome.verdict === 'unreadable') {
-      await tell(candidate, copy.DOCUMENT_UNREADABLE);
-    } else {
-      const detail = outcome.missingPages?.length
-        ? (await renderMessage(copy.DOCUMENT_PAGES, candidate, {
-            pages: outcome.missingPages.join(', '),
-          })).body
-        : (await renderMessage(copy.DOCUMENT_ALL_PAGES, candidate)).body;
-
-      await tell(candidate, copy.DOCUMENT_INCOMPLETE, { detail });
-    }
-
-    await askNextQuestion(candidate);
+    // One message, not two. Sent apart, the explanation and the question it
+    // belongs to are two bubbles for one event, and on a phone the question can
+    // arrive above the sentence explaining it — which is exactly how "send it
+    // again" ended up reading as if the bot had already moved on.
+    await askNextQuestion(candidate, await unusableUploadLead(candidate, docType, outcome));
     return;
   }
 

@@ -126,7 +126,7 @@ export const FAQ: FaqEntry[] = [
     id: 'countries',
     asks: 'Which countries do you send to? Do you have jobs in Dubai / Europe / Russia?',
     answer:
-      'We work with employers in the GCC countries, Europe, Russia and the CIS, and Singapore ' +
+      'We work with employers in the Gulf countries, Europe, Russia and the CIS, and Singapore ' +
       'and Malaysia. Which vacancies are open changes over time, so our staff will tell you what ' +
       'is available for your trade.',
   },

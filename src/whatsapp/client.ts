@@ -261,11 +261,15 @@ export interface MediaPayload {
  * fetch that URL. The second request still needs the bearer token — Meta's CDN
  * rejects unauthenticated reads.
  */
-export async function downloadMedia(mediaId: string): Promise<MediaPayload> {
+/**
+ * `filename` is only ever read in mock mode, to choose which canned file to
+ * serve. The real download is by id and Meta tells us the type itself.
+ */
+export async function downloadMedia(mediaId: string, filename?: string): Promise<MediaPayload> {
   if (config.MOCK_WHATSAPP_MEDIA) {
-    const { SAMPLE_RESUME_PDF } = await import('../testing/fixtures.js');
-    const pdf = SAMPLE_RESUME_PDF();
-    logger.warn({ mediaId }, 'MOCK_WHATSAPP_MEDIA is on — serving a canned file');
+    const { fixtureFor } = await import('../testing/fixtures.js');
+    const pdf = fixtureFor(filename);
+    logger.warn({ mediaId, filename }, 'MOCK_WHATSAPP_MEDIA is on — serving a canned file');
     return { buffer: pdf, mimeType: 'application/pdf', byteSize: pdf.byteLength };
   }
 

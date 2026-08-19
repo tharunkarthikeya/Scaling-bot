@@ -71,3 +71,65 @@ export const SAMPLE_RESUME_PDF = (): Buffer =>
     'SKILLS',
     'SMAW, GTAW, MIG welding, blueprint reading, pipe fitting',
   ]);
+
+/**
+ * An Aadhaar card, carrying the markers `DOCUMENT_MARKERS.aadhaar` looks for.
+ *
+ * Same person as the CV above, deliberately: §17 compares identity across every
+ * document a contact sends, and two fixtures disagreeing about a name would have
+ * the harness raising a mismatch on every run.
+ */
+export const SAMPLE_AADHAAR_PDF = (): Buffer =>
+  makeTextPdf([
+    'GOVERNMENT OF INDIA',
+    'UNIQUE IDENTIFICATION AUTHORITY OF INDIA',
+    '',
+    'ASHA KUMARI',
+    'Date of Birth: 14/03/1994',
+    'Female',
+    '',
+    '2345 6789 0123',
+    'AADHAAR - Aam Aadmi ka Adhikar',
+    '',
+    'Address: 14 Bharathi Street, Tiruchirappalli,',
+    'Tamil Nadu 620001',
+  ]);
+
+/**
+ * The one fixture that is chosen rather than fixed.
+ *
+ * Every mocked download used to serve the CV, whatever had been asked for, so
+ * the identity-document steps could only ever exercise the "that is not the
+ * document we asked for" path. Picking on the filename lets the harness walk the
+ * ordinary case as well — which is the case a real contact is in.
+ */
+export function fixtureFor(filename?: string): Buffer {
+  const name = filename ?? '';
+  if (/aadhaa?r/i.test(name)) return SAMPLE_AADHAAR_PDF();
+  if (/passport/i.test(name)) return SAMPLE_PASSPORT_PDF();
+  return SAMPLE_RESUME_PDF();
+}
+
+/**
+ * A passport bio page, carrying the MRZ band `DOCUMENT_MARKERS.passport` looks
+ * for and the expiry date §12 now reads off the page instead of asking for.
+ *
+ * Same person as the CV, for the reason the Aadhaar fixture gives.
+ */
+export const SAMPLE_PASSPORT_PDF = (): Buffer =>
+  makeTextPdf([
+    'REPUBLIC OF INDIA',
+    'PASSPORT',
+    '',
+    'Type: P    Country Code: IND    Passport No.: Z1234567',
+    'Surname: KUMARI',
+    'Given Name: ASHA',
+    'Nationality: INDIAN',
+    'Date of Birth: 14/03/1994',
+    'Place of Birth: TIRUCHIRAPPALLI',
+    'Date of Issue: 12/05/2021    Date of Expiry: 11/05/2031',
+    'Place of Issue: MADURAI',
+    '',
+    'P<INDKUMARI<<ASHA<<<<<<<<<<<<<<<<<<<<<<<<<<<',
+    'Z1234567<4IND9403144F3105114<<<<<<<<<<<<<<02',
+  ]);

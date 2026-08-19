@@ -276,9 +276,22 @@ export const TRADE_PACKS: TradePack[] = [
   {
     id: 'cnc_operator',
     trades: ['driver_operator', 'factory_warehouse', 'electrical_mechanical'],
+    /**
+     * Every one of these names a machine tool or the trade of running one.
+     *
+     * "operator" used to be on this list, with "machine", "मशीन", "மெஷின்" and
+     * "ऑपरेटर" — all of which mean only that the candidate works a machine of
+     * some kind. A JCB operator, a crane operator, a forklift operator and a
+     * boiler operator all matched, and every one of them was asked which CNC
+     * machines they had operated: a question about a trade they are not in,
+     * arriving out of nowhere, that they cannot answer.
+     *
+     * A pack that asks about CNC has to be chosen by something that means CNC.
+     */
     keywords: [
-      'cnc', 'vmc', 'hmc', 'lathe', 'machinist', 'turner', 'miller', 'milling',
-      'operator', 'machine operator', 'மெஷின்', 'मशीन', 'ऑपरेटर',
+      'cnc', 'vmc', 'hmc', 'vtl', 'lathe', 'machinist', 'machining', 'machine shop',
+      'turner', 'turning centre', 'turning center', 'machining centre',
+      'machining center', 'milling', 'fanuc',
     ],
     questions: [
       {
@@ -480,8 +493,12 @@ export function resolvePacks(
   if (candidates.length === 0) return { packs: [], needsDisambiguation: false };
 
   const haystack = signals.filter(Boolean).join(' ').toLowerCase();
+  // Whole words, the same way `answersFromEvidence` reads its terms. As a plain
+  // substring "mig" matched "migrant worker" and "arc" matched "March", so a
+  // candidate could be handed a pack of welding questions by a word about
+  // something else entirely.
   const matched = haystack
-    ? candidates.filter((p) => p.keywords.some((kw) => haystack.includes(kw.toLowerCase())))
+    ? candidates.filter((p) => p.keywords.some((kw) => names(haystack, kw.toLowerCase())))
     : [];
 
   if (matched.length) return { packs: matched, needsDisambiguation: false };

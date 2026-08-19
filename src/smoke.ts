@@ -2,7 +2,7 @@
  * Offline checks for the pieces that need no Mongo, Redis, or network.
  *
  * Most of what this covers is the protocol's own rules expressed as assertions:
- * that a question already answered is never asked again, that a GCC candidate is
+ * that a question already answered is never asked again, that a Gulf candidate is
  * never asked for identity documents, that what a candidate wants is never
  * written over what they do, and that a spelling difference in a name is not
  * treated as a different person.
@@ -297,6 +297,44 @@ await check('only the Aadhaar sides are read; the certificate is filed as it arr
   assert.equal(requirementFor('company_registration')?.ocr, 'none');
 });
 
+await check('an unreadable B2B document leaves its question open', () => {
+  // The bug this covers: the bot told the contact their Aadhaar was too blurred
+  // to read, then asked for the back of the card in the very next message —
+  // because running out of asks counted as an answer. It must not.
+  const spent = (docId: string) => {
+    const c = candidate({ enquiry: 'b2b', profile: { fullName: 'Priya Raman' } });
+    c.documents[docId] = {
+      status: 'incomplete',
+      askedCount: TUNABLES.maxAsksPerB2bDocument + 1,
+      updatedAt: new Date(),
+    };
+    return c;
+  };
+
+  const contact = spent('b2b_aadhaar_front');
+  assert.equal(stepById('b2b_aadhaar_front')!.satisfied(contact), false);
+  // And the flow stays on it rather than moving to the back of the card.
+  assert.equal(nextStep(contact)?.id, 'b2b_aadhaar_front');
+
+  // A file that arrived and read is what closes the question.
+  contact.documents.b2b_aadhaar_front!.status = 'ocr_done';
+  assert.equal(nextStep(contact)?.id, 'b2b_aadhaar_back');
+});
+
+await check('a candidate document still stops being chased at the ceiling (§14)', () => {
+  // The candidate rule is deliberate and unchanged: their identity documents are
+  // optional and staff collect them on a call.
+  const c = candidate({
+    profile: { countryPreference: 'europe', documentAvailability: 'all' },
+  });
+  c.documents.aadhaar = {
+    status: 'incomplete',
+    askedCount: TUNABLES.maxAsksPerDocument,
+    updatedAt: new Date(),
+  };
+  assert.equal(stepById('aadhaar_upload')!.satisfied(c), true);
+});
+
 await check('a B2B caption cannot re-file an upload into a candidate slot', () => {
   // "aadhaar" is a keyword on the candidate slot too, and it is listed first.
   // Attribution is scoped to the branch, so the open question wins.
@@ -375,7 +413,7 @@ await check('asks for a trade course only for ITI, diploma or graduate (§6)', (
   assert.equal(stepById('education_course')!.when!(iti), true);
 });
 
-await check('a GCC candidate is never asked for identity documents (§13)', () => {
+await check('a Gulf candidate is never asked for identity documents (§13)', () => {
   const gcc = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'gcc' } });
   assert.equal(inEuropeRussiaBranch(gcc), false);
   assert.equal(stepById('europe_docs')!.when!(gcc), false);
@@ -1443,6 +1481,74 @@ await check('a generic job title alone loads no specialist pack', () => {
   // machining evidence was asked which machines he had operated.
   assert.notEqual(patch.primaryTrade, 'fabrication_welding');
   assert.deepEqual(inferTradePacks(c), []);
+});
+
+await check('"operator" alone does not make someone a CNC machinist (§8)', () => {
+  // The reported bug: a JCB operator was asked which CNC machines he had
+  // operated. "operator" was a keyword on the CNC pack, and it means only that
+  // someone works a machine of some kind.
+  for (const job of ['JCB operator', 'crane operator', 'forklift operator', 'boiler operator']) {
+    const c = candidate({
+      profile: { lookingForOverseasJob: true, primaryTrade: 'driver_operator', currentOccupation: job },
+    });
+    assert.deepEqual(inferTradePacks(c), [], `${job} should load no CNC pack`);
+  }
+
+  // And a machinist still gets it, which is the point of the pack.
+  for (const job of ['CNC operator', 'VMC setter', 'lathe machinist']) {
+    const c = candidate({
+      profile: { lookingForOverseasJob: true, primaryTrade: 'driver_operator', currentOccupation: job },
+    });
+    assert.deepEqual(inferTradePacks(c), ['cnc_operator'], `${job} should load the CNC pack`);
+  }
+});
+
+await check('a pack keyword is a word, not a run of letters inside one (§8)', () => {
+  // "mig" inside "migrant" and "arc" inside "March" both used to load the
+  // welding pack for someone who had said nothing about welding.
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      currentOccupation: 'migrant worker since March',
+    },
+  });
+  // undefined, not []: nothing matched, so the disambiguation question decides
+  // rather than a run of letters inside an unrelated word.
+  assert.equal(inferTradePacks(c), undefined);
+
+  // The real word still loads it.
+  const welder = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      currentOccupation: 'MIG welder',
+    },
+  });
+  assert.deepEqual(inferTradePacks(welder), ['welder']);
+});
+
+await check('§12 asks for the passport, not for facts about it', () => {
+  // Typed-from-memory expiry dates are the least reliable thing on the record,
+  // and the document that settles it is one tap away.
+  assert.equal(stepById('passport_expiry'), undefined);
+
+  const holder = candidate({ profile: { lookingForOverseasJob: true, passportStatus: 'yes' } });
+  const step = stepById('passport_document')!;
+  assert.equal(step.when!(holder), true);
+  assert.equal(step.document, 'passport');
+  assert.equal(step.satisfied(holder), false);
+});
+
+await check('a passport already on file is never asked for again (§1, §12)', () => {
+  // Covers the CV case: `ocr/veris.ts` files passport pages found inside a CV
+  // against this slot, and filling the slot is what closes the question.
+  const c = candidate({ profile: { lookingForOverseasJob: true, passportStatus: 'yes' } });
+  c.documents.passport = { status: 'ocr_queued', askedCount: 0, updatedAt: new Date() };
+
+  assert.equal(stepById('passport_document')!.satisfied(c), true);
+  // And the Europe/Russia upload question does not ask for it a second time.
+  assert.equal(stepById('passport_upload')!.satisfied(c), true);
 });
 
 await check('one candidate pack is not evidence for that pack', () => {

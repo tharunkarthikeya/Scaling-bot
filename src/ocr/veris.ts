@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
+  addUpload,
   documentsFor,
   documentStoreFor,
   findUpload,
@@ -10,7 +11,7 @@ import {
   type OcrField,
 } from '../db/models.js';
 import { readFile } from '../storage/index.js';
-import { withCandidateLock } from '../queue/index.js';
+import { queue, withCandidateLock } from '../queue/index.js';
 import { TUNABLES } from '../conversation/rules.js';
 import { requirementFor } from '../conversation/checklist.js';
 import {
@@ -18,6 +19,7 @@ import {
   markSlotFromOcr,
   mergeExtractedProfile,
   resumeAfterDocument,
+  uploadStillCurrent,
 } from '../conversation/engine.js';
 import { extractFromCv, identityFromDocument } from '../conversation/cv.js';
 import { compareIdentity } from '../conversation/profile.js';
@@ -908,6 +910,96 @@ async function runIdentityComparison(candidateId: ObjectId, docType: string): Pr
   }
 }
 
+/**
+ * The expiry date, as MM/YYYY, from whichever field carried it.
+ *
+ * The MRZ gives `expiry_date` as YYMMDD; the printed page gives a written date
+ * under one of several names. §12 no longer asks the candidate for this — they
+ * send the passport instead — so this is the only thing that fills it.
+ */
+function expiryFromPassport(fields: OcrField[]): string | undefined {
+  const named = fields.find((f) =>
+    /^(expiry_date|date_of_expiry|dateofexpiry|expiry|valid_until)$/i.test(
+      f.key.replace(/[\s-]/g, '_'),
+    ),
+  );
+  if (!named?.value) return undefined;
+
+  const mrz = parseMrzDate(named.value);
+  if (mrz) {
+    return `${String(mrz.getUTCMonth() + 1).padStart(2, '0')}/${mrz.getUTCFullYear()}`;
+  }
+
+  // A written date: take the month and year and leave the day, which is all
+  // §12 records and all `passportExpiryFlag` reads.
+  const written = /(\d{1,2})[\/.-](\d{4})/.exec(named.value);
+  if (written) return `${written[1]!.padStart(2, '0')}/${written[2]}`;
+
+  const parsed = new Date(named.value);
+  return Number.isNaN(parsed.getTime())
+    ? undefined
+    : `${String(parsed.getMonth() + 1).padStart(2, '0')}/${parsed.getFullYear()}`;
+}
+
+/**
+ * Files the passport a candidate attached to their CV as a passport as well.
+ *
+ * People send one PDF: CV first, passport pages scanned in behind it. Read only
+ * by the resume extractor, those pages are wasted — the passport slot stays
+ * empty, so §12 asks for a document the agency already has, and the number and
+ * expiry that are sitting in the file are never read.
+ *
+ * So the same bytes are filed a second time, against the passport slot, and
+ * queued for the passport extractor. Two extractions of one file, which is the
+ * point: the resume extractor reads a CV and the passport extractor reads an
+ * MRZ, and neither can do the other's job.
+ *
+ * Nothing is copied on disk. The new upload carries the same `storageKey`, so
+ * there is one file with two records pointing at it.
+ *
+ * Deliberately narrow:
+ *   - only when the CV's own text carries passport markers, so an ordinary CV
+ *     mentioning the word "passport" does not trigger it;
+ *   - only when the passport slot is empty, so a passport the candidate sent
+ *     properly is never superseded by one scraped out of a CV.
+ */
+async function filePassportFoundInCv(
+  waId: string,
+  candidateId: ObjectId,
+  cv: { storageKey: string; mediaId: string; mimeType: string; byteSize: number; sha256: string },
+  fields: OcrField[],
+  payload: unknown,
+): Promise<void> {
+  if (identifyFromMarkers(payload, fields) !== 'passport') return;
+
+  const record = await documentsFor(waId, 'passport');
+  const already = (record?.passport?.uploads ?? []).some((u) => !u.supersededAt);
+  if (already) return;
+
+  const uploadId = await addUpload({
+    waId,
+    candidateId,
+    docType: 'passport',
+    upload: {
+      mediaId: cv.mediaId,
+      storageKey: cv.storageKey,
+      mimeType: cv.mimeType,
+      byteSize: cv.byteSize,
+      sha256: cv.sha256,
+      caption: 'passport pages found inside the CV',
+      ocr: { status: 'queued' },
+    },
+  });
+
+  await markSlotFromOcr(candidateId, 'passport', 'ocr_queued');
+  await queue.enqueue('ocr', { waId, docType: 'passport', uploadId: uploadId.toHexString() });
+
+  logger.info(
+    { waId, storageKey: cv.storageKey },
+    'passport pages found inside a CV; filed and queued for the passport extractor',
+  );
+}
+
 /** Maps an identity document's extraction onto the profile fields it can fill. */
 function profileFromIdentityDocument(
   docType: string,
@@ -918,6 +1010,11 @@ function profileFromIdentityDocument(
 
   if (identity.fatherName) patch.fatherName = identity.fatherName;
   if (identity.dateOfBirth) patch.dateOfBirth = identity.dateOfBirth;
+
+  if (identityKind(docType) === 'passport') {
+    const expiry = expiryFromPassport(fields);
+    if (expiry) patch.passportExpiry = expiry;
+  }
 
   // Stored so staff can verify them, masked everywhere else, and never read back
   // to the candidate (§15, §16, §27).
@@ -957,11 +1054,12 @@ export async function processOcrJob(payload: {
     await updateUpload(waId, docType, uploadId, { 'ocr.status': 'skipped' });
     // Nothing to read, so the conversation moves on immediately.
     await withCandidateLock(waId, () =>
-      resumeAfterDocument(candidateId, docType, {
-        complete: true,
-        verdict: 'ok',
-        problems: [],
-      }),
+      resumeAfterDocument(
+        candidateId,
+        docType,
+        { complete: true, verdict: 'ok', problems: [] },
+        uploadId,
+      ),
     );
     return;
   }
@@ -982,14 +1080,29 @@ export async function processOcrJob(payload: {
       docType,
     });
 
+    // Whether anything read off this file is worth keeping.
+    //
+    // A blurred card does not fail cleanly: the extractor returns values, and
+    // they are half right — a digit dropped from an Aadhaar number, a name with
+    // two letters guessed. Storing that is worse than storing nothing, because
+    // nothing is obviously missing and a wrong number looks like a real one. So
+    // an unusable read keeps its verdict and its reasons, which is what a person
+    // needs to see, and none of its values.
+    //
+    // A CV is the exception, and stays as it was: it holds no identifier, and a
+    // partial read still saves the candidate questions (§5). Only a file that is
+    // not a CV at all is discarded there.
+    const keepExtraction =
+      outcome.completeness.complete ||
+      (extractor === 'resume' && outcome.completeness.verdict !== 'wrong_document');
+
     await updateUpload(waId, docType, uploadId, {
       ocr: {
         status: 'done',
         extractor,
         startedAt: doc.ocr?.startedAt,
         finishedAt: new Date(),
-        raw: outcome.raw,
-        fields: outcome.fields,
+        ...(keepExtraction ? { raw: outcome.raw, fields: outcome.fields } : {}),
         confidence: outcome.confidence,
         needsReview: outcome.needsReview,
         reviewReasons: outcome.reviewReasons,
@@ -1009,6 +1122,14 @@ export async function processOcrJob(payload: {
     // extraction takes up to 120 seconds, and holding it for that long would
     // freeze the conversation while the file is read.
     await withCandidateLock(waId, async () => {
+      // Two photos sent seconds apart both land in the slot the bot last asked
+      // for, the second superseding the first, and both are read. Only the
+      // verdict on the file the slot actually holds may write anything.
+      if (!(await uploadStillCurrent(candidateId, docType, uploadId))) {
+        logger.info(payload, 'extraction finished for an upload that has since been replaced');
+        return;
+      }
+
       await markSlotFromOcr(
         candidateId,
         docType,
@@ -1027,11 +1148,10 @@ export async function processOcrJob(payload: {
           : profileFromIdentityDocument(docType, outcome.fields);
 
       // Nothing is written from a file that is not the document it was filed
-      // as. Whatever an Aadhaar card yields under the resume extractor is not
-      // this candidate's CV, and a profile is harder to correct than a slot.
-      const trustworthy = outcome.completeness.verdict !== 'wrong_document';
-
-      if (trustworthy && Object.keys(patch).length) {
+      // as, and nothing from one that could not be read. Whatever an Aadhaar
+      // card yields under the resume extractor is not this candidate's CV, and
+      // a profile is harder to correct than a slot.
+      if (keepExtraction && Object.keys(patch).length) {
         await mergeExtractedProfile(
           candidateId,
           patch,
@@ -1040,10 +1160,29 @@ export async function processOcrJob(payload: {
         );
       }
 
+      // A CV can carry a passport behind it. Read as a CV it is one document;
+      // read again as a passport it is two, and §12 stops asking for something
+      // already on file.
+      if (docType === 'cv') {
+        await filePassportFoundInCv(
+          waId,
+          candidateId,
+          {
+            storageKey: doc.storageKey,
+            mediaId: doc.mediaId,
+            mimeType: doc.mimeType,
+            byteSize: doc.byteSize,
+            sha256: doc.sha256,
+          },
+          outcome.fields,
+          outcome.raw,
+        );
+      }
+
       await runIdentityComparison(candidateId, docType);
 
       // Moves the conversation on: the acknowledgement, or the re-ask (§14).
-      await resumeAfterDocument(candidateId, docType, outcome.completeness);
+      await resumeAfterDocument(candidateId, docType, outcome.completeness, uploadId);
     });
 
     logger.info(
@@ -1071,11 +1210,12 @@ export async function processOcrJob(payload: {
     // passport again — so the upload is acknowledged and staff pick it up.
     await withCandidateLock(waId, async () => {
       await markSlotFromOcr(candidateId, docType, 'ocr_failed');
-      await resumeAfterDocument(candidateId, docType, {
-        complete: true,
-        verdict: 'ok',
-        problems: ['extraction failed; needs a manual check'],
-      });
+      await resumeAfterDocument(
+        candidateId,
+        docType,
+        { complete: true, verdict: 'ok', problems: ['extraction failed; needs a manual check'] },
+        uploadId,
+      );
     });
   }
 }

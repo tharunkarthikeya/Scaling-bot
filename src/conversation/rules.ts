@@ -342,6 +342,17 @@ export const TUNABLES = {
   maxQuestionTokens: 1200,
   /** Stop chasing a document after this many asks. */
   maxAsksPerDocument: 2,
+  /**
+   * The same, for the B2B branch (§2) — which does not stop chasing.
+   *
+   * A candidate's identity document is optional and staff can collect it on a
+   * call, so the flow gives up after two tries and moves on. A B2B document is
+   * the whole reason the branch exists: there is no next question worth asking
+   * without it, so an unreadable photo is asked for again, and again, and the
+   * enquiry goes to a person rather than forward. Higher than the candidate
+   * ceiling because photographing a card in poor light takes a few goes.
+   */
+  maxAsksPerB2bDocument: 4,
   /** OCR field confidence below this routes the document to human review. */
   ocrReviewThreshold: 0.85,
   /** Flag a passport expiring within this many months for staff attention (§12). */
