@@ -36,6 +36,7 @@ import {
   nextCandidateId,
   recordAudit,
   recordsFor,
+  uploadsFor,
   CANDIDATE_ID_DIGITS,
   CANDIDATE_ID_PREFIX,
   type ApplicationStatus,
@@ -68,6 +69,8 @@ import {
   type Section,
 } from './flow.js';
 import { attributeInboundDocument, initialSlots, withMissingSlots } from './checklist.js';
+import { extractFromCv, normaliseDate, profileFromIdentityDocument } from './cv.js';
+import { captureAttachment, ingestionForMessage } from '../ingestion/whatsapp.js';
 import { detectGlobalCommand, interpret } from './interpret.js';
 import { answerFromFaq } from './faq.js';
 import { explainWrongDocument, respondInContext } from './respond.js';
@@ -106,6 +109,8 @@ const MENU = {
   certificate: 'ask:certificate',
   contact: 'ask:contact',
   trackId: 'ask:track_id',
+  /** The identity check between the Application ID and the status (§25, §27). */
+  trackDob: 'ask:track_dob',
 } as const;
 
 /** Suffix marking the free-text follow-up to an "Other" choice. */
@@ -680,36 +685,42 @@ async function reportApplicationStatus(
 /**
  * Starts the tracking flow.
  *
- * A candidate already registered on this number needs no id — we know which
- * record is theirs. Anyone else is asked for one.
+ * The Application ID is always asked for, including from a candidate registered
+ * on this very number whose record we could simply have read. That is the
+ * point: a status is something §27 says we owe to the candidate and to nobody
+ * else, and "this message came from the right handset" is not the same claim as
+ * "this is the right person". Phones are shared, lent and left on tables. So
+ * the id names the application and the date of birth on it confirms who is
+ * asking, and the two questions are asked of everyone.
  */
 async function startTracking(candidate: CandidateDoc): Promise<void> {
-  if (candidate.candidateId) {
-    await reportApplicationStatus(candidate, candidate);
-    return;
-  }
-
   // Mid-registration on this very number: they have no id yet, and asking them
   // to type one they were never given is a dead end. Consent is the marker —
   // nothing is recorded before it, so someone who has given it is partway
   // through, whereas a first-time contact may well be tracking a registration
   // made on another number and does need to be asked.
-  if (candidate.consent?.given) {
+  if (!candidate.candidateId && candidate.consent?.given) {
     await ask(candidate, copy.TRACK_NOT_REGISTERED, copy.RESUME_CHOICES, MENU.resume);
     return;
   }
 
   await tell(candidate, copy.TRACK_ASK_ID);
-  await setState(candidate, { currentStep: MENU.trackId });
+  // Any half-finished check from a previous attempt goes: a fresh lookup starts
+  // with a fresh id, and inheriting someone else's attempt count would be both
+  // confusing and wrong.
+  await setState(candidate, { currentStep: MENU.trackId, tracking: undefined });
 }
 
 /**
- * Looks up an id the candidate typed.
+ * Looks up an id the candidate typed, and opens the identity check on it.
  *
  * Scoped to the number that sent it. Ids are short and sequential, so answering
  * for any id at all would hand one candidate's status — and the fact that their
  * record exists — to anyone who guessed a number (§27). A miss is reported the
  * same way whether the id is unknown or belongs to somebody else.
+ *
+ * Nothing about the application is said here. Finding the record only earns the
+ * candidate the date-of-birth question; the status waits behind it.
  */
 async function lookUpApplication(candidate: CandidateDoc, typed: string): Promise<void> {
   const id = normaliseApplicationId(typed);
@@ -719,7 +730,23 @@ async function lookUpApplication(candidate: CandidateDoc, typed: string): Promis
     : null;
 
   if (record) {
-    await reportApplicationStatus(candidate, record);
+    // A record with no date of birth cannot be checked, and a check that cannot
+    // be performed is not a check that passed. Staff take it from here.
+    if (!record.profile?.dateOfBirth) {
+      logger.warn(
+        { waId: candidate.waId, candidateId: record.candidateId },
+        'tracking blocked: no date of birth on the application to verify against',
+      );
+      await ask(candidate, copy.TRACK_CANNOT_VERIFY, [copy.CHOICE_STAFF], MENU.trackId);
+      await setState(candidate, { tracking: undefined });
+      return;
+    }
+
+    await tell(candidate, copy.TRACK_ASK_DOB);
+    await setState(candidate, {
+      currentStep: MENU.trackDob,
+      tracking: { candidateId: record.candidateId!, attempts: 0, startedAt: new Date() },
+    });
     return;
   }
 
@@ -731,6 +758,76 @@ async function lookUpApplication(candidate: CandidateDoc, typed: string): Promis
   }
 
   await ask(candidate, copy.TRACK_NOT_FOUND, [copy.CHOICE_STAFF], MENU.trackId);
+}
+
+/**
+ * Checks a typed date of birth against the application it was claimed for.
+ *
+ * Three chances, counted on the record rather than in memory — the attempts are
+ * the whole point of the check, and a counter that resets when the candidate
+ * messages again is not a counter.
+ *
+ * A date we could not parse at all does not cost an attempt. "1994", or "May",
+ * is someone who has not understood the format rather than someone guessing,
+ * and burning one of three chances on a misunderstanding would punish the
+ * candidate this check exists to protect.
+ */
+async function verifyTrackingDob(candidate: CandidateDoc, typed: string): Promise<void> {
+  const tracking = candidate.tracking;
+  if (!tracking) {
+    // The check was cleared underneath us — a restart, a deletion, a staff
+    // takeover. Start again rather than compare against nothing.
+    await startTracking(candidate);
+    return;
+  }
+
+  const supplied = normaliseDate(typed);
+  if (!supplied) {
+    await tell(candidate, copy.TRACK_DOB_UNREADABLE);
+    return;
+  }
+
+  const record = await candidates().findOne({
+    candidateId: tracking.candidateId,
+    waId: candidate.waId,
+  });
+
+  // Re-read rather than trusted from the earlier lookup: the record is fetched
+  // again at the moment of the comparison, so a profile deleted (§23) or
+  // refiled between the two questions cannot be reported from a stale copy.
+  const onFile = record?.profile?.dateOfBirth
+    ? normaliseDate(record.profile.dateOfBirth)
+    : undefined;
+
+  if (record && onFile && onFile === supplied) {
+    await setState(candidate, { tracking: undefined });
+    await reportApplicationStatus(candidate, record);
+    logger.info(
+      { waId: candidate.waId, candidateId: tracking.candidateId },
+      'application status released after a successful identity check',
+    );
+    return;
+  }
+
+  const attempts = tracking.attempts + 1;
+  const remaining = TUNABLES.maxTrackingDobAttempts - attempts;
+
+  if (remaining <= 0) {
+    // Out of chances. No hint about what the right answer was, and no status.
+    logger.warn(
+      { waId: candidate.waId, candidateId: tracking.candidateId, attempts },
+      'tracking identity check exhausted; sending the candidate to staff',
+    );
+    await setState(candidate, { tracking: undefined, currentStep: undefined });
+    await ask(candidate, copy.TRACK_DOB_EXHAUSTED, [copy.CHOICE_STAFF], MENU.trackId);
+    return;
+  }
+
+  await setState(candidate, {
+    tracking: { ...tracking, attempts },
+    currentStep: MENU.trackDob,
+  });
+  await tell(candidate, copy.TRACK_DOB_WRONG, { remaining: String(remaining) });
 }
 
 /**
@@ -819,21 +916,49 @@ async function ingestDocument(candidate: CandidateDoc, msg: MessageDoc): Promise
     expecting: candidate.currentStep === MENU.certificate ? 'certificate' : step?.document,
   });
 
-  let media;
-  try {
-    media = await downloadMedia(msg.mediaId, msg.filename);
-  } catch (err) {
-    logger.error({ err, mediaId: msg.mediaId, waId: candidate.waId }, 'media download failed');
+  // The bytes are already on disk: they were fetched and stored at the webhook,
+  // before it was acknowledged, and the ledger row says where they went
+  // (`ingestion/whatsapp.ts`). Downloading again here would be a second copy of
+  // a file we hold, fetched over a media URL that may no longer resolve.
+  //
+  // The capture is retried inline when the row has no source object — a message
+  // that arrived before this path existed, or one whose first attempt failed.
+  // Either way what comes back is a row, and a row without a `storageKey` is an
+  // attachment we could not get, which the candidate is told about and the
+  // reconciler keeps working on.
+  //
+  // `wamid` is optional on the type because outbound rows have none; every
+  // inbound row carries one, and the media id stands in rather than throwing if
+  // one ever does not — the ledger key only has to be unique, and it still is.
+  const wamid = msg.wamid ?? msg.mediaId;
+
+  let row = await ingestionForMessage(wamid, msg.mediaId);
+
+  if (!row?.storageKey) {
+    row = await captureAttachment({
+      waId: candidate.waId,
+      wamid,
+      mediaId: msg.mediaId,
+      mimeType: msg.mimeType,
+      filename: msg.filename,
+      receivedAt: msg.at,
+    });
+  }
+
+  if (!row.storageKey || !row.sha256) {
+    logger.error(
+      { mediaId: msg.mediaId, waId: candidate.waId, error: row.lastError },
+      'media unavailable; the ingestion row is retained for the reconciler',
+    );
     return { failed: true };
   }
 
-  const stored = await saveFile({
-    waId: candidate.waId,
-    docType,
-    buffer: media.buffer,
-    mimeType: media.mimeType,
-    originalFilename: msg.filename,
-  });
+  const stored = {
+    storageKey: row.storageKey,
+    sha256: row.sha256,
+    byteSize: row.byteSize ?? 0,
+  };
+  const media = { mimeType: row.mimeType ?? msg.mimeType ?? 'application/octet-stream' };
 
   const now = new Date();
   const requirement = requirementFor(docType);
@@ -1446,6 +1571,69 @@ async function reopenSession(candidate: CandidateDoc): Promise<void> {
 }
 
 /**
+ * Rebuilds the profile fields the documents on file already answered.
+ *
+ * Restarting clears the profile but keeps the documents (§22), and those two
+ * facts used to contradict each other. The CV stayed on file, so the CV step
+ * counted as satisfied and was skipped — but everything the CV had *told* us
+ * went out with the profile, so the candidate was walked through their name,
+ * their date of birth, their trade and the rest one question at a time. They had
+ * sent a CV and were then interviewed as if they had not, which is precisely
+ * what §5 exists to prevent.
+ *
+ * So the extractions are replayed here, from the OCR already stored against each
+ * current upload. Nothing is re-read and nothing is re-downloaded — the fields
+ * are on the upload, exactly as the worker left them. Oldest first, so the order
+ * matches the order they originally arrived in and later documents settle over
+ * earlier ones the same way they did the first time.
+ *
+ * What the candidate typed is not restored, and should not be: those are the
+ * answers they asked to start over on. Only what a document says comes back.
+ */
+async function reseedProfileFromDocuments(candidate: CandidateDoc): Promise<void> {
+  const uploads = await uploadsFor(candidate.waId);
+
+  for (const upload of uploads) {
+    // Superseded versions are history. The current upload in each slot is the
+    // one whose reading counts (§22).
+    if (upload.supersededAt) continue;
+
+    const fields = upload.ocr?.fields;
+    if (upload.ocr?.status !== 'done' || !fields?.length) continue;
+
+    const extractor = requirementFor(upload.docType)?.ocr;
+    if (!extractor || extractor === 'none') continue;
+
+    const patch =
+      extractor === 'resume'
+        ? extractFromCv(fields, candidate.waId).patch
+        : profileFromIdentityDocument(upload.docType, fields);
+
+    if (!Object.keys(patch).length) continue;
+
+    // Straight through `buildProfileWrite` so the restored fields carry the same
+    // provenance they had before — source 'cv' or 'document', unverified, with
+    // the extractor's confidence attached (§27).
+    const write = buildProfileWrite(candidate, patch, {
+      source: extractor === 'resume' ? 'cv' : 'document',
+      confidence: upload.ocr.confidence ?? null,
+    });
+
+    if (!Object.keys(write.set).length) continue;
+
+    await recordsFor(candidate.enquiry).updateOne(
+      { _id: candidate._id },
+      { $set: { ...write.set, updatedAt: new Date() }, $push: { history: { $each: write.changes } } },
+    );
+
+    logger.info(
+      { waId: candidate.waId, docType: upload.docType, fields: Object.keys(patch).length },
+      'profile reseeded from a document already on file',
+    );
+  }
+}
+
+/**
  * Starts the questions again from the top.
  *
  * Answers go; documents stay. §22 forbids destroying an upload without a
@@ -1483,6 +1671,11 @@ async function restartRegistration(candidate: CandidateDoc): Promise<void> {
     pendingMulti: undefined,
     sessionEndedAt: undefined,
   });
+
+  // The documents stayed, so what they already answered has to come back with
+  // them — otherwise the CV counts as sent, its step is skipped, and the
+  // candidate is asked their name and date of birth by hand (§1, §5).
+  await reseedProfileFromDocuments(candidate);
 
   logger.info({ waId: candidate.waId }, 'registration restarted at the candidate’s request');
 
@@ -1782,6 +1975,15 @@ export async function handleInboundMessage(payload: {
       return;
     }
     await lookUpApplication(candidate, text.trim());
+    return;
+  }
+
+  if (current === MENU.trackDob) {
+    if (!text.trim()) {
+      await tell(candidate, voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.TRACK_ASK_DOB);
+      return;
+    }
+    await verifyTrackingDob(candidate, text.trim());
     return;
   }
 

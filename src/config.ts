@@ -52,6 +52,47 @@ const schema = z.object({
   MOCK_WHATSAPP_MEDIA: bool.default('false'),
 
   OUTBOUND_RATE_PER_SECOND: z.coerce.number().int().positive().default(20),
+
+  /* ---------------------------------------------------------------- */
+  /* Ingestion (see `automation-integration.md` and `ingestion/`)       */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Submission attempts before an attachment stops being retried and becomes a
+   * review task. Counts attempts to get the bytes and attempts to get them
+   * extracted; both leave the same row unfinished and both are worth the same
+   * number of goes.
+   */
+  INGESTION_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+
+  /**
+   * How often the reconciler sweeps for attachments that are still received,
+   * stored, submitting or running.
+   *
+   * The spec asks for a periodic sweep rather than relying on the queue's own
+   * retries, because the failures worth catching are the ones where the queue
+   * never got the job at all.
+   */
+  INGESTION_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(5 * 60_000),
+
+  /**
+   * How long an attachment may sit unfinished before the reconciler treats it
+   * as stuck and submits it again under the same idempotency key.
+   *
+   * Comfortably longer than a slow extraction: VERIS_OCR_TIMEOUT_MS is 120s by
+   * default, and re-submitting something that is merely slow wastes an
+   * extraction and races the result that is already coming.
+   */
+  INGESTION_STALE_AFTER_MS: z.coerce.number().int().positive().default(15 * 60_000),
+
+  /**
+   * Queue age that constitutes an alert, in milliseconds.
+   *
+   * Age, not count — the spec is specific about this and it is the right call.
+   * Four attachments that arrived a minute ago are a working queue; one that
+   * arrived on Tuesday is an incident, and a count cannot tell them apart.
+   */
+  INGESTION_QUEUE_AGE_ALERT_MS: z.coerce.number().int().positive().default(30 * 60_000),
 });
 
 const parsed = schema.safeParse(process.env);

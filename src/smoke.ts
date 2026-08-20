@@ -57,6 +57,7 @@ import {
 import { acceptedChoices } from './conversation/render.js';
 import { looksLikeApplicationId, normaliseApplicationId } from './conversation/engine.js';
 import { OTHER_CHOICES, REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
+import * as copy from './conversation/copy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
 import { inspectUpload, resumeCompleteness } from './ocr/veris.js';
 import { offLimits } from './conversation/tradeQuestions.js';
@@ -1926,6 +1927,177 @@ await check('every document kind the flow can ask for has a section to live in',
   }
   for (const step of STEPS) {
     if (step.document) assert.ok(kinds.includes(step.document), step.id);
+  }
+});
+
+console.log('\nwhich documents are read, and which are only stored');
+
+await check('only the CV, the passport and the Aadhaar go to an extractor', () => {
+  // Three extractors exist and three kinds are routed to them. Everything else
+  // is filed and left alone — a PAN card, a driving licence, a loose
+  // certificate and a company's registration certificate all carry an
+  // identifier the bot has no question for, and running them through an
+  // extractor is an exposure with nothing on the other side of it.
+  const read = DOCUMENTS.filter((d) => d.ocr !== 'none').map((d) => d.id).sort();
+  assert.deepEqual(read, ['aadhaar', 'b2b_aadhaar_back', 'b2b_aadhaar_front', 'cv', 'passport']);
+
+  const stored = ['pan', 'driving_licence', 'certificate', 'company_registration'];
+  for (const id of stored) {
+    assert.equal(requirementFor(id)?.ocr, 'none', `${id} must not be sent to an extractor`);
+  }
+});
+
+await check('each kind goes to the extractor built for it, never a generic one', () => {
+  // Each of these is a different Veris endpoint with a different response
+  // shape, so this is a routing decision and not a hint. An Aadhaar read by
+  // anything but the Aadhaar endpoint comes back as page text with the number
+  // buried in it.
+  assert.equal(requirementFor('cv')?.ocr, 'resume');
+  assert.equal(requirementFor('passport')?.ocr, 'passport');
+  assert.equal(requirementFor('aadhaar')?.ocr, 'aadhaar');
+  // Both sides of the B2B card are Aadhaars and are read as Aadhaars (§2).
+  assert.equal(requirementFor('b2b_aadhaar_front')?.ocr, 'aadhaar');
+  assert.equal(requirementFor('b2b_aadhaar_back')?.ocr, 'aadhaar');
+
+  // There is deliberately no generic route left to fall back to.
+  for (const d of DOCUMENTS) {
+    assert.notEqual(d.ocr as string, 'document', `${d.id} still routes to the generic extractor`);
+  }
+});
+
+console.log('\nrestarting does not re-interview someone whose CV is on file');
+
+/** The OCR fields a read CV leaves behind on the upload. */
+const CV_FIELDS: OcrField[] = [
+  { key: 'name', value: 'Ravi Kumar', confidence: null },
+  { key: 'date_of_birth', value: '1994-03-11', confidence: null },
+  { key: 'current_occupation', value: 'Welder', confidence: null },
+];
+
+/**
+ * A candidate just after a restart: answers cleared, documents still on file
+ * (§22), and the opening menu already re-answered.
+ *
+ * The opening menu comes back first — clearing the profile clears the answer to
+ * it — and that part was never in question. `lookingForOverseasJob` is set here
+ * because the reported failure starts one tap later: whatever they choose, the
+ * flow behind it should be the flow they went through the first time.
+ */
+function restarted(): CandidateDoc {
+  const slots = initialSlots();
+  slots.cv = { status: 'ocr_done', askedCount: 1, updatedAt: new Date() };
+  return candidate({
+    stage: 'NEW',
+    profile: { lookingForOverseasJob: true },
+    fieldMeta: {},
+    documents: slots,
+  });
+}
+
+await check('a restart leaves the CV counting as sent', () => {
+  // §22 keeps the upload and §1 forbids asking for it again, so the CV step is
+  // satisfied even though every answer was just cleared. That is correct — and
+  // it is exactly what makes the next check load-bearing.
+  const c = restarted();
+  assert.equal(stepById('cv')!.satisfied(c), true);
+});
+
+await check('what the CV answered comes back with it, instead of being asked by hand', () => {
+  const c = restarted();
+
+  // The bug: the CV stays on file, so its step is skipped, but everything it
+  // told us went out with the profile. The candidate had sent a CV and was then
+  // interviewed as if they had not — name, date of birth and the rest, one
+  // question at a time.
+  assert.equal(nextStep(c)?.id, 'full_name');
+
+  // The fix, as `reseedProfileFromDocuments` performs it: replay the extraction
+  // already stored on the upload. Nothing is re-read and nothing is
+  // re-downloaded — the fields are on the upload, as the worker left them.
+  const write = buildProfileWrite(c, extractFromCv(CV_FIELDS, c.waId).patch, {
+    source: 'cv',
+    confidence: null,
+  });
+  assert.ok(Object.keys(write.set).length, 'the stored CV fields yielded nothing');
+
+  assert.equal(stepById('full_name')!.satisfied(c), true);
+  assert.notEqual(nextStep(c)?.id, 'full_name');
+  assert.equal(c.profile.fullName, 'Ravi Kumar');
+});
+
+await check('a restored field is marked as the document guess it is, not as verified', () => {
+  const c = restarted();
+  buildProfileWrite(c, extractFromCv(CV_FIELDS, c.waId).patch, { source: 'cv', confidence: null });
+
+  // §27 — nothing but a person marks a field verified, and a restart must not
+  // launder a CV reading into one.
+  assert.equal(c.fieldMeta.fullName?.source, 'cv');
+  assert.equal(c.fieldMeta.fullName?.verified, false);
+});
+
+await check('a restart does not restore what the candidate typed', () => {
+  // Only what a document says comes back. The typed answers are the ones they
+  // asked to start over on, so re-seeding must not resurrect them.
+  const c = restarted();
+  buildProfileWrite(c, extractFromCv(CV_FIELDS, c.waId).patch, { source: 'cv', confidence: null });
+
+  // `countryPreference` is a menu answer, never a CV field.
+  assert.equal(c.profile.countryPreference, undefined);
+});
+
+console.log('\nthe identity check in front of an application status');
+
+await check('a date of birth is compared on meaning, not on how it was typed', () => {
+  // The check has to accept the ways a person actually writes their own date of
+  // birth. Rejecting "25/05/1994" because the record says "1994-05-25" would
+  // spend a real attempt on a formatting difference, and three of those send a
+  // candidate to staff over nothing.
+  const onFile = normaliseDate('1994-05-25');
+  for (const typed of ['25/05/1994', '25-05-1994', '25.05.1994', '1994-05-25', '25 May 1994']) {
+    assert.equal(normaliseDate(typed), onFile, typed);
+  }
+});
+
+await check('a different date is a different date', () => {
+  // Day and month transposed is the commonest near miss, and it must not pass.
+  assert.notEqual(normaliseDate('05/25/1994'), normaliseDate('25/05/1994'));
+  assert.notEqual(normaliseDate('24/05/1994'), normaliseDate('25/05/1994'));
+  assert.notEqual(normaliseDate('25/05/1993'), normaliseDate('25/05/1994'));
+});
+
+await check('an unreadable date is not a wrong answer', () => {
+  // These cost no attempt — `verifyTrackingDob` returns on an unparsed date
+  // before the counter moves, because someone who has not understood the format
+  // is not someone guessing.
+  for (const junk of ['1994', 'May', 'dont remember', '', 'ADR-00042']) {
+    assert.equal(normaliseDate(junk), undefined, junk);
+  }
+});
+
+await check('three chances, then a person', () => {
+  // The ceiling is what stands between a short, sequential Application ID and
+  // somebody else's application status (§27).
+  assert.equal(TUNABLES.maxTrackingDobAttempts, 3);
+
+  // Counted the way the engine counts them: remaining = ceiling - attempts, and
+  // the hand-off is at zero, not below it.
+  const remainingAfter = (attempts: number): number =>
+    TUNABLES.maxTrackingDobAttempts - attempts;
+  assert.equal(remainingAfter(1), 2);
+  assert.equal(remainingAfter(2), 1);
+  assert.ok(remainingAfter(3) <= 0, 'the third wrong answer must exhaust the check');
+});
+
+await check('the status messages never quote the date of birth back', () => {
+  // §15/§16 — the check reads a personal identifier and must not echo it. The
+  // candidate is told their answer did not match, never what was on file.
+  for (const message of [copy.TRACK_DOB_WRONG, copy.TRACK_DOB_EXHAUSTED, copy.TRACK_ASK_DOB]) {
+    for (const text of Object.values(message)) {
+      assert.ok(
+        !/\d{4}-\d{2}-\d{2}/.test(text),
+        'a stored-format date must never appear in candidate-facing copy',
+      );
+    }
   }
 });
 

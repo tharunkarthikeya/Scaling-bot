@@ -37,11 +37,20 @@ export interface DocumentRequirement {
   /**
    * Which Veris extractor to run. 'none' skips OCR entirely.
    *
-   * Each is a different endpoint with a different response shape, so this is a
-   * routing decision and not a hint: an Aadhaar sent to the generic 'document'
-   * extractor comes back as page text with the number buried in it.
+   * Three kinds are read and no others: a CV through the resume extractor, a
+   * passport through the passport extractor, an Aadhaar through the Aadhaar
+   * extractor. Each is a different endpoint with a different response shape, so
+   * this is a routing decision and not a hint.
+   *
+   * Everything else is stored and left alone. A PAN card, a driving licence, a
+   * loose certificate and a company's registration certificate are all filed so
+   * a person can open them; none of them answers a question the flow asks, and
+   * running an identifier-bearing card through an extractor we have no use for
+   * is a §15/§16 exposure with nothing on the other side of it. There is
+   * deliberately no generic 'document' route — a kind either has an extractor
+   * built for it or it is not read at all.
    */
-  ocr: 'passport' | 'resume' | 'aadhaar' | 'document' | 'none';
+  ocr: 'passport' | 'resume' | 'aadhaar' | 'none';
   /**
    * Extracted values from this document are personal identifiers and must never
    * be echoed back to the candidate or shown unmasked in ordinary CRM screens
@@ -132,7 +141,10 @@ export const DOCUMENTS: DocumentRequirement[] = [
     },
     required: false,
     keywords: ['pan', 'pan card', 'PAN', 'पैन'],
-    ocr: 'document',
+    // Stored, not read. The PAN is collected on the job-application branch so
+    // it is on file for the person processing the application; nothing on it
+    // answers a question the flow asks, so it never goes to an extractor.
+    ocr: 'none',
     sensitive: true,
   },
   {
@@ -159,7 +171,9 @@ export const DOCUMENTS: DocumentRequirement[] = [
       'driving licence', 'driving license', 'driver licence', 'driver license',
       'dl', 'licence', 'license', 'ஓட்டுநர்', 'உரிமம்', 'ड्राइविंग', 'लाइसेंस',
     ],
-    ocr: 'document',
+    // Stored, not read — same reasoning as the PAN above. A recruiter opens it;
+    // the bot has no question it answers.
+    ocr: 'none',
     sensitive: true,
   },
   /**
@@ -249,7 +263,10 @@ export const DOCUMENTS: DocumentRequirement[] = [
       'certificate', 'certificat', 'degree', 'diploma', 'marksheet', 'qualification',
       'iti', 'சான்றிதழ்', 'सर्टिफिकेट', 'प्रमाणपत्र',
     ],
-    ocr: 'document',
+    // Stored, not read. This slot exists so an unprompted certificate has
+    // somewhere to go, and what lands in it is anything from a degree to a
+    // safety card — there is no extractor built for "whatever this is".
+    ocr: 'none',
   },
 ];
 
@@ -357,6 +374,16 @@ export const TUNABLES = {
    * ceiling because photographing a card in poor light takes a few goes.
    */
   maxAsksPerB2bDocument: 4,
+  /**
+   * Chances to get the date of birth right when tracking an application (§25).
+   *
+   * Three, then the conversation goes to a person. The check exists because an
+   * Application ID is short, sequential and read out over the phone — knowing
+   * one is not evidence of being the person it belongs to, and a status is
+   * something §27 says we owe only to them. Three is enough for a typo and a
+   * misremembered format, and few enough to be no use for guessing.
+   */
+  maxTrackingDobAttempts: 3,
   /** OCR field confidence below this routes the document to human review. */
   ocrReviewThreshold: 0.85,
   /** Flag a passport expiring within this many months for staff attention (§12). */

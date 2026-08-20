@@ -21,6 +21,8 @@ import {
 } from './db/models.js';
 import { queue } from './queue/index.js';
 import { markAsRead } from './whatsapp/client.js';
+import { captureAttachment } from './ingestion/whatsapp.js';
+import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -112,6 +114,28 @@ export async function buildServer(): Promise<FastifyInstance> {
         mimeType: msg.media?.mimeType,
         at: msg.timestamp,
       });
+
+      // The attachment, before the ack (`automation-integration.md`, steps 2–4).
+      //
+      // Acknowledging is what stops Meta retrying. Doing it while the only copy
+      // of the file is still a media id on Meta's servers means a worker that
+      // never runs takes the document with it and leaves nothing behind that
+      // knew there was one. So the bytes are fetched and written first, and a
+      // ledger row records the outcome either way.
+      //
+      // `captureAttachment` does not throw: a failed download is a recorded
+      // failure on a row the reconciler will pick up, not a reason to fail the
+      // whole batch back to Meta.
+      if (msg.media?.id) {
+        await captureAttachment({
+          waId: msg.waId,
+          wamid: msg.wamid,
+          mediaId: msg.media.id,
+          mimeType: msg.media.mimeType,
+          filename: msg.media.filename,
+          receivedAt: msg.timestamp,
+        });
+      }
 
       await queue.enqueue('inbound_message', {
         waId: msg.waId,

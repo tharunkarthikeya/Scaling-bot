@@ -2,6 +2,7 @@ import { ObjectId, type Collection } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../logger.js';
 import { DOCUMENTS, TUNABLES } from '../conversation/rules.js';
+import { ingestionRows } from '../ingestion/ledger.js';
 import type { Language } from '../conversation/language.js';
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -372,6 +373,28 @@ export interface CandidateDoc {
 
   humanHandoff?: { reason: string; at: Date; returnedAt?: Date };
 
+  /**
+   * An application lookup part-way through its identity check (§25, §27).
+   *
+   * Tracking asks for the Application ID and then for the date of birth on that
+   * record, and this is what sits between the two: which application was
+   * claimed, and how many times the date of birth has been got wrong. Both have
+   * to be on the record rather than in memory — the attempts are the whole
+   * point of the check, and a counter a candidate can reset by messaging again
+   * is not a counter.
+   *
+   * Cleared the moment the check passes, is abandoned, or runs out of attempts.
+   * It holds no personal data of its own: the id is one the candidate typed,
+   * and the date of birth is compared and discarded, never stored here.
+   */
+  tracking?: {
+    /** The Application ID they typed, once it matched a record on this number. */
+    candidateId: string;
+    /** Failed date-of-birth attempts so far. */
+    attempts: number;
+    startedAt: Date;
+  };
+
   /** Meta's 24-hour customer service window. Outside it, only templates may be sent. */
   windowExpiresAt?: Date;
   lastInboundAt?: Date;
@@ -484,7 +507,13 @@ export interface OcrField {
 /** What an extractor made of one upload. Unchanged by the regrouping. */
 export interface UploadOcr {
   status: 'queued' | 'running' | 'done' | 'failed' | 'skipped';
-  extractor?: 'passport' | 'resume' | 'document';
+  /**
+   * Which extractor read it. Only three are routed to now (`rules.ts`);
+   * 'document' appears on rows written before PAN cards, driving licences and
+   * loose certificates stopped being read, and stays in the type because those
+   * rows are still on file and §22 keeps them there.
+   */
+  extractor?: 'passport' | 'resume' | 'aadhaar' | 'document';
   startedAt?: Date;
   finishedAt?: Date;
   error?: string;
@@ -848,6 +877,32 @@ export async function ensureIndexes(): Promise<void> {
   await createIndexes(auditEvents(), [
     { key: { waId: 1, at: -1 }, name: 'waId_at' },
     { key: { event: 1, at: -1 }, name: 'event_at' },
+  ]);
+
+  // The ingestion ledger (`ingestion/ledger.ts`).
+  //
+  // The first index is the deduplication boundary `automation-integration.md`
+  // specifies, and it is the load-bearing one: an attachment is identified by
+  // where it came from and what it was attached to, never by the message alone.
+  // Unique, so a duplicate webhook delivery cannot open a second row for a file
+  // that is already halfway through extraction — and so the upsert in
+  // `openIngestion` has something to race against.
+  //
+  // No TTL here, unlike `processed_events`. That table exists to forget; this
+  // one is the record of what happened to a candidate's documents.
+  await createIndexes(ingestionRows(), [
+    {
+      key: { provider: 1, account: 1, messageId: 1, attachmentId: 1 },
+      unique: true,
+      name: 'attachment_unique',
+    },
+    { key: { idempotencyKey: 1 }, unique: true, name: 'idempotencyKey_unique' },
+    // What the reconciler sweeps: unfinished rows whose next attempt is due,
+    // oldest first.
+    { key: { status: 1, nextAttemptAt: 1 }, name: 'status_nextAttemptAt' },
+    // What the age alert reads, and what the review queue is ordered by.
+    { key: { status: 1, receivedAt: 1 }, name: 'status_receivedAt' },
+    { key: { waId: 1, receivedAt: -1 }, name: 'waId_receivedAt' },
   ]);
 
   logger.info('mongodb indexes ensured');

@@ -13,6 +13,7 @@
  */
 
 import type { CandidateProfile, OcrField } from '../db/models.js';
+import { requirementFor } from './rules.js';
 
 /** Field keys the resume extractor emits, as normalised in ocr/veris.ts. */
 type ResumeFields = Record<string, string[]>;
@@ -642,4 +643,97 @@ export function identityFromDocument(ocrFields: OcrField[]): {
     fatherName: pick('fathername', 'fathersname', 'guardianname'),
     number: pick('passportnumber', 'documentnumber', 'aadhaarnumber', 'aadharnumber', 'pannumber', 'number'),
   };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Identity documents → profile fields
+ *
+ * The passport and Aadhaar equivalents of `extractFromCv` above. They live here
+ * rather than in `ocr/veris.ts` because they are the same job — an extraction
+ * turned into the profile fields it fills — and because both the OCR worker and
+ * the engine need them. The engine replays them when a candidate restarts, to
+ * recover what their documents already answered.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * The document a slot actually holds.
+ *
+ * Slots are places in the conversation, not kinds of card: the B2B branch asks
+ * for the two sides of an Aadhaar separately, so `b2b_aadhaar_front` is an
+ * Aadhaar and has to be judged as one. Without this the markers it is judged
+ * against are looked up under a name they were never filed under, no opinion
+ * comes back, and a perfectly good card is neither confirmed nor questioned.
+ */
+export function identityKind(docType: string): string {
+  return requirementFor(docType)?.identityAs ?? docType;
+}
+
+/** YYMMDD, as written in the machine-readable zone. */
+export function parseMrzDate(value: string): Date | undefined {
+  const match = /^(\d{2})(\d{2})(\d{2})$/.exec(value.trim());
+  if (!match) return undefined;
+
+  const year = Number(match[1]);
+  // A two-digit year on an expiry date is always in the future or recent past.
+  const fullYear = year > 70 ? 1900 + year : 2000 + year;
+  const date = new Date(fullYear, Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+/**
+ * The expiry date, as MM/YYYY, from whichever field carried it.
+ *
+ * The MRZ gives `expiry_date` as YYMMDD; the printed page gives a written date
+ * under one of several names. §12 no longer asks the candidate for this — they
+ * send the passport instead — so this is the only thing that fills it.
+ */
+export function expiryFromPassport(fields: OcrField[]): string | undefined {
+  const named = fields.find((f) =>
+    /^(expiry_date|date_of_expiry|dateofexpiry|expiry|valid_until)$/i.test(
+      f.key.replace(/[\s-]/g, '_'),
+    ),
+  );
+  if (!named?.value) return undefined;
+
+  const mrz = parseMrzDate(named.value);
+  if (mrz) {
+    return `${String(mrz.getUTCMonth() + 1).padStart(2, '0')}/${mrz.getUTCFullYear()}`;
+  }
+
+  // A written date: take the month and year and leave the day, which is all
+  // §12 records and all `passportExpiryFlag` reads.
+  const written = /(\d{1,2})[\/.-](\d{4})/.exec(named.value);
+  if (written) return `${written[1]!.padStart(2, '0')}/${written[2]}`;
+
+  const parsed = new Date(named.value);
+  return Number.isNaN(parsed.getTime())
+    ? undefined
+    : `${String(parsed.getMonth() + 1).padStart(2, '0')}/${parsed.getFullYear()}`;
+}
+
+/** Maps an identity document's extraction onto the profile fields it can fill. */
+export function profileFromIdentityDocument(
+  docType: string,
+  fields: OcrField[],
+): Partial<CandidateProfile> {
+  const identity = identityFromDocument(fields);
+  const patch: Partial<CandidateProfile> = {};
+
+  if (identity.fatherName) patch.fatherName = identity.fatherName;
+  if (identity.dateOfBirth) patch.dateOfBirth = identity.dateOfBirth;
+
+  if (identityKind(docType) === 'passport') {
+    const expiry = expiryFromPassport(fields);
+    if (expiry) patch.passportExpiry = expiry;
+  }
+
+  // Stored so staff can verify them, masked everywhere else, and never read back
+  // to the candidate (§15, §16, §27).
+  if (identity.number) {
+    const kind = identityKind(docType);
+    if (kind === 'passport') patch.passportNumber = identity.number;
+    if (kind === 'aadhaar') patch.aadhaarNumber = identity.number;
+  }
+
+  return patch;
 }

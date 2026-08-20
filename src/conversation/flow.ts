@@ -338,13 +338,15 @@ export const GENERAL_JOB_CHOICES: Choice[] = [
 ];
 
 export const COUNTRY_CHOICES: Choice[] = [
-  // Labelled the way candidates say it. The id stays `gcc`: it is written into
-  // every record that has already answered this question, and renaming it would
-  // orphan their stored preference.
+  // Labelled the way candidates say it — "Gulf countries", never "GCC". The
+  // acronym is trade jargon; the people answering this question say Gulf, and
+  // every other language here already did. The id stays `gcc`: it is written
+  // into every record that has already answered this question, and renaming it
+  // would orphan their stored preference.
   {
     id: 'gcc',
     label: {
-      en: 'Gulf',
+      en: 'Gulf countries',
       ta: 'வளைகுடா நாடுகள்',
       hi: 'गल्फ देश',
       te: 'గల్ఫ్ దేశాలు',

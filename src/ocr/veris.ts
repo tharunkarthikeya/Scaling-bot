@@ -21,38 +21,50 @@ import {
   resumeAfterDocument,
   uploadStillCurrent,
 } from '../conversation/engine.js';
-import { extractFromCv, identityFromDocument } from '../conversation/cv.js';
+import {
+  extractFromCv,
+  identityFromDocument,
+  identityKind,
+  parseMrzDate,
+  profileFromIdentityDocument,
+} from '../conversation/cv.js';
 import { compareIdentity } from '../conversation/profile.js';
 import type { CandidateProfile } from '../db/models.js';
 
 /**
  * Veris (RecursAI) OCR client — https://veris.recursai.in
  *
- * Four extractors, each with its own route, form field, and response shape:
+ * Three extractors, each with its own route, form field, and response shape:
  *
  *   passport  POST /v1/passport/extract   field "image"  → MRZ + check digits
  *   resume    POST /v1/resume/extract     field "image"  → structured CV fields
  *   aadhaar   POST /v1/aadhaar/extract    field "image"  → named Aadhaar fields
- *   document  POST /v1/document/extract   field "file"   → per-page text + key fields
  *
- * Aadhaar cards used to go through the generic `document` extractor, which
- * returns page text and whatever key/value pairs it happened to find — so the
- * number, the name and the date of birth had to be picked back out of a bag of
- * strings, and a card that read cleanly could still yield nothing usable. The
- * dedicated endpoint returns them named, tells us which side of the card it
- * read, and validates the number's checksum.
+ * Three, and only three. Veris also publishes a generic `/v1/document/extract`
+ * that returns page text plus whatever key/value pairs it happened to find, and
+ * PAN cards, driving licences and loose certificates used to go through it. They
+ * no longer do: nothing on those answers a question the flow asks, so they are
+ * stored and left alone (`ocr: 'none'` in `rules.ts`), and the generic route is
+ * gone from this file so a checklist edit cannot quietly send an identifier
+ * back through it. A kind either has an extractor built for it, or it is not
+ * read.
+ *
+ * That specificity is the point. Aadhaar cards were themselves on the generic
+ * route once, and a card that read cleanly could still yield nothing usable —
+ * the number, the name and the date of birth had to be picked back out of a bag
+ * of strings. The dedicated endpoint returns them named, tells us which side of
+ * the card it read, and validates the number's checksum.
  *
  * OCR is slow (the configured timeout is 120s), so this only ever runs from a
  * queue worker — never inside the webhook request.
  */
 
-export type Extractor = 'passport' | 'resume' | 'aadhaar' | 'document';
+export type Extractor = 'passport' | 'resume' | 'aadhaar';
 
 const ROUTES: Record<Extractor, { path: string; field: string }> = {
   passport: { path: '/v1/passport/extract', field: 'image' },
   resume: { path: '/v1/resume/extract', field: 'image' },
   aadhaar: { path: '/v1/aadhaar/extract', field: 'image' },
-  document: { path: '/v1/document/extract', field: 'file' },
 };
 
 export interface OcrOutcome {
@@ -197,19 +209,6 @@ const DOCUMENT_MARKERS: Record<string, RegExp[]> = {
     /आयकर|स्थायी\s+लेखा/,
   ],
 };
-
-/**
- * The document a slot actually holds.
- *
- * Slots are places in the conversation, not kinds of card: the B2B branch asks
- * for the two sides of an Aadhaar separately, so `b2b_aadhaar_front` is an
- * Aadhaar and has to be judged as one. Without this the markers below are looked
- * up under a name they were never filed under, no opinion comes back, and a
- * perfectly good card is neither confirmed nor questioned.
- */
-function identityKind(docType: string): string {
-  return requirementFor(docType)?.identityAs ?? docType;
-}
 
 /** Every readable string the extractor gave us, as one haystack. */
 function textOf(fields: OcrField[]): string {
@@ -482,18 +481,6 @@ function passportCompleteness(
   };
 }
 
-/** YYMMDD, as written in the machine-readable zone. */
-function parseMrzDate(value: string): Date | undefined {
-  const match = /^(\d{2})(\d{2})(\d{2})$/.exec(value.trim());
-  if (!match) return undefined;
-
-  const year = Number(match[1]);
-  // A two-digit year on an expiry date is always in the future or recent past.
-  const fullYear = year > 70 ? 1900 + year : 2000 + year;
-  const date = new Date(fullYear, Number(match[2]) - 1, Number(match[3]));
-  return Number.isNaN(date.getTime()) ? undefined : date;
-}
-
 function normaliseResume(payload: any): OcrOutcome {
   const fields: OcrField[] = [];
 
@@ -708,93 +695,6 @@ function identifyFromMarkers(payload: unknown, fields: OcrField[]): string | und
   return undefined;
 }
 
-function normaliseDocument(payload: any, docType?: string): OcrOutcome {
-  const fields = fromExtractedFields(payload?.key_fields);
-  const reasons: string[] = [];
-
-  const pageScores = (payload?.pages ?? [])
-    .map((p: any) => p?.average_confidence)
-    .filter((c: unknown): c is number => typeof c === 'number');
-
-  // Worst page governs — one unreadable page is enough to need a human.
-  const overall = pageScores.length ? Math.min(...pageScores) : null;
-
-  for (const page of payload?.pages ?? []) {
-    if (page?.text) {
-      pushField(fields, `page_${page.page_number}_text`, page.text, page.average_confidence ?? null, {
-        page: page.page_number,
-        category: 'text',
-      });
-    }
-  }
-
-  if (overall !== null && overall < TUNABLES.ocrReviewThreshold) {
-    reasons.push(`weakest page confidence ${overall.toFixed(2)} below ${TUNABLES.ocrReviewThreshold}`);
-  }
-  if (overall === null) reasons.push('no page confidence reported');
-  if (!fields.length) reasons.push('nothing extracted');
-  for (const w of payload?.warnings ?? []) reasons.push(String(w));
-
-  // Aadhaar and PAN come through here. Unlike a CV, an unreadable one is worth
-  // asking for again — it is a single card photographed on a phone (§15, §16).
-  const problems: string[] = [];
-  let verdict: CompletenessVerdict = 'ok';
-
-  const isExpectedType = identifyDocument(docType, fields, overall);
-
-  if (!fields.length) {
-    problems.push('nothing could be read from the image');
-    verdict = 'empty';
-  } else if (isExpectedType === false) {
-    // Text came back clean and carries none of this document's markers. That is
-    // a different document, not a bad photo — say so, or they will keep
-    // resending the same wrong card.
-    problems.push('this does not look like the document that was asked for');
-    reasons.push(`expected ${docType}, none of its markers appear in the extracted text`);
-    verdict = 'wrong_document';
-  } else if (overall !== null && overall < TUNABLES.ocrReviewThreshold) {
-    problems.push('the text was too unclear to read');
-    verdict = 'unreadable';
-  }
-
-  const unreadablePages = (payload?.pages ?? [])
-    .filter(
-      (p: any) =>
-        typeof p?.average_confidence === 'number' &&
-        p.average_confidence < TUNABLES.ocrReviewThreshold,
-    )
-    .map((p: any) => p.page_number)
-    .filter((n: unknown): n is number => typeof n === 'number');
-
-  const totalPages = (payload?.pages ?? []).length;
-
-  return {
-    raw: payload,
-    fields,
-    confidence: overall,
-    needsReview: reasons.length > 0,
-    reviewReasons: reasons,
-    completeness: {
-      complete: problems.length === 0,
-      // Naming the bad pages beats a general "it was blurry" — but only when
-      // naming them tells the candidate something. On a one-page card, or when
-      // every page is bad, "resend page 1" is noise; "send a clearer photo" is
-      // the actionable instruction.
-      verdict:
-        problems.length === 0
-          ? 'ok'
-          : verdict === 'unreadable' &&
-              unreadablePages.length &&
-              totalPages > 1 &&
-              unreadablePages.length < totalPages
-            ? 'pages'
-            : verdict,
-      problems,
-      ...(unreadablePages.length ? { missingPages: unreadablePages } : {}),
-    },
-  };
-}
-
 /**
  * The Aadhaar endpoint's own response.
  *
@@ -903,7 +803,6 @@ const NORMALISERS: Record<Extractor, Normaliser> = {
   passport: normalisePassport,
   resume: normaliseResume,
   aadhaar: normaliseAadhaar,
-  document: normaliseDocument,
 };
 
 /* ------------------------------------------------------------------ */
@@ -1023,37 +922,6 @@ async function runIdentityComparison(candidateId: ObjectId, docType: string): Pr
 }
 
 /**
- * The expiry date, as MM/YYYY, from whichever field carried it.
- *
- * The MRZ gives `expiry_date` as YYMMDD; the printed page gives a written date
- * under one of several names. §12 no longer asks the candidate for this — they
- * send the passport instead — so this is the only thing that fills it.
- */
-function expiryFromPassport(fields: OcrField[]): string | undefined {
-  const named = fields.find((f) =>
-    /^(expiry_date|date_of_expiry|dateofexpiry|expiry|valid_until)$/i.test(
-      f.key.replace(/[\s-]/g, '_'),
-    ),
-  );
-  if (!named?.value) return undefined;
-
-  const mrz = parseMrzDate(named.value);
-  if (mrz) {
-    return `${String(mrz.getUTCMonth() + 1).padStart(2, '0')}/${mrz.getUTCFullYear()}`;
-  }
-
-  // A written date: take the month and year and leave the day, which is all
-  // §12 records and all `passportExpiryFlag` reads.
-  const written = /(\d{1,2})[\/.-](\d{4})/.exec(named.value);
-  if (written) return `${written[1]!.padStart(2, '0')}/${written[2]}`;
-
-  const parsed = new Date(named.value);
-  return Number.isNaN(parsed.getTime())
-    ? undefined
-    : `${String(parsed.getMonth() + 1).padStart(2, '0')}/${parsed.getFullYear()}`;
-}
-
-/**
  * Files the passport a candidate attached to their CV as a passport as well.
  *
  * People send one PDF: CV first, passport pages scanned in behind it. Read only
@@ -1110,34 +978,6 @@ async function filePassportFoundInCv(
     { waId, storageKey: cv.storageKey },
     'passport pages found inside a CV; filed and queued for the passport extractor',
   );
-}
-
-/** Maps an identity document's extraction onto the profile fields it can fill. */
-function profileFromIdentityDocument(
-  docType: string,
-  fields: Parameters<typeof identityFromDocument>[0],
-): Partial<CandidateProfile> {
-  const identity = identityFromDocument(fields);
-  const patch: Partial<CandidateProfile> = {};
-
-  if (identity.fatherName) patch.fatherName = identity.fatherName;
-  if (identity.dateOfBirth) patch.dateOfBirth = identity.dateOfBirth;
-
-  if (identityKind(docType) === 'passport') {
-    const expiry = expiryFromPassport(fields);
-    if (expiry) patch.passportExpiry = expiry;
-  }
-
-  // Stored so staff can verify them, masked everywhere else, and never read back
-  // to the candidate (§15, §16, §27).
-  if (identity.number) {
-    const kind = identityKind(docType);
-    if (kind === 'passport') patch.passportNumber = identity.number;
-    if (kind === 'aadhaar') patch.aadhaarNumber = identity.number;
-    if (kind === 'pan') patch.panNumber = identity.number;
-  }
-
-  return patch;
 }
 
 export async function processOcrJob(payload: {

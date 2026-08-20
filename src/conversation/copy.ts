@@ -492,6 +492,93 @@ export const TRACK_NOT_FOUND: Localised = {
   ml: 'ഈ നമ്പറിന് ഈ ഐഡിയിൽ ഒരു അപേക്ഷയും കണ്ടെത്താൻ പറ്റിയില്ല. ഐഡി ഒന്ന് കൂടെ ചെക്ക് ചെയ്യൂ, അല്ലെങ്കിൽ ഞങ്ങളുടെ സ്റ്റാഫിനോട് സംസാരിക്കാൻ താഴെ ടാപ്പ് ചെയ്യൂ.',
 };
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * The identity check in front of a status (§25, §27)
+ *
+ * An Application ID is short, sequential, and read out over the phone. Knowing
+ * one is not evidence of being the person it belongs to — and an application
+ * status, together with the fact that a record exists at all, is something §27
+ * says we owe to the candidate and to nobody else. So the id names the
+ * application, and the date of birth on it confirms who is asking.
+ *
+ * Deliberately a low wall, not a high one. The lookup is already restricted to
+ * the number that registered, so this guards against someone else holding the
+ * same handset rather than against a stranger — common enough on a shared phone
+ * to be worth a question, not serious enough to be worth an ordeal.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export const TRACK_ASK_DOB: Localised = {
+  en: 'Just to confirm it is you — please send the date of birth on this application.\nExample: 25/05/1994',
+  ta: 'இது நீங்கள்தான் என்பதை உறுதிப்படுத்த — இந்த விண்ணப்பத்தில் உள்ள பிறந்த தேதியை அனுப்பவும்.\nஎடுத்துக்காட்டு: 25/05/1994',
+  hi: 'बस पुष्टि के लिए — इस आवेदन में दी गई जन्म तिथि भेजिए।\nउदाहरण: 25/05/1994',
+  te: 'ఇది మీరేనని నిర్ధారించుకోవడానికి — ఈ దరఖాస్తులో ఉన్న పుట్టిన తేదీ పంపండి.\nఉదాహరణ: 25/05/1994',
+  ml: 'നിങ്ങൾ തന്നെയാണെന്ന് ഉറപ്പിക്കാൻ — ഈ അപേക്ഷയിലെ ജനന തീയതി അയക്കൂ.\nഉദാഹരണം: 25/05/1994',
+};
+
+/**
+ * A date we could not read at all.
+ *
+ * Not counted as a wrong answer, and that is why it has a message of its own:
+ * "1994" or "May" is someone who has not understood the format, and spending
+ * one of their three chances on a misunderstanding would be unfair. Only a date
+ * we could read, and that did not match, costs an attempt.
+ */
+export const TRACK_DOB_UNREADABLE: Localised = {
+  en: 'I could not read that as a date. Please send it as day/month/year.\nExample: 25/05/1994',
+  ta: 'அதைத் தேதியாகப் படிக்க முடியவில்லை. நாள்/மாதம்/ஆண்டு என அனுப்பவும்.\nஎடுத்துக்காட்டு: 25/05/1994',
+  hi: 'मैं उसे तारीख के रूप में नहीं पढ़ पाया। कृपया दिन/महीना/साल के रूप में भेजें।\nउदाहरण: 25/05/1994',
+  te: 'దాన్ని తేదీగా చదవలేకపోయాను. దయచేసి రోజు/నెల/సంవత్సరం లా పంపండి.\nఉదాహరణ: 25/05/1994',
+  ml: 'അത് ഒരു തീയതിയായി വായിക്കാൻ പറ്റിയില്ല. ദിവസം/മാസം/വർഷം എന്ന രീതിയിൽ അയക്കൂ.\nഉദാഹരണം: 25/05/1994',
+};
+
+/**
+ * Wrong, with the chances remaining.
+ *
+ * Saying how many are left is a usability call, not a leak: the lookup is
+ * already restricted to the number that registered, so the person reading this
+ * is almost always the candidate mistyping their own date of birth, and leaving
+ * them to guess how much rope they have is needless anxiety.
+ */
+export const TRACK_DOB_WRONG: Localised = {
+  en: 'That does not match the date of birth on this application. Please try once more — {{remaining}} left.',
+  ta: 'இந்த விண்ணப்பத்தில் உள்ள பிறந்த தேதியுடன் இது பொருந்தவில்லை. மீண்டும் முயற்சிக்கவும் — இன்னும் {{remaining}} வாய்ப்பு.',
+  hi: 'यह इस आवेदन की जन्म तिथि से मेल नहीं खाती। कृपया एक बार और कोशिश करें — {{remaining}} मौके बाकी।',
+  te: 'ఇది ఈ దరఖాస్తులోని పుట్టిన తేదీతో సరిపోలడం లేదు. మరోసారి ప్రయత్నించండి — ఇంకా {{remaining}} అవకాశాలు.',
+  ml: 'ഇത് ഈ അപേക്ഷയിലെ ജനന തീയതിയുമായി ചേരുന്നില്ല. ഒന്നു കൂടി ശ്രമിക്കൂ — ഇനി {{remaining}} തവണ.',
+};
+
+/**
+ * Out of chances.
+ *
+ * The status is not shown and no hint is given about what the right answer was.
+ * A person takes it from here — which is also the honest outcome for a
+ * candidate who genuinely cannot remember what was written on their own
+ * application.
+ */
+export const TRACK_DOB_EXHAUSTED: Localised = {
+  en: 'I cannot confirm this application over chat. Please contact our staff and they will check it for you.',
+  ta: 'இந்த விண்ணப்பத்தை இங்கு உறுதிப்படுத்த முடியவில்லை. எங்கள் ஊழியரைத் தொடர்பு கொள்ளுங்கள், அவர்கள் பார்த்துச் சொல்வார்கள்.',
+  hi: 'मैं इस आवेदन की पुष्टि चैट पर नहीं कर सकता। कृपया हमारे स्टाफ से संपर्क करें, वे आपके लिए देख लेंगे।',
+  te: 'ఈ దరఖాస్తును చాట్‌లో నిర్ధారించలేను. దయచేసి మా సిబ్బందిని సంప్రదించండి, వాళ్ళు చూసి చెప్తారు.',
+  ml: 'ഈ അപേക്ഷ ചാറ്റിൽ ഉറപ്പിക്കാൻ എനിക്ക് പറ്റില്ല. ഞങ്ങളുടെ സ്റ്റാഫിനെ ബന്ധപ്പെടൂ, അവർ നോക്കി പറയും.',
+};
+
+/**
+ * The application has no date of birth recorded, so there is nothing to check
+ * against.
+ *
+ * Handed to a person rather than waved through. A check that cannot be
+ * performed is not a check that passed, and §27 makes no exception for records
+ * that happen to be thin.
+ */
+export const TRACK_CANNOT_VERIFY: Localised = {
+  en: 'I need to check a detail before I can show this application, and it is not on file. Please contact our staff and they will help.',
+  ta: 'இந்த விண்ணப்பத்தைக் காட்டும் முன் ஒரு விவரத்தைச் சரிபார்க்க வேண்டும், அது பதிவில் இல்லை. எங்கள் ஊழியரைத் தொடர்பு கொள்ளுங்கள்.',
+  hi: 'यह आवेदन दिखाने से पहले मुझे एक जानकारी जाँचनी है, जो रिकॉर्ड में नहीं है। कृपया हमारे स्टाफ से संपर्क करें।',
+  te: 'ఈ దరఖాస్తు చూపించే ముందు ఒక వివరం చెక్ చేయాలి, అది రికార్డులో లేదు. దయచేసి మా సిబ్బందిని సంప్రదించండి.',
+  ml: 'ഈ അപേക്ഷ കാണിക്കും മുൻപ് ഒരു വിവരം പരിശോധിക്കണം, അത് രേഖയിൽ ഇല്ല. ഞങ്ങളുടെ സ്റ്റാഫിനെ ബന്ധപ്പെടൂ.',
+};
+
 /** They asked to track before finishing registration — there is no id yet. */
 export const TRACK_NOT_REGISTERED: Localised = {
   en: 'You do not have an Application ID yet — your registration is not finished. Shall we continue from where you stopped?',

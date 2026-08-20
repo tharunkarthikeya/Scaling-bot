@@ -151,6 +151,14 @@ export function validateCopy(): void {
   checkMessage('track: rejected', copy.TRACK_REJECTED);
   checkInteractive('track: not found', copy.TRACK_NOT_FOUND);
   checkInteractive('track: not registered', copy.TRACK_NOT_REGISTERED);
+  // The identity check in front of a status (§25, §27).
+  checkMessage('track: ask for date of birth', copy.TRACK_ASK_DOB);
+  checkMessage('track: date of birth unreadable', copy.TRACK_DOB_UNREADABLE);
+  checkMessage('track: date of birth wrong', copy.TRACK_DOB_WRONG);
+  // Both of these go out with the staff button attached, so they are held to
+  // the interactive body limit rather than the plain-message one.
+  checkInteractive('track: out of attempts', copy.TRACK_DOB_EXHAUSTED);
+  checkInteractive('track: nothing to verify against', copy.TRACK_CANNOT_VERIFY);
   checkInteractive('resume prompt', copy.RESUME_PROMPT);
   checkInteractive('reminder', copy.REMINDER);
   checkInteractive('expired option', copy.OPTION_EXPIRED);
