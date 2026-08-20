@@ -20,6 +20,7 @@ import { DOCUMENTS } from './conversation/rules.js';
 import {
   disambiguationChoices,
   fieldsToClear,
+  inSingaporeMalaysiaBranch,
   inferTradeAnswers,
   inferTradePacks,
   occupationForQuestions,
@@ -52,6 +53,7 @@ import {
   normaliseMonthYear,
   parseDaysAway,
   parseYears,
+  profileFromIdentityDocument,
   splitAddress,
 } from './conversation/cv.js';
 import { acceptedChoices } from './conversation/render.js';
@@ -400,11 +402,23 @@ await check('asks for consent before anything personal (§4)', () => {
 });
 
 await check('skips a question the CV already answered (§1, §5)', () => {
-  const withoutCv = candidate();
+  // `countryPreference` is set on both: it is now the first question after
+  // consent, because it decides whether the passport or the CV comes next.
+  // Gulf is the branch that leaves the rest of the flow as it was.
+  const withoutCv = candidate({
+    profile: { lookingForOverseasJob: true, countryPreference: 'gcc', countryStrictness: 'any' },
+  });
   withoutCv.documents.cv!.status = 'unavailable';
   assert.equal(nextStep(withoutCv)?.id, 'full_name');
 
-  const withName = candidate({ profile: { lookingForOverseasJob: true, fullName: 'Asha Kumari' } });
+  const withName = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      countryPreference: 'gcc',
+      countryStrictness: 'any',
+      fullName: 'Asha Kumari',
+    },
+  });
   withName.documents.cv!.status = 'ocr_done';
   assert.notEqual(nextStep(withName)?.id, 'full_name');
 });
@@ -1670,6 +1684,8 @@ await check('the flow never returns a question that has an answer', () => {
   const c = candidate({
     profile: {
       lookingForOverseasJob: true,
+      countryPreference: 'gcc',
+      countryStrictness: 'any',
       fullName: 'Ravi Kumar',
       currentCity: 'Chennai',
       currentState: 'Tamil Nadu',
@@ -1930,6 +1946,136 @@ await check('every document kind the flow can ask for has a section to live in',
   }
 });
 
+console.log('\nwhere they want to work decides how they are registered');
+
+/** A candidate who has consented and is standing at the country question. */
+function atCountryQuestion(preference?: string): CandidateDoc {
+  return candidate({
+    stage: 'NEW',
+    profile: {
+      lookingForOverseasJob: true,
+      ...(preference ? { countryPreference: preference, countryStrictness: 'any' } : {}),
+    },
+  });
+}
+
+await check('the country question comes before the CV, not two thirds of the way in', () => {
+  // It is the branch point now: it decides whether the passport or the CV is
+  // asked for next, and a branch point asked after the branch cannot branch.
+  const ids = STEPS.map((s) => s.id);
+  assert.ok(ids.indexOf('country_preference') < ids.indexOf('cv'), 'country must precede the CV');
+  assert.ok(
+    ids.indexOf('consent') < ids.indexOf('country_preference'),
+    'nothing is asked before consent',
+  );
+
+  // And it is what a freshly consented candidate is actually asked.
+  assert.equal(nextStep(atCountryQuestion())?.id, 'country_preference');
+});
+
+await check('Singapore or Malaysia asks for the passport before anything else', () => {
+  const sgmy = atCountryQuestion('singapore_malaysia');
+  assert.equal(inSingaporeMalaysiaBranch(sgmy), true);
+  assert.equal(nextStep(sgmy)?.id, 'sgmy_passport');
+
+  // Every other destination is unchanged: the CV still comes first.
+  for (const elsewhere of ['gcc', 'europe', 'russia_cis', 'any']) {
+    const c = atCountryQuestion(elsewhere);
+    assert.equal(inSingaporeMalaysiaBranch(c), false, elsewhere);
+    assert.equal(nextStep(c)?.id, 'cv', elsewhere);
+  }
+});
+
+await check('what the passport says is never asked as a question', () => {
+  // The whole point of reading the passport first (§1, §5). The extractor fills
+  // these, and a filled field is a question that is never put to the candidate.
+  const passportFields: OcrField[] = [
+    { key: 'name', value: 'RAVI KUMAR', confidence: 0.97 },
+    { key: 'date_of_birth', value: '1994-03-11', confidence: 0.97 },
+    { key: 'nationality', value: 'INDIAN', confidence: 0.97 },
+    { key: 'passport_number', value: 'Z1234567', confidence: 0.97 },
+  ];
+
+  const patch = profileFromIdentityDocument('passport', passportFields);
+  assert.equal(patch.fullName, 'RAVI KUMAR');
+  assert.equal(patch.dateOfBirth, '1994-03-11');
+  assert.equal(patch.nationality, 'INDIAN');
+  assert.equal(patch.passportNumber, 'Z1234567');
+
+  const sgmy = atCountryQuestion('singapore_malaysia');
+  sgmy.documents.passport = { status: 'ocr_done', askedCount: 1, updatedAt: new Date() };
+  Object.assign(sgmy.profile, patch);
+
+  assert.equal(stepById('full_name')!.satisfied(sgmy), true, 'name still being asked');
+  assert.equal(stepById('dob')!.satisfied(sgmy), true, 'date of birth still being asked');
+  // And the passport itself is not asked for a second time further down.
+  assert.equal(stepById('passport_status')!.satisfied(sgmy), true);
+});
+
+await check('a promised passport does not count as a passport', () => {
+  // `documentOnFile`, not `documentSatisfied`. Someone who said "I don't have
+  // one" has answered the upload question without giving us a document, and is
+  // exactly who "do you have a valid passport?" needs to be put to.
+  const sgmy = atCountryQuestion('singapore_malaysia');
+  for (const status of ['unavailable', 'promised'] as const) {
+    sgmy.documents.passport = { status, askedCount: 1, updatedAt: new Date() };
+    assert.equal(
+      stepById('passport_status')!.satisfied(sgmy),
+      false,
+      `"${status}" must not answer the passport question`,
+    );
+  }
+});
+
+await check('the job they want is asked before the job they do', () => {
+  // The order the branch exists to produce: desired job, then current job, then
+  // experience, then preference.
+  const ids = STEPS.map((s) => s.id);
+  assert.ok(
+    ids.indexOf('sgmy_desired_job') < ids.indexOf('main_trade'),
+    'the desired job must be asked before the current one',
+  );
+  assert.ok(
+    ids.indexOf('main_trade') < ids.indexOf('total_experience'),
+    'experience follows the current job',
+  );
+  assert.ok(
+    ids.indexOf('total_experience') < ids.indexOf('job_preference'),
+    'the preference comes last of the four',
+  );
+
+  // Only on this branch. Everyone else keeps §9's order, where what someone
+  // does is established before what they want.
+  assert.equal(stepById('sgmy_desired_job')!.when!(atCountryQuestion('gcc')), false);
+  assert.equal(
+    stepById('sgmy_desired_job')!.when!(atCountryQuestion('singapore_malaysia')),
+    true,
+  );
+});
+
+await check('answering it once answers it everywhere', () => {
+  // `sgmy_desired_job` and `desired_job` write the same field, so the general
+  // flow's version is satisfied by the branch's and never asked twice (§1).
+  const sgmy = atCountryQuestion('singapore_malaysia');
+  Object.assign(
+    sgmy.profile,
+    stepById('sgmy_desired_job')!.apply!({ value: 'Warehouse packer' }, sgmy),
+  );
+  assert.equal(sgmy.profile.desiredOccupation, 'Warehouse packer');
+  assert.equal(stepById('desired_job')!.satisfied(sgmy), true);
+});
+
+await check('a name read off a passport never overwrites one the candidate typed', () => {
+  // §17 flags a disagreement between documents for a person to settle; it
+  // cannot flag what has already been silently overwritten. Chat outranks OCR.
+  const c = candidate({ profile: { lookingForOverseasJob: true } });
+  buildProfileWrite(c, { fullName: 'Ravi Kumar' }, { source: 'chat' });
+  buildProfileWrite(c, { fullName: 'RAVI KUMAAR' }, { source: 'document', confidence: 0.6 });
+
+  assert.equal(c.profile.fullName, 'Ravi Kumar');
+  assert.equal(c.fieldMeta.fullName?.source, 'chat');
+});
+
 console.log('\nwhich documents are read, and which are only stored');
 
 await check('only the CV, the passport and the Aadhaar go to an extractor', () => {
@@ -1988,7 +2134,10 @@ function restarted(): CandidateDoc {
   slots.cv = { status: 'ocr_done', askedCount: 1, updatedAt: new Date() };
   return candidate({
     stage: 'NEW',
-    profile: { lookingForOverseasJob: true },
+    // Country is asked before the CV now, so a restart re-asks it along with
+    // everything else. Set here so this fixture is a candidate standing at the
+    // question the bug was actually about.
+    profile: { lookingForOverseasJob: true, countryPreference: 'gcc', countryStrictness: 'any' },
     fieldMeta: {},
     documents: slots,
   });
@@ -2041,8 +2190,10 @@ await check('a restart does not restore what the candidate typed', () => {
   const c = restarted();
   buildProfileWrite(c, extractFromCv(CV_FIELDS, c.waId).patch, { source: 'cv', confidence: null });
 
-  // `countryPreference` is a menu answer, never a CV field.
-  assert.equal(c.profile.countryPreference, undefined);
+  // `trainingWillingness` is a menu answer and nothing else — no extractor
+  // writes it — so if re-seeding ever started restoring typed answers, this is
+  // where it would show.
+  assert.equal(c.profile.trainingWillingness, undefined);
 });
 
 console.log('\nthe identity check in front of an application status');

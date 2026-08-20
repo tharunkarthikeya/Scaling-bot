@@ -627,6 +627,7 @@ export function identityFromDocument(ocrFields: OcrField[]): {
   dateOfBirth?: string;
   fatherName?: string;
   number?: string;
+  nationality?: string;
 } {
   const f = collect(ocrFields);
   const pick = (...keys: string[]): string | undefined => {
@@ -642,6 +643,7 @@ export function identityFromDocument(ocrFields: OcrField[]): {
     dateOfBirth: normaliseDate(pick('dateofbirth', 'dob', 'birthdate')),
     fatherName: pick('fathername', 'fathersname', 'guardianname'),
     number: pick('passportnumber', 'documentnumber', 'aadhaarnumber', 'aadharnumber', 'pannumber', 'number'),
+    nationality: pick('nationality', 'country', 'countrycode', 'issuingcountry'),
   };
 }
 
@@ -725,6 +727,18 @@ export function profileFromIdentityDocument(
   if (identityKind(docType) === 'passport') {
     const expiry = expiryFromPassport(fields);
     if (expiry) patch.passportExpiry = expiry;
+
+    // The legal name, from the document that defines it.
+    //
+    // Only from a passport, and only ever into an empty field —
+    // `buildProfileWrite` will not let a document overwrite what the candidate
+    // told us themselves, and §17 raises a flag for staff when the two differ
+    // rather than silently picking a winner. But when nothing has been typed
+    // yet, this is the best source there is: `full_name` literally asks for the
+    // name "as per passport", and on the Singapore / Malaysia route reading it
+    // here is what means the question is never asked at all (§1, §5).
+    if (identity.name) patch.fullName = identity.name;
+    if (identity.nationality) patch.nationality = identity.nationality;
   }
 
   // Stored so staff can verify them, masked everywhere else, and never read back

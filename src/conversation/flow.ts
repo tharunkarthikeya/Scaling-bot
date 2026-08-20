@@ -233,6 +233,28 @@ function documentSatisfied(c: CandidateDoc, docId: string): boolean {
 }
 
 /**
+ * Whether a file actually arrived for this slot.
+ *
+ * Stricter than `documentSatisfied`, and for a different question. That one
+ * asks "may the conversation move on?", which "I don't have one" and "I'll send
+ * it tomorrow" both answer. This one asks "do we hold the document?", which
+ * only a file answers — and it is what decides whether a question the document
+ * would settle may be skipped. Skipping one on the strength of a promise would
+ * leave the field empty and the question unasked.
+ */
+function documentOnFile(c: CandidateDoc, docId: string): boolean {
+  const slot = c.documents?.[docId];
+  if (!slot) return false;
+  return (
+    slot.status === 'received' ||
+    slot.status === 'ocr_queued' ||
+    slot.status === 'ocr_done' ||
+    slot.status === 'ocr_failed' ||
+    slot.status === 'needs_review'
+  );
+}
+
+/**
  * The same, minus the "we have asked enough times" escape.
  *
  * That escape is what let the B2B branch walk past an Aadhaar it had just told
@@ -498,28 +520,88 @@ const START_STEPS: FlowStep[] = [
     satisfied: (c) => c.consent?.given === true,
   },
 
+];
+
+/**
+ * Whether this candidate is on the Singapore / Malaysia route.
+ *
+ * The one branch that changes the shape of registration rather than adding a
+ * question to it: the passport is collected first and answers what a CV would
+ * otherwise be asked to answer, so the CV becomes optional and the questions
+ * the passport settles are never put to the candidate at all.
+ */
+export function inSingaporeMalaysiaBranch(c: CandidateDoc): boolean {
+  return p(c).countryPreference === 'singapore_malaysia';
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * The Singapore / Malaysia branch
+ *
+ * Placed before the CV rather than after it, which is the whole point. The
+ * passport carries the candidate's legal name, their date of birth, their
+ * nationality and the number and expiry staff need — all of it printed, none of
+ * it typed from memory. Reading it first means the name and date-of-birth
+ * questions are never asked, because §1 does not ask for what is already on
+ * file and §5 turns what a document says into profile fields.
+ *
+ * The CV still follows, and is still offered rather than required: someone who
+ * has one gives us their work history, and someone who does not is not held up
+ * over it.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+const SINGAPORE_MALAYSIA_STEPS: FlowStep[] = [
   {
-    id: 'cv',
-    section: 'cv',
+    id: 'sgmy_passport',
+    section: 'passport',
     prompt: {
-      en: 'Please send your CV as a PDF, Word file or clear photo.',
-      ta: 'உங்கள் CV-ஐ PDF, Word கோப்பு அல்லது தெளிவான புகைப்படமாக அனுப்பவும்.',
-      hi: 'कृपया अपना CV — PDF, Word फ़ाइल या साफ़ फ़ोटो — भेजें।',
-      te: 'దయచేసి మీ CV ని PDF, Word ఫైల్ లేదా క్లియర్ ఫోటోగా పంపండి.',
-      ml: 'നിങ്ങളുടെ CV, PDF ആയോ Word ഫയൽ ആയോ വ്യക്തമായ ഫോട്ടോ ആയോ അയക്കൂ.',
+      en: 'Please send a clear photo or scan of your passport — the page with your photo and details.\nWe will read your name and date of birth from it, so you will not have to type them.',
+      ta: 'உங்கள் பாஸ்போர்ட்டின் புகைப்படம் மற்றும் விவரங்கள் உள்ள பக்கத்தைத் தெளிவாக அனுப்பவும்.\nஉங்கள் பெயரையும் பிறந்த தேதியையும் அதிலிருந்தே எடுத்துக்கொள்வோம் — நீங்கள் தட்டச்சு செய்ய வேண்டாம்.',
+      hi: 'कृपया अपने पासपोर्ट की साफ़ फ़ोटो या स्कैन भेजें — जिस पेज पर आपकी फ़ोटो और जानकारी है।\nहम आपका नाम और जन्मतिथि उसी से पढ़ लेंगे, आपको टाइप नहीं करना पड़ेगा।',
+      te: 'దయచేసి మీ పాస్‌పోర్ట్ ఫోటో లేదా స్కాన్ పంపండి — మీ ఫోటో, వివరాలు ఉన్న పేజీ.\nమీ పేరు, పుట్టిన తేదీ మేము దాన్నుంచే తీసుకుంటాం, మీరు టైప్ చేయాల్సిన పని లేదు.',
+      ml: 'ദയവായി നിങ്ങളുടെ പാസ്‌പോർട്ടിന്റെ വ്യക്തമായ ഫോട്ടോ അയക്കൂ — ഫോട്ടോയും വിവരങ്ങളും ഉള്ള പേജ്.\nനിങ്ങളുടെ പേരും ജനന തീയതിയും അതിൽ നിന്ന് തന്നെ എടുത്തുകൊള്ളാം, ടൈപ്പ് ചെയ്യേണ്ട.',
     },
     input: 'document',
-    document: 'cv',
+    document: 'passport',
     allowMedia: true,
-    choices: [
-      { id: 'upload_cv', label: { en: 'Upload CV', ta: 'CV அனுப்ப', hi: 'CV भेजें', te: 'CV అప్‌లోడ్ చేయండి', ml: 'CV അപ്‌ലോഡ് ചെയ്യുക' } },
-      { id: 'no_cv', label: { en: "I don't have a CV", ta: 'CV இல்லை', hi: 'CV नहीं है', te: 'నా దగ్గర CV లేదు', ml: 'എന്റെ കയ്യിൽ CV ഇല്ല' } },
-    ],
-    hiddenChoices: DOCUMENT_FALLBACKS,
     allowStaff: true,
-    satisfied: (c) => documentSatisfied(c, 'cv'),
+    hiddenChoices: DOCUMENT_FALLBACKS,
+    when: inSingaporeMalaysiaBranch,
+    // The same slot `passport_document` fills, so a passport that arrived any
+    // other way — sent unprompted, or found inside a CV — already satisfies
+    // this and the candidate is not asked twice (§1).
+    satisfied: (c) => documentSatisfied(c, 'passport'),
   },
 ];
+
+/**
+ * The CV.
+ *
+ * Its own step rather than the tail of `START_STEPS`, because it is no longer
+ * always the first thing asked for. On the Singapore / Malaysia route the
+ * passport comes first and this follows it; everywhere else this is still where
+ * registration begins in earnest.
+ */
+const CV_STEP: FlowStep = {
+  id: 'cv',
+  section: 'cv',
+  prompt: {
+    en: 'Please send your CV as a PDF, Word file or clear photo.',
+    ta: 'உங்கள் CV-ஐ PDF, Word கோப்பு அல்லது தெளிவான புகைப்படமாக அனுப்பவும்.',
+    hi: 'कृपया अपना CV — PDF, Word फ़ाइल या साफ़ फ़ोटो — भेजें।',
+    te: 'దయచేసి మీ CV ని PDF, Word ఫైల్ లేదా క్లియర్ ఫోటోగా పంపండి.',
+    ml: 'നിങ്ങളുടെ CV, PDF ആയോ Word ഫയൽ ആയോ വ്യക്തമായ ഫോട്ടോ ആയോ അയക്കൂ.',
+  },
+  input: 'document',
+  document: 'cv',
+  allowMedia: true,
+  choices: [
+    { id: 'upload_cv', label: { en: 'Upload CV', ta: 'CV அனுப்ப', hi: 'CV भेजें', te: 'CV అప్‌లోడ్ చేయండి', ml: 'CV അപ്‌ലോഡ് ചെയ്യുക' } },
+    { id: 'no_cv', label: { en: "I don't have a CV", ta: 'CV இல்லை', hi: 'CV नहीं है', te: 'నా దగ్గర CV లేదు', ml: 'എന്റെ കയ്യിൽ CV ഇല്ല' } },
+  ],
+  hiddenChoices: DOCUMENT_FALLBACKS,
+  allowStaff: true,
+  satisfied: (c) => documentSatisfied(c, 'cv'),
+};
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * §2  The B2B branch
@@ -744,6 +826,39 @@ const PERSONAL_STEPS: FlowStep[] = [
 
 const EXPERIENCE_STEPS: FlowStep[] = [
   {
+    /**
+     * What they are looking for, asked before what they already do.
+     *
+     * Only on the Singapore / Malaysia route, and deliberately ahead of
+     * `main_trade`. Everywhere else the order is the other way round — §9 keeps
+     * what someone does and what they want strictly apart, and asking what they
+     * do first is what stops the two blurring into one another. Here the
+     * passport has already established who they are, so the conversation can
+     * open on the thing the candidate actually came to talk about.
+     *
+     * Free text, and stored as typed. `desiredOccupation` is the same field the
+     * general flow's `desired_job` writes, so answering here satisfies that one
+     * too and it is never asked a second time (§1).
+     */
+    id: 'sgmy_desired_job',
+    section: 'job_preference',
+    prompt: {
+      en: 'Which job are you looking for?',
+      ta: 'எந்த வேலையைத் தேடுகிறீர்கள்?',
+      hi: 'आप कौन सी नौकरी ढूंढ रहे हैं?',
+      te: 'మీరు ఏ ఉద్యోగం కోసం చూస్తున్నారు?',
+      ml: 'നിങ്ങൾ ഏത് ജോലിയാണ് അന്വേഷിക്കുന്നത്?',
+    },
+    input: 'text',
+    allowMedia: true,
+    acceptsOccupation: 'named',
+    when: inSingaporeMalaysiaBranch,
+    satisfied: (c) => has(p(c).desiredOccupation),
+    apply: (a) => ({ desiredOccupation: a.value }),
+    clears: ['desiredOccupation'],
+  },
+
+  {
     id: 'main_trade',
     section: 'experience',
     prompt: {
@@ -864,6 +979,102 @@ const EXPERIENCE_STEPS: FlowStep[] = [
 /* ─────────────────────────────────────────────────────────────────────────────
  * §9–§12  Preferences, availability, passport
  * ───────────────────────────────────────────────────────────────────────────*/
+
+/* -----------------------------------------------------------------------------
+ * Where they want to work (10)
+ *
+ * Asked immediately after consent, before anything else, because it is no
+ * longer only a preference — it is the branch point. A candidate heading for
+ * Singapore or Malaysia is registered differently from one heading for the
+ * Gulf: their passport comes first and answers the questions a CV would
+ * otherwise be asked to answer.
+ *
+ * That is why this sits here rather than in `PREFERENCE_STEPS` where it used to
+ * live. The order of `STEPS` is the order of the conversation, and a branch
+ * point that is asked two thirds of the way through cannot branch anything.
+ * ---------------------------------------------------------------------------*/
+
+const COUNTRY_STEPS: FlowStep[] = [
+  {
+    id: 'country_preference',
+    section: 'country',
+    prompt: {
+      en: 'Where would you like to work?',
+      ta: 'எங்கு வேலை செய்ய விரும்புகிறீர்கள்?',
+      hi: 'आप कहाँ काम करना चाहेंगे?',
+      te: 'మీరు ఎక్కడ పని చేయాలనుకుంటున్నారు?',
+      ml: 'നിങ്ങൾക്ക് എവിടെയാണ് ജോലി ചെയ്യണ്ടത്?',
+    },
+    input: 'choice',
+    choices: COUNTRY_CHOICES,
+    satisfied: (c) => has(p(c).countryPreference),
+    apply: (a) => ({ countryPreference: a.ids?.[0] }),
+    clears: ['countryPreference', 'selectedCountries', 'countryStrictness'],
+  },
+
+  {
+    id: 'selected_countries',
+    section: 'country',
+    prompt: {
+      en: 'Please type the countries you prefer.',
+      ta: 'நீங்கள் விரும்பும் நாடுகளைத் தட்டச்சு செய்யவும்.',
+      hi: 'कृपया अपने पसंदीदा देश टाइप करें।',
+      te: 'మీకు నచ్చిన దేశాల పేర్లు టైప్ చేయండి.',
+      ml: 'നിങ്ങൾക്ക് ഇഷ്ടമുള്ള രാജ്യങ്ങൾ ടൈപ്പ് ചെയ്യൂ.',
+    },
+    hint: {
+      en: 'Example: Romania, Serbia and Russia',
+      ta: 'எடுத்துக்காட்டு: ருமேனியா, செர்பியா மற்றும் ரஷ்யா',
+      hi: 'उदाहरण: रोमानिया, सर्बिया और रूस',
+      te: 'ఉదాహరణ: రొమేనియా, సెర్బియా మరియు రష్యా',
+      ml: 'ഉദാഹരണം: റൊമാനിയ, സെർബിയ, റഷ്യ',
+    },
+    input: 'text',
+    when: (c) => p(c).countryPreference === 'select',
+    satisfied: (c) => has(p(c).selectedCountries),
+    apply: (a) => ({
+      selectedCountries: (a.value ?? '')
+        .split(/[,;/]| and | மற்றும் | और /i)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    }),
+    clears: ['selectedCountries'],
+  },
+
+  {
+    id: 'country_strictness',
+    section: 'country',
+    prompt: {
+      en: 'Is this your strict preference?',
+      ta: 'இது கண்டிப்பான விருப்பமா?',
+      hi: 'क्या यह आपकी सख़्त पसंद है?',
+      te: 'ఇదే మీ పక్కా ఇష్టమా?',
+      ml: 'ഇത് നിങ്ങളുടെ ഉറച്ച തീരുമാനമാണോ?',
+    },
+    input: 'choice',
+    choices: [
+      {
+        id: 'strict',
+        label: { en: 'Only these countries', ta: 'இந்த நாடுகள் மட்டும்', hi: 'सिर्फ़ ये देश', te: 'ఈ దేశాలే కావాలి', ml: 'ഈ രാജ്യങ്ങൾ മാത്രം' },
+      },
+      {
+        id: 'prefer',
+        label: { en: 'Others okay too', ta: 'மற்ற நாடுகளும் சரி', hi: 'दूसरे देश भी चलेंगे', te: 'ఇతరాలు కూడా సరే', ml: 'മറ്റുള്ളവയും ആകാം' },
+      },
+      {
+        id: 'any',
+        label: { en: 'Any suitable country', ta: 'ஏதேனும் நாடு', hi: 'कोई भी देश', te: 'ఏ దేశమైనా సరిపోతుంది', ml: 'ഏത് രാജ്യവും മതി' },
+      },
+    ],
+    // Only meaningful once they have named somewhere specific. "Any country"
+    // already answers this question.
+    when: (c) => p(c).countryPreference !== 'any',
+    satisfied: (c) => has(p(c).countryStrictness),
+    apply: (a) => ({ countryStrictness: a.ids?.[0] }),
+    clears: ['countryStrictness'],
+  },
+
+];
 
 const PREFERENCE_STEPS: FlowStep[] = [
   {
@@ -1058,85 +1269,6 @@ const PREFERENCE_STEPS: FlowStep[] = [
   },
 
   {
-    id: 'country_preference',
-    section: 'country',
-    prompt: {
-      en: 'Where would you like to work?',
-      ta: 'எங்கு வேலை செய்ய விரும்புகிறீர்கள்?',
-      hi: 'आप कहाँ काम करना चाहेंगे?',
-      te: 'మీరు ఎక్కడ పని చేయాలనుకుంటున్నారు?',
-      ml: 'നിങ്ങൾക്ക് എവിടെയാണ് ജോലി ചെയ്യണ്ടത്?',
-    },
-    input: 'choice',
-    choices: COUNTRY_CHOICES,
-    satisfied: (c) => has(p(c).countryPreference),
-    apply: (a) => ({ countryPreference: a.ids?.[0] }),
-    clears: ['countryPreference', 'selectedCountries', 'countryStrictness'],
-  },
-
-  {
-    id: 'selected_countries',
-    section: 'country',
-    prompt: {
-      en: 'Please type the countries you prefer.',
-      ta: 'நீங்கள் விரும்பும் நாடுகளைத் தட்டச்சு செய்யவும்.',
-      hi: 'कृपया अपने पसंदीदा देश टाइप करें।',
-      te: 'మీకు నచ్చిన దేశాల పేర్లు టైప్ చేయండి.',
-      ml: 'നിങ്ങൾക്ക് ഇഷ്ടമുള്ള രാജ്യങ്ങൾ ടൈപ്പ് ചെയ്യൂ.',
-    },
-    hint: {
-      en: 'Example: Romania, Serbia and Russia',
-      ta: 'எடுத்துக்காட்டு: ருமேனியா, செர்பியா மற்றும் ரஷ்யா',
-      hi: 'उदाहरण: रोमानिया, सर्बिया और रूस',
-      te: 'ఉదాహరణ: రొమేనియా, సెర్బియా మరియు రష్యా',
-      ml: 'ഉദാഹരണം: റൊമാനിയ, സെർബിയ, റഷ്യ',
-    },
-    input: 'text',
-    when: (c) => p(c).countryPreference === 'select',
-    satisfied: (c) => has(p(c).selectedCountries),
-    apply: (a) => ({
-      selectedCountries: (a.value ?? '')
-        .split(/[,;/]| and | மற்றும் | और /i)
-        .map((s) => s.trim())
-        .filter(Boolean),
-    }),
-    clears: ['selectedCountries'],
-  },
-
-  {
-    id: 'country_strictness',
-    section: 'country',
-    prompt: {
-      en: 'Is this your strict preference?',
-      ta: 'இது கண்டிப்பான விருப்பமா?',
-      hi: 'क्या यह आपकी सख़्त पसंद है?',
-      te: 'ఇదే మీ పక్కా ఇష్టమా?',
-      ml: 'ഇത് നിങ്ങളുടെ ഉറച്ച തീരുമാനമാണോ?',
-    },
-    input: 'choice',
-    choices: [
-      {
-        id: 'strict',
-        label: { en: 'Only these countries', ta: 'இந்த நாடுகள் மட்டும்', hi: 'सिर्फ़ ये देश', te: 'ఈ దేశాలే కావాలి', ml: 'ഈ രാജ്യങ്ങൾ മാത്രം' },
-      },
-      {
-        id: 'prefer',
-        label: { en: 'Others okay too', ta: 'மற்ற நாடுகளும் சரி', hi: 'दूसरे देश भी चलेंगे', te: 'ఇతరాలు కూడా సరే', ml: 'മറ്റുള്ളവയും ആകാം' },
-      },
-      {
-        id: 'any',
-        label: { en: 'Any suitable country', ta: 'ஏதேனும் நாடு', hi: 'कोई भी देश', te: 'ఏ దేశమైనా సరిపోతుంది', ml: 'ഏത് രാജ്യവും മതി' },
-      },
-    ],
-    // Only meaningful once they have named somewhere specific. "Any country"
-    // already answers this question.
-    when: (c) => p(c).countryPreference !== 'any',
-    satisfied: (c) => has(p(c).countryStrictness),
-    apply: (a) => ({ countryStrictness: a.ids?.[0] }),
-    clears: ['countryStrictness'],
-  },
-
-  {
     id: 'availability',
     section: 'availability',
     prompt: {
@@ -1224,7 +1356,17 @@ const PASSPORT_STEPS: FlowStep[] = [
       { id: 'expired', label: { en: 'Expired', ta: 'காலாவதியானது', hi: 'एक्सपायर हो गया', te: 'గడువు ముగిసింది', ml: 'കാലാവധി കഴിഞ്ഞു' } },
       { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
     ],
-    satisfied: (c) => has(p(c).passportStatus),
+    // A passport already on file answers this. The Singapore / Malaysia branch
+    // collects the booklet before anything else, and asking someone who has
+    // just sent us their passport whether they have one is the kind of question
+    // §1 exists to prevent.
+    //
+    // `documentOnFile`, not `documentSatisfied`: a candidate who said they have
+    // no passport, or promised one for tomorrow, has satisfied the upload
+    // question without giving us a passport — and they are exactly the person
+    // this question needs to be put to, so that `no` or `applied` is recorded
+    // rather than nothing at all.
+    satisfied: (c) => has(p(c).passportStatus) || documentOnFile(c, 'passport'),
     apply: (a) => ({ passportStatus: a.ids?.[0] }),
     clears: [
       'passportStatus',
@@ -1714,6 +1856,11 @@ const ALL_TRADE_STEPS: FlowStep[] = [
 export const STEPS: FlowStep[] = [
   ...START_STEPS,
   ...B2B_STEPS,
+  // Where they want to work is asked immediately after consent, because it is
+  // the branch point: it decides whether the passport or the CV comes next.
+  ...COUNTRY_STEPS,
+  ...SINGAPORE_MALAYSIA_STEPS,
+  CV_STEP,
   ...PERSONAL_STEPS,
   ...EXPERIENCE_STEPS,
   ...ALL_TRADE_STEPS,

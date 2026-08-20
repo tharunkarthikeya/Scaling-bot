@@ -77,7 +77,14 @@ export function buildProfileWrite(
     if (!isEmpty(current) && !options.overwrite) {
       // Something a candidate said in chat outranks something read off a
       // document. They are the authority on their own details; OCR is a guess.
-      const incomingIsWeaker = options.source === 'cv' && currentSource === 'chat';
+      //
+      // Both document sources are covered, not just the CV. A passport now
+      // supplies the legal name (`profileFromIdentityDocument`), and a
+      // misread letter in an MRZ must not quietly replace a name the candidate
+      // typed out themselves — §17 exists to flag that disagreement for a
+      // person, and it cannot flag what has already been overwritten.
+      const incomingIsWeaker =
+        (options.source === 'cv' || options.source === 'document') && currentSource === 'chat';
       if (incomingIsWeaker) continue;
       if (JSON.stringify(current) === JSON.stringify(value)) continue;
     }
