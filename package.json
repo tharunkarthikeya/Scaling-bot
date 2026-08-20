@@ -18,6 +18,9 @@
     "harness": "tsx src/harness.ts",
     "doctor": "tsx src/doctor.ts",
     "verify:endpoint": "tsx src/verify-endpoint.ts",
+    "verify:crm": "tsx src/verify-crm.ts",
+    "e2e:crm": "tsx src/e2e-crm.ts",
+    "verify:taxonomy": "tsx src/verify-taxonomy.ts",
     "doctor:prod": "node dist/doctor.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

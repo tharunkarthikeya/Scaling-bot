@@ -44,9 +44,24 @@ export function makeTextPdf(lines: string[]): Buffer {
   return Buffer.from(pdf, 'latin1');
 }
 
-/** A plausible candidate CV, with the fields the resume extractor looks for. */
-export const SAMPLE_RESUME_PDF = (): Buffer =>
+/**
+ * A plausible candidate CV, with the fields the resume extractor looks for.
+ *
+ * `discriminator` puts one line of unique text in the file, and it exists
+ * because of a real failure it caused. Every mocked download used to return
+ * byte-identical bytes, so two test candidates who both "sent a CV" sent *the
+ * same file* — and the CRM, correctly, treats one résumé hash as one candidate
+ * and folded the second person into the first. That is the exact-duplicate rule
+ * working exactly as the mailbox pipeline needs it to; it was the fixture that
+ * was lying, by making two different people indistinguishable in a way two
+ * different people never are.
+ *
+ * The line is content, not metadata, so it survives extraction and changes the
+ * hash. Nothing reads it.
+ */
+export const SAMPLE_RESUME_PDF = (discriminator?: string): Buffer =>
   makeTextPdf([
+    ...(discriminator ? [`Reference: ${discriminator}`, ''] : []),
     'ASHA KUMARI',
     'Certified Welder (6G) - Structural and Pipe Welding',
     '',
@@ -103,11 +118,11 @@ export const SAMPLE_AADHAAR_PDF = (): Buffer =>
  * document we asked for" path. Picking on the filename lets the harness walk the
  * ordinary case as well — which is the case a real contact is in.
  */
-export function fixtureFor(filename?: string): Buffer {
+export function fixtureFor(filename?: string, discriminator?: string): Buffer {
   const name = filename ?? '';
   if (/aadhaa?r/i.test(name)) return SAMPLE_AADHAAR_PDF();
   if (/passport/i.test(name)) return SAMPLE_PASSPORT_PDF();
-  return SAMPLE_RESUME_PDF();
+  return SAMPLE_RESUME_PDF(discriminator);
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   labelFor,
   type FlowStep,
 } from './flow.js';
+import { taxonomyCountries, taxonomyJobs } from '../crm/taxonomy.js';
 import { documentSummary } from './checklist.js';
 import { DOCUMENTS } from './rules.js';
 import { translate } from './translate.js';
@@ -137,6 +138,85 @@ export async function choices(
  * ───────────────────────────────────────────────────────────────────────────*/
 
 /**
+ * The two questions whose options an admin controls, and where they come from.
+ *
+ * Both are lists of things the agency recruits for, both change when the
+ * business changes, and neither is something a candidate should have to wait
+ * for a deploy to be asked about. So the CRM holds them and this reads them —
+ * see `crm/taxonomy.ts` for why that read is synchronous and cached.
+ *
+ * Returns undefined when the CRM has told us nothing yet, and the step's own
+ * compiled-in list is used instead. That is not a degraded mode so much as the
+ * starting one: the CRM is seeded with exactly these rows.
+ */
+function crmChoicesFor(step: FlowStep): Choice[] | undefined {
+  if (step.id === 'sgmy_job_category') {
+    // One row is kept back for "Other", which is what makes a list of nine
+    // usable when the agency recruits for thirty: a candidate whose job is not
+    // shown types it, and the interpreter maps what they typed onto a job id.
+    const other = (step.choices ?? []).find((c) => c.id === 'other');
+    const jobs = taxonomyJobs(other ? 1 : 0);
+    if (!jobs) return undefined;
+
+    const compiled = new Map((step.choices ?? []).map((c) => [c.id, c]));
+    const rows = jobs.map((job) => {
+      // A job that exists in both keeps the label compiled in here, because
+      // that one is translated into all five languages and the CRM's title is
+      // English. A job an admin invented has only their words, which is still
+      // better than not offering it.
+      const known = compiled.get(job.id);
+      if (known) return known;
+      return {
+        id: job.id,
+        label: {
+          en: job.title,
+          ta: job.title,
+          hi: job.title,
+          te: job.title,
+          ml: job.title,
+        },
+      };
+    });
+
+    return other ? [...rows, other] : rows;
+  }
+
+  if (step.id === 'country_preference') {
+    const countries = taxonomyCountries();
+    if (!countries) return undefined;
+
+    const compiled = new Map((step.choices ?? []).map((c) => [c.id, c]));
+    // The region rows are not countries and do not come from the CRM's country
+    // table, but candidates still choose them — "the Gulf, anywhere" is a real
+    // answer. They are kept, after the named countries, exactly as before.
+    const regions = (step.choices ?? []).filter((c) => !countries.some((x) => x.id === c.id));
+
+    const named = countries.map((country) => {
+      const known = compiled.get(country.id);
+      if (known) return known;
+      return {
+        id: country.id,
+        label: {
+          en: country.name,
+          ta: country.name,
+          hi: country.name,
+          te: country.name,
+          ml: country.name,
+        },
+      };
+    });
+
+    // WhatsApp's ten-row ceiling again, and the regions have to survive it:
+    // dropping "Any country" would leave a candidate with no way to say the
+    // thing most of them mean.
+    const room = Math.max(1, 10 - regions.length);
+    return [...named.slice(0, room), ...regions];
+  }
+
+  return undefined;
+}
+
+/**
  * Every option a step accepts, in the order the candidate sees them.
  *
  * Order matters twice over: it is the order rendered, and it is what "2" means
@@ -156,7 +236,7 @@ export function choicesFor(step: FlowStep, candidate: CandidateDoc): Choice[] {
       }))
     : step.id === 'trade_disambiguation'
       ? disambiguationChoices(candidate)
-      : (step.choices ?? []);
+      : (crmChoicesFor(step) ?? step.choices ?? []);
 
   const options = [...base];
 

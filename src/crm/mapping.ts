@@ -45,12 +45,31 @@ export interface CrmProfile {
   passport_expiry?: string;
 }
 
+/**
+ * A CV travelling inside the submission.
+ *
+ * Base64, not a path. Our `storage_key` names a file on a disk the CRM cannot
+ * read, and a recruiter clicking "download résumé" would get a 404 for a
+ * document that exists.
+ *
+ * Sent only when it has to be. A candidate the CRM's policy requires a CV from
+ * cannot be created without one, and `POST /candidates/{id}/resume` needs an id
+ * that does not exist yet — so for them the file comes with the submission.
+ * Everyone else uploads afterwards, which keeps the common request small.
+ */
+export interface CrmResumePayload {
+  filename: string;
+  mime_type: string;
+  content_base64: string;
+}
+
 export interface CrmCandidatePayload {
   source: 'whatsapp';
   profile: CrmProfile;
   idempotency_key: string;
   /** What we believe. The CRM decides for itself and may disagree. */
   cv_required_claim?: boolean;
+  resume?: CrmResumePayload;
 }
 
 /**

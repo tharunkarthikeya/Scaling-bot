@@ -42,6 +42,7 @@ import {
   resolvePacks,
   type TradeQuestion,
 } from './trades.js';
+import { isTaxonomyCountry, taxonomyCountryName } from '../crm/taxonomy.js';
 import { MAX_GENERATED_QUESTIONS } from './tradeQuestions.js';
 import { passportExpiryFlag } from './profile.js';
 import {
@@ -589,7 +590,17 @@ const START_STEPS: FlowStep[] = [
  * the passport settles are never put to the candidate at all.
  */
 export function inSingaporeMalaysiaBranch(c: CandidateDoc): boolean {
-  return SINGAPORE_MALAYSIA.has(String(p(c).countryPreference));
+  const chosen = String(p(c).countryPreference);
+  // Any country the CRM lists takes this route, not only the two that were
+  // compiled in. The branch was never really about Singapore and Malaysia — it
+  // is the route for a candidate who named *one country*, which is the only
+  // case where `destination_country + job` can be resolved into a CV rule at
+  // all. A region cannot: "the Gulf" is six countries with six sets of rules.
+  //
+  // So an admin adding Kuwait gets Kuwait candidates asked for a passport
+  // first, then their job, then whatever the CV policy says for that pair —
+  // which is what makes adding a country in the CRM actually work.
+  return SINGAPORE_MALAYSIA.has(chosen) || isTaxonomyCountry(chosen);
 }
 
 /**
@@ -616,6 +627,10 @@ const SINGAPORE_MALAYSIA: ReadonlySet<string> = new Set([
  * record nobody established. Those candidates reach the CRM with no
  * destination, and the policy defaults to requiring a CV, which is the safe
  * direction.
+ *
+ * The two below are the ones compiled in. Anything else a candidate can choose
+ * came from the CRM's country list, and its name comes from there too — see
+ * `destinationCountryOf`.
  */
 const DESTINATION_COUNTRY_BY_ID: Record<string, string> = {
   singapore: 'Singapore',
@@ -623,7 +638,10 @@ const DESTINATION_COUNTRY_BY_ID: Record<string, string> = {
 };
 
 export function destinationCountryOf(c: CandidateDoc): string | undefined {
-  return DESTINATION_COUNTRY_BY_ID[String(p(c).countryPreference)];
+  const chosen = String(p(c).countryPreference);
+  // The CRM first: a country an admin added exists only there, and for the two
+  // that exist in both the answer is identical.
+  return taxonomyCountryName(chosen) ?? DESTINATION_COUNTRY_BY_ID[chosen];
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

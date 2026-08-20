@@ -19,6 +19,7 @@ import { chunkText } from './whatsapp/client.js';
 import { attributeInboundDocument, initialSlots, requirementFor } from './conversation/checklist.js';
 import { DOCUMENTS } from './conversation/rules.js';
 import {
+  destinationCountryOf,
   disambiguationChoices,
   fieldsToClear,
   inSingaporeMalaysiaBranch,
@@ -57,7 +58,7 @@ import {
   profileFromIdentityDocument,
   splitAddress,
 } from './conversation/cv.js';
-import { acceptedChoices } from './conversation/render.js';
+import { acceptedChoices, choicesFor } from './conversation/render.js';
 import {
   looksLikeApplicationId,
   normaliseApplicationId,
@@ -67,6 +68,7 @@ import {
 import { OTHER_CHOICES, REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
 import * as copy from './conversation/copy.js';
 import { toCrmPayload } from './crm/mapping.js';
+import { resetTaxonomy, setTaxonomyForTests } from './crm/taxonomy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
 import { inspectUpload, resumeCompleteness } from './ocr/veris.js';
 import { offLimits } from './conversation/tradeQuestions.js';
@@ -2609,6 +2611,136 @@ await check('the status messages never quote the date of birth back', () => {
       );
     }
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* Jobs and countries the CRM decides                                  */
+/*                                                                     */
+/* An admin adds "CNC Operator" in the CRM and a candidate is offered  */
+/* it. That is the whole feature, and these are the four ways it could */
+/* quietly not work: the list never arrives, it arrives and is ignored, */
+/* it arrives and overflows WhatsApp's ten-row ceiling, or it arrives   */
+/* and takes the candidate down a route where nobody asks the CV       */
+/* question.                                                           */
+/* ------------------------------------------------------------------ */
+
+console.log('\njobs and countries from the CRM');
+
+const jobStep = stepById('sgmy_job_category')!;
+const countryStep = stepById('country_preference')!;
+
+/** A candidate parked on the job question, which is all `choicesFor` reads. */
+function atJobStep(overrides: Partial<CandidateDoc['profile']> = {}): CandidateDoc {
+  return {
+    ...candidate(),
+    currentStep: 'sgmy_job_category',
+    profile: { countryPreference: 'malaysia', ...overrides },
+  } as CandidateDoc;
+}
+
+await check('with no CRM list, the compiled-in jobs are offered', () => {
+  resetTaxonomy();
+  const ids = acceptedChoices(jobStep, atJobStep()).map((c) => c.id);
+  assert.ok(ids.includes('general_worker'), 'the built-in list must survive a silent CRM');
+  assert.ok(ids.includes('other'));
+});
+
+await check('a job an admin added in the CRM is offered to candidates', () => {
+  setTaxonomyForTests({
+    jobs: [
+      { id: 'general_worker', title: 'General Worker', order: 1 },
+      { id: 'cnc_operator', title: 'CNC Operator', order: 2 },
+    ],
+  });
+  const offered = acceptedChoices(jobStep, atJobStep());
+  const cnc = offered.find((c) => c.id === 'cnc_operator');
+  assert.ok(cnc, 'a job added in the CRM never reached the candidate');
+  assert.equal(cnc!.label.en, 'CNC Operator');
+  // No translation exists for a job invented five minutes ago, so their own
+  // words stand in every language rather than the row vanishing for a Tamil
+  // speaker.
+  assert.equal(cnc!.label.ta, 'CNC Operator');
+  resetTaxonomy();
+});
+
+await check('a job that exists in both keeps its translated label', () => {
+  setTaxonomyForTests({ jobs: [{ id: 'general_worker', title: 'General Worker', order: 1 }] });
+  const row = acceptedChoices(jobStep, atJobStep()).find((c) => c.id === 'general_worker')!;
+  assert.notEqual(row.label.ta, 'General Worker', 'the Tamil label was replaced by English');
+  resetTaxonomy();
+});
+
+await check('the job list never exceeds what WhatsApp will accept', () => {
+  // Thirty jobs is a plausible agency. Eleven rows is a rejected message.
+  setTaxonomyForTests({
+    jobs: Array.from({ length: 30 }, (_, i) => ({
+      id: `job_${i}`,
+      title: `Job ${i}`,
+      order: i,
+    })),
+  });
+  const rendered = choicesFor(jobStep, atJobStep());
+  assert.ok(rendered.length <= 10, `a list of ${rendered.length} rows would be refused by Meta`);
+  // And "Other" survives the cut, because it is the way out for the twenty-one
+  // jobs that did not fit.
+  assert.ok(rendered.some((c) => c.id === 'other'), '"Other" was crowded out');
+  resetTaxonomy();
+});
+
+await check('a country an admin added is offered, and the regions survive', () => {
+  setTaxonomyForTests({
+    countries: [
+      { id: 'singapore', name: 'Singapore', order: 1 },
+      { id: 'malaysia', name: 'Malaysia', order: 2 },
+      { id: 'kuwait', name: 'Kuwait', order: 3 },
+    ],
+  });
+  const rendered = choicesFor(countryStep, atJobStep());
+  const ids = rendered.map((c) => c.id);
+  assert.ok(ids.includes('kuwait'), 'a country added in the CRM never reached the candidate');
+  assert.ok(ids.includes('gcc'), 'the regions are still real answers and must remain');
+  assert.ok(ids.includes('any'));
+  assert.ok(rendered.length <= 10, `a list of ${rendered.length} rows would be refused by Meta`);
+  resetTaxonomy();
+});
+
+await check('a candidate choosing a new country still gets a CV ruling', () => {
+  // The point of the branch, and the reason a new country joins it: the CV
+  // policy is keyed on destination *and* job, so a candidate who names one
+  // country has to be asked their job and has to have a country name to send.
+  setTaxonomyForTests({ countries: [{ id: 'kuwait', name: 'Kuwait', order: 1 }] });
+  const kuwait = { ...candidate(), profile: { countryPreference: 'kuwait' } } as CandidateDoc;
+
+  assert.ok(
+    inSingaporeMalaysiaBranch(kuwait),
+    'a candidate bound for Kuwait skipped the route where the job and the CV rule are settled',
+  );
+  assert.equal(destinationCountryOf(kuwait), 'Kuwait');
+  resetTaxonomy();
+});
+
+await check('a region is still not a destination country', () => {
+  // "The Gulf" is six countries with six sets of rules. Naming one of them for
+  // the candidate would put a fact on the record nobody established.
+  setTaxonomyForTests({ countries: [{ id: 'kuwait', name: 'Kuwait', order: 1 }] });
+  const gulf = { ...candidate(), profile: { countryPreference: 'gcc' } } as CandidateDoc;
+  assert.equal(destinationCountryOf(gulf), undefined);
+  assert.equal(inSingaporeMalaysiaBranch(gulf), false);
+  resetTaxonomy();
+});
+
+await check('the two compiled-in countries answer the same way with or without the CRM', () => {
+  const malaysia = { ...candidate(), profile: { countryPreference: 'malaysia' } } as CandidateDoc;
+
+  resetTaxonomy();
+  const before = destinationCountryOf(malaysia);
+
+  setTaxonomyForTests({ countries: [{ id: 'malaysia', name: 'Malaysia', order: 1 }] });
+  const after = destinationCountryOf(malaysia);
+
+  assert.equal(before, 'Malaysia');
+  assert.equal(after, 'Malaysia');
+  resetTaxonomy();
 });
 
 /* ------------------------------------------------------------------ */

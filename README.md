@@ -14,6 +14,9 @@ npm run dev          # needs MongoDB reachable at MONGODB_URI
 npm run inspect      # what the bot has collected, straight from the database
 npm run reset -- <number>            # what clearing that number would remove
 npm run reset -- <number> --delete   # clear it, so the next message starts fresh
+
+npm run verify:crm                   # is the CRM link live? read-only
+npm run verify:crm -- --submit       # ...and post one test candidate to prove it
 ```
 
 `reset` is for testing, and it is not the §23 deletion a candidate can ask for —
@@ -57,6 +60,17 @@ using `WHATSAPP_WEBHOOK_VERIFY_TOKEN`.
 `SHADOW_MODE=true` runs everything — parsing, storage, OCR, the model call — but
 never hands the reply to Meta. Use it to watch what the bot *would* say against
 real traffic before going live.
+
+`npm run verify:crm` answers the other question — whether a finished registration
+can actually reach the CRM. It checks that we are pointed at one, that it
+answers, that it accepts our service key *and refuses a request without one*, that
+`/policy/cv-required` replies, that the CRM can write a hiring decision back
+through `/api/*`, and how the candidates already in our database are syncing.
+The submission itself is opt-in (`-- --submit`) because it writes to the CRM's
+database: it posts one obviously-fake candidate twice under a fixed idempotency
+key, which is the check that matters — if the repeat creates a second record
+rather than returning the first, every queue retry of a real candidate becomes a
+duplicate person.
 
 ## Where things are
 

@@ -54,6 +54,8 @@ export class CrmError extends Error {
     readonly retryable: boolean,
     /** Set on a 422 caused by the CV policy — the one failure the bot can fix. */
     readonly needsCv = false,
+    /** The CRM's machine-readable reason, where it gave one (`CV_REQUIRED`, …). */
+    readonly code?: string,
   ) {
     super(message);
     this.name = 'CrmError';
@@ -87,18 +89,39 @@ function isRetryable(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-async function readError(res: Response): Promise<string> {
+/**
+ * What the CRM said went wrong.
+ *
+ * `code` is the part that matters. The bot has to tell one 422 from another —
+ * "you owe me a CV", which it can act on, from "this submission is malformed",
+ * which it cannot — and reading that out of a prose message means matching on
+ * wording that is free to change. The CRM sends a code for exactly this reason;
+ * the text is kept alongside it for the log.
+ */
+interface CrmFailure {
+  detail: string;
+  code?: string;
+}
+
+async function readError(res: Response): Promise<CrmFailure> {
   try {
     const body = await res.text();
     try {
-      const parsed = JSON.parse(body) as { detail?: unknown };
-      if (typeof parsed.detail === 'string') return parsed.detail;
+      const parsed = JSON.parse(body) as { detail?: unknown; code?: unknown };
+      const code = typeof parsed.code === 'string' ? parsed.code : undefined;
+      if (typeof parsed.detail === 'string') return { detail: parsed.detail, code };
+      // FastAPI's own errors nest the message under `detail`; ours do not, and
+      // both reach here.
+      if (parsed.detail !== undefined) {
+        return { detail: JSON.stringify(parsed.detail).slice(0, 300), code };
+      }
+      if (code) return { detail: body.slice(0, 300), code };
     } catch {
       // Not JSON. The raw body is still the best description we have.
     }
-    return body.slice(0, 300);
+    return { detail: body.slice(0, 300) };
   } catch {
-    return `${res.status}`;
+    return { detail: `${res.status}` };
   }
 }
 
@@ -161,14 +184,22 @@ export async function createCandidate(
 
   if (res.ok) return (await res.json()) as CrmCandidateResponse;
 
-  const detail = await readError(res);
+  const { detail, code } = await readError(res);
 
   // The one rejection the bot can act on: the policy wants a CV and this
-  // candidate has none. Flagged so the caller reopens the CV step instead of
-  // retrying an identical request that will be refused identically.
-  const needsCv = res.status === 422 && /resume|cv/i.test(detail);
+  // candidate has none. Flagged so the caller sends the file — or reopens the
+  // CV step to go and get one — instead of retrying an identical request that
+  // will be refused identically.
+  //
+  // The code is what decides it. The wording test that used to stand here also
+  // matched "resume is not valid base64", which is a bug in what we sent and
+  // not a question for the candidate; asking someone to re-upload a CV that
+  // arrived perfectly well would have looked like the bot losing their file.
+  // The regex survives only as a fallback for a CRM too old to send a code.
+  const needsCv =
+    code === 'CV_REQUIRED' || (!code && res.status === 422 && /resume|cv/i.test(detail));
 
-  throw new CrmError(detail, res.status, isRetryable(res.status), needsCv);
+  throw new CrmError(detail, res.status, isRetryable(res.status), needsCv, code);
 }
 
 /**
@@ -178,6 +209,12 @@ export async function createCandidate(
  * this file is filed against — and because a multipart body carrying both the
  * profile and the bytes would make the common case (no CV at all) the awkward
  * one.
+ *
+ * This is the normal path for a candidate whose CV was optional and who sent
+ * one anyway. It is not available for a candidate the policy *requires* a CV
+ * from: they cannot be created without the file, so there is no id to upload
+ * against, and the file travels inside the submission instead. See
+ * `syncCandidateToCrm`.
  */
 export async function uploadResume(params: {
   candidateId: string;
@@ -207,8 +244,8 @@ export async function uploadResume(params: {
   }
 
   if (!res.ok) {
-    const detail = await readError(res);
-    throw new CrmError(detail, res.status, isRetryable(res.status));
+    const { detail, code } = await readError(res);
+    throw new CrmError(detail, res.status, isRetryable(res.status), false, code);
   }
 }
 

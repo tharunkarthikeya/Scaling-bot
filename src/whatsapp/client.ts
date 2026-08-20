@@ -268,7 +268,10 @@ export interface MediaPayload {
 export async function downloadMedia(mediaId: string, filename?: string): Promise<MediaPayload> {
   if (config.MOCK_WHATSAPP_MEDIA) {
     const { fixtureFor } = await import('../testing/fixtures.js');
-    const pdf = fixtureFor(filename);
+    // The media id makes each mocked CV a distinct file. Two candidates sending
+    // the identical résumé is not a thing that happens, and a CRM that
+    // deduplicates on the résumé hash is right to treat it as one person.
+    const pdf = fixtureFor(filename, mediaId);
     logger.warn({ mediaId, filename }, 'MOCK_WHATSAPP_MEDIA is on — serving a canned file');
     return { buffer: pdf, mimeType: 'application/pdf', byteSize: pdf.byteLength };
   }

@@ -29,7 +29,13 @@ import {
   type CandidateDoc,
 } from '../db/models.js';
 import { readFile } from '../storage/index.js';
-import { CrmError, createCandidate, crmConfigured, uploadResume } from './client.js';
+import {
+  CrmError,
+  createCandidate,
+  crmConfigured,
+  uploadResume,
+  type CrmCandidateResponse,
+} from './client.js';
 import { toCrmPayload } from './mapping.js';
 
 /**
@@ -66,13 +72,50 @@ export async function syncCandidateToCrm(payload: { waId: string }): Promise<voi
   const attempts = (candidate.crmSync?.attempts ?? 0) + 1;
   const body = toCrmPayload(candidate, config.WHATSAPP_PHONE_NUMBER_ID);
 
-  try {
-    const result = await createCandidate(body);
+  // Read once, before anything is sent. Both paths below may need it, and a
+  // file read is not worth doing twice inside a retry.
+  const cv = await readCv(candidate);
 
-    // The CV, where there is one. After creation because the CRM assigns the id
-    // the file is filed against — and the bytes go over, never a path into our
-    // own storage, which the CRM has no way to read.
-    await uploadCvIfPresent(candidate, result.candidate_id);
+  try {
+    let result: CrmCandidateResponse;
+    let sentWithSubmission = false;
+    try {
+      result = await createCandidate(body);
+    } catch (err) {
+      // "You owe me a CV" — and we are holding one.
+      //
+      // This is the §12 recovery in its short form. The CRM's policy disagreed
+      // with our cached answer, but the candidate did send a CV, so nothing has
+      // to be asked of them: the same submission goes again under the same
+      // idempotency key with the file inside it. Reopening the CV step here
+      // would ask someone to upload a document they already uploaded, which
+      // looks exactly like the bot having lost it.
+      if (err instanceof CrmError && err.needsCv && cv) {
+        logger.info(
+          { waId },
+          'crm requires a cv we already hold; resubmitting with the file attached',
+        );
+        result = await createCandidate({
+          ...body,
+          resume: {
+            filename: cv.filename,
+            mime_type: cv.mimeType,
+            content_base64: cv.buffer.toString('base64'),
+          },
+        });
+        sentWithSubmission = true;
+      } else {
+        throw err;
+      }
+    }
+
+    // The CV, where there is one and it did not already travel with the
+    // submission. After creation because the CRM assigns the id the file is
+    // filed against — and the bytes go over, never a path into our own storage,
+    // which the CRM has no way to read.
+    if (cv && !sentWithSubmission) {
+      await uploadCv(candidate, result.candidate_id, cv);
+    }
 
     await setSync(candidate, {
       status: 'synced',
@@ -138,35 +181,77 @@ export async function syncCandidateToCrm(payload: { waId: string }): Promise<voi
   }
 }
 
+/** A CV read off our own disk, ready to go over the wire as bytes. */
+interface CvFile {
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+}
+
 /**
- * Sends the candidate's CV, if they sent us one.
+ * The candidate's CV, if they sent us one and we can still read it.
+ *
+ * Returns undefined rather than throwing when there is no file, and also when
+ * there is one we cannot open: a missing byte on our side must not hold up a
+ * profile the CRM can use. Whether that absence then matters is the CRM's
+ * decision, not ours — it will refuse the submission if its policy requires a
+ * CV, and that refusal is handled where it lands.
+ */
+async function readCv(candidate: CandidateDoc): Promise<CvFile | undefined> {
+  const slot = candidate.documents?.cv;
+  if (!slot?.documentId) return undefined;
+
+  try {
+    const record = await documentsFor(candidate.waId, 'cv');
+    const upload = record?.cv?.uploads?.find((u) => u.uploadId.equals(slot.documentId as ObjectId));
+    if (!upload) return undefined;
+
+    return {
+      buffer: await readFile(upload.storageKey),
+      filename: upload.originalFilename ?? 'cv.pdf',
+      mimeType: upload.mimeType,
+    };
+  } catch (err) {
+    logger.error(
+      { err, waId: candidate.waId },
+      'the candidate’s cv could not be read; submitting without it',
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Hands a CV to a candidate the CRM already has.
  *
  * Best-effort on purpose. A candidate who reached the CRM without their file
  * attached is a far better outcome than one who did not reach it at all, so a
  * failure here is logged and the sync still counts as done — the profile is
  * what the CRM's workflow runs on, and the file can be re-sent.
+ *
+ * A 409 is the ordinary case rather than a fault: the CRM keeps the résumé it
+ * already holds, because a recruiter may have read it and formed a view, and
+ * swapping the document under that view is not a refresh.
  */
-async function uploadCvIfPresent(candidate: CandidateDoc, crmCandidateId: string): Promise<void> {
-  const slot = candidate.documents?.cv;
-  if (!slot?.documentId) return;
-
+async function uploadCv(
+  candidate: CandidateDoc,
+  crmCandidateId: string,
+  cv: CvFile,
+): Promise<void> {
   try {
-    const record = await documentsFor(candidate.waId, 'cv');
-    const upload = record?.cv?.uploads?.find((u) => u.uploadId.equals(slot.documentId as ObjectId));
-    if (!upload) return;
-
-    const buffer = await readFile(upload.storageKey);
     await uploadResume({
       candidateId: crmCandidateId,
-      buffer,
-      filename: upload.originalFilename ?? 'cv.pdf',
-      mimeType: upload.mimeType,
+      buffer: cv.buffer,
+      filename: cv.filename,
+      mimeType: cv.mimeType,
     });
     logger.info({ waId: candidate.waId, crmId: crmCandidateId }, 'cv uploaded to crm');
   } catch (err) {
-    logger.error(
+    const conflict = err instanceof CrmError && err.status === 409;
+    logger[conflict ? 'info' : 'error'](
       { err, waId: candidate.waId, crmId: crmCandidateId },
-      'cv upload to crm failed; the candidate is synced without it',
+      conflict
+        ? 'the crm already holds a cv for this candidate; keeping theirs'
+        : 'cv upload to crm failed; the candidate is synced without it',
     );
   }
 }

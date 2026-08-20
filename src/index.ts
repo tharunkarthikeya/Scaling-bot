@@ -8,6 +8,7 @@ import { endIdleSessions, handleInboundMessage, sendReminders } from './conversa
 import { validateCopy } from './conversation/validate.js';
 import { processOcrJob } from './ocr/veris.js';
 import { reconcileCrmSync, syncCandidateToCrm } from './crm/sync.js';
+import { TAXONOMY_REFRESH_MS, refreshTaxonomy } from './crm/taxonomy.js';
 import { buildServer } from './server.js';
 
 /** How often the §21 reminder sweep runs. The claim is per candidate, not per sweep. */
@@ -82,6 +83,19 @@ async function main(): Promise<void> {
   }, config.INGESTION_RECONCILE_INTERVAL_MS);
   crmSweep.unref();
 
+  // The jobs and countries an admin can edit in the CRM.
+  //
+  // Fetched here rather than when a candidate asks, because the question that
+  // needs it is answered synchronously mid-conversation — see
+  // `crm/taxonomy.ts`. Once before the server takes traffic, so the first
+  // candidate of a deploy is offered the current list rather than the compiled
+  // one, and then on a timer.
+  await refreshTaxonomy();
+  const taxonomySweep = setInterval(() => {
+    void refreshTaxonomy().catch((err) => logger.error({ err }, 'crm taxonomy refresh failed'));
+  }, TAXONOMY_REFRESH_MS);
+  taxonomySweep.unref();
+
   logger.info(
     {
       port: config.PORT,
@@ -99,6 +113,7 @@ async function main(): Promise<void> {
     clearInterval(reminderSweep);
     clearInterval(sessionSweep);
     clearInterval(crmSweep);
+    clearInterval(taxonomySweep);
     try {
       await app.close();
       await queue.close();
