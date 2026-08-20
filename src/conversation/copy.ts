@@ -760,6 +760,23 @@ export const UPDATE_SAVED: Localised = {
   ml: 'അപ്ഡേറ്റ് ചെയ്തു ✅ നിങ്ങളുടെ പ്രൊഫൈൽ മാറ്റിയിട്ടുണ്ട്.',
 };
 
+/**
+ * One more thing after "you're registered".
+ *
+ * Sent when the CRM's CV policy turns out to require a CV the bot did not ask
+ * for. Deliberately does not apologise or explain the disagreement between two
+ * systems — that is our problem, not theirs — and deliberately does not say the
+ * registration is incomplete, because it is not: they answered everything they
+ * were asked and they keep their Application ID.
+ */
+export const CRM_NEEDS_CV: Localised = {
+  en: 'One more thing — for this role we do need your CV after all. Please send it as a PDF, Word file or clear photo.',
+  ta: 'இன்னும் ஒன்று — இந்த வேலைக்கு உங்கள் CV தேவைப்படுகிறது. PDF, Word கோப்பு அல்லது தெளிவான புகைப்படமாக அனுப்பவும்.',
+  hi: 'एक और बात — इस काम के लिए आपका CV चाहिए होगा। कृपया इसे PDF, Word फ़ाइल या साफ़ फ़ोटो के रूप में भेजें।',
+  te: 'ఇంకొక్క విషయం — ఈ ఉద్యోగానికి మీ CV కావాలి. దయచేసి PDF, Word ఫైల్ లేదా క్లియర్ ఫోటోగా పంపండి.',
+  ml: 'ഒരു കാര്യം കൂടി — ഈ ജോലിക്ക് നിങ്ങളുടെ CV വേണം. PDF ആയോ Word ഫയൽ ആയോ വ്യക്തമായ ഫോട്ടോ ആയോ അയക്കൂ.',
+};
+
 export const SEND_CERTIFICATE: Localised = {
   en: 'Please send the certificate as a PDF or a clear photo.',
   ta: 'சான்றிதழை PDF ஆகவோ தெளிவான புகைப்படமாகவோ அனுப்பவும்.',

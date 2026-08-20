@@ -93,6 +93,37 @@ const schema = z.object({
    * arrived on Tuesday is an incident, and a count cannot tell them apart.
    */
   INGESTION_QUEUE_AGE_ALERT_MS: z.coerce.number().int().positive().default(30 * 60_000),
+
+  /* ---------------------------------------------------------------- */
+  /* Recruitment CRM                                                   */
+  /*                                                                   */
+  /* The CRM is the system of record for candidates once registration  */
+  /* completes. This bot collects and submits; it never writes to the  */
+  /* CRM's database, and it does not reimplement anything the CRM      */
+  /* already does — assignment, evaluation, SLA all stay there.        */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Base URL of the CRM API. Omit to run without a CRM: registrations still
+   * complete and are still stored here, and their sync status stays `pending`
+   * rather than failing, so nothing is lost if the CRM is added later.
+   */
+  CRM_API_URL: z.string().min(1).optional(),
+  /**
+   * The bot's service credential, sent as `X-Service-Key`.
+   *
+   * Not a staff login. The CRM authenticates this separately from its
+   * recruiters precisely so that neither credential can stand in for the other.
+   */
+  CRM_API_KEY: z.string().min(1).optional(),
+  CRM_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  /**
+   * Submission attempts before a candidate is left for an operator.
+   *
+   * The record is never discarded — a failed sync means the CRM did not get it
+   * yet, not that the registration did not happen.
+   */
+  CRM_SYNC_MAX_ATTEMPTS: z.coerce.number().int().positive().default(6),
 });
 
 const parsed = schema.safeParse(process.env);

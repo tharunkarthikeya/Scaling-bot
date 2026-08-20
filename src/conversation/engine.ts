@@ -57,9 +57,11 @@ import { saveFile } from '../storage/index.js';
 import { queue, withCandidateLock } from '../queue/index.js';
 import * as copy from './copy.js';
 import {
+  destinationCountryOf,
   fieldsToClear,
   inferTradeAnswers,
   inferTradePacks,
+  inSingaporeMalaysiaBranch,
   occupationForQuestions,
   nextStep,
   stepById,
@@ -71,6 +73,7 @@ import {
 import { attributeInboundDocument, initialSlots, withMissingSlots } from './checklist.js';
 import { extractFromCv, normaliseDate, profileFromIdentityDocument } from './cv.js';
 import { captureAttachment, ingestionForMessage } from '../ingestion/whatsapp.js';
+import { fetchCvRequirement } from '../crm/client.js';
 import { detectGlobalCommand, interpret } from './interpret.js';
 import { answerFromFaq } from './faq.js';
 import { explainWrongDocument, respondInContext } from './respond.js';
@@ -368,6 +371,54 @@ function statusForStage(stage: ConversationStage, current: CandidateStatus): Can
  * storing it is what stops a model call on every turn for the rest of the
  * registration.
  */
+/**
+ * Asks the CRM whether this candidate needs a CV, once it can be asked.
+ *
+ * The CRM owns the rule, so the bot does not decide it — it fetches the answer
+ * and caches it. Both halves of the key have to be known first: a rule about
+ * "Malaysia + general worker" cannot be evaluated for someone who has named a
+ * destination and not yet a job, which is exactly why the job question was moved
+ * ahead of the CV.
+ *
+ * Runs once per candidate. `cvRequired` being set is the marker, and the answer
+ * is cleared whenever the job category changes (see the step's `clears`), so a
+ * candidate who changes their mind gets a fresh ruling rather than the old one.
+ *
+ * An unreachable CRM leaves it unset, and an unset requirement asks for the CV.
+ * That is the safe direction: the cost of asking for a CV that was not needed is
+ * one extra question, and the cost of skipping one that was is a submission the
+ * CRM refuses after the conversation has ended.
+ */
+async function ensureCvRequirement(candidate: CandidateDoc): Promise<void> {
+  if (!inSingaporeMalaysiaBranch(candidate)) return;
+  if (typeof candidate.profile?.cvRequired === 'boolean') return;
+
+  const destinationCountry = destinationCountryOf(candidate);
+  const jobCategory = candidate.profile?.jobCategory;
+  if (!destinationCountry || !jobCategory) return;
+
+  const answer = await fetchCvRequirement({ destinationCountry, jobCategory });
+  if (!answer) return;
+
+  await recordsFor(candidate.enquiry).updateOne(
+    { _id: candidate._id },
+    {
+      $set: {
+        'profile.cvRequired': answer.cv_required,
+        'profile.cvPolicyVersion': answer.policy_version,
+        updatedAt: new Date(),
+      },
+    },
+  );
+  candidate.profile.cvRequired = answer.cv_required;
+  candidate.profile.cvPolicyVersion = answer.policy_version;
+
+  logger.info(
+    { waId: candidate.waId, destinationCountry, jobCategory, cvRequired: answer.cv_required },
+    'cv requirement resolved from the crm policy',
+  );
+}
+
 async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
   const profile = candidate.profile ?? {};
 
@@ -414,6 +465,11 @@ async function askNextQuestion(
   candidate: CandidateDoc,
   lead?: Localised | string,
 ): Promise<void> {
+  // Whether this candidate needs a CV, before working out what to ask next —
+  // because on the Singapore / Malaysia route the answer decides whether the
+  // next question *is* the CV.
+  await ensureCvRequirement(candidate);
+
   // If what the candidate has already told us decides their trade questions,
   // record that now so the disambiguation question is skipped entirely (§8).
   const packs = inferTradePacks(candidate);
@@ -631,6 +687,55 @@ async function completeRegistration(candidate: CandidateDoc): Promise<void> {
   await closeOpenSession(candidate.waId);
   await recordAudit({ waId: candidate.waId, candidateId, event: 'registration_completed' });
   logger.info({ waId: candidate.waId, candidateId }, 'registration completed');
+
+  // Hand the finished profile to the CRM, which owns everything that happens to
+  // a candidate from here — assignment, evaluation, the SLA clock, the hiring
+  // decision. None of that is reimplemented on this side.
+  //
+  // Queued rather than awaited, and queued *after* the candidate has been told
+  // they are registered. They are: the record is written and complete. Whether
+  // the CRM happens to be reachable this second is our problem to retry, not a
+  // reason to leave someone staring at a half-finished conversation — and a
+  // failed delivery keeps the candidate on file either way.
+  //
+  // B2B enquiries are not candidates and have no place in a candidate CRM (§2).
+  if (candidate.enquiry !== 'b2b') {
+    await setState(candidate, { crmSync: { status: 'pending', attempts: 0 } });
+    await queue.enqueue('crm_sync', { waId: candidate.waId });
+  }
+}
+
+/**
+ * Asks again for a CV the CRM's policy turned out to require.
+ *
+ * Reached only from the sync worker, when a submission comes back refused
+ * because the destination and job need a CV this candidate has not sent. That
+ * is not a failure worth retrying — the request was well formed and the
+ * candidate is incomplete — so the honest response is to go back and ask.
+ *
+ * The registration is *not* reopened. `stage` stays REGISTRATION_COMPLETED and
+ * the candidate keeps their Application ID: they answered every question and
+ * were told they were done, and taking that back because two services disagreed
+ * about a document would be the bot's mistake charged to them. Only the CV slot
+ * is reopened, and the same submission goes out again — under the same
+ * idempotency key — once the file lands.
+ */
+export async function reopenCvForCrm(candidate: CandidateDoc): Promise<void> {
+  const slots = withMissingSlots(candidate.documents);
+  const cv = slots.cv!;
+
+  slots.cv = { ...cv, status: 'pending', note: undefined, updatedAt: new Date() };
+
+  await setState(candidate, {
+    documents: slots,
+    currentStep: 'cv',
+    // The cached policy said no CV was needed and the CRM disagrees. Correcting
+    // it here stops the next question being computed from the same wrong answer.
+    profile: { ...candidate.profile, cvRequired: true },
+  });
+
+  await tell(candidate, copy.CRM_NEEDS_CV);
+  logger.info({ waId: candidate.waId }, 'cv re-requested at the crm policy’s insistence');
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1642,6 +1747,59 @@ async function reseedProfileFromDocuments(candidate: CandidateDoc): Promise<void
  * never to ask for something already on file. Consent and language survive for
  * the same reason: both are recorded facts, not answers being revised.
  */
+/**
+ * Fields a restart removes from the record entirely.
+ *
+ * `$unset` rather than setting them to undefined: through `$set` that writes a
+ * BSON null, which still satisfies `$exists`, and a stale `currentStep` left
+ * behind would have the candidate's next tap answer the question they just
+ * abandoned.
+ */
+export const RESTART_UNSETS = ['currentStep', 'pendingMulti', 'sessionEndedAt'] as const;
+
+/**
+ * Everything a half-finished registration accumulates, and what happens to it
+ * when the candidate asks to start over.
+ *
+ * Written as a named list rather than inline, because the failure mode is a
+ * field added to `CandidateDoc` months from now that nobody remembers to clear
+ * — and a restart that silently keeps one stale answer is exactly the bug this
+ * whole path exists to avoid. The smoke tests assert against this contract, so
+ * a new session field has to be classified deliberately rather than forgotten.
+ *
+ * What goes:
+ *
+ *   profile      every answer they typed or tapped
+ *   fieldMeta    the provenance of those answers
+ *   editQueue    steps an UPDATE had queued
+ *   unclearCount the run of replies we could not read
+ *   currentStep  the question that was open (via RESTART_UNSETS)
+ *   pendingMulti a half-made multi-select
+ *
+ * What stays, and why each one:
+ *
+ *   documents    §22 forbids destroying an upload the candidate has not
+ *                withdrawn. Re-answering the questions is not withdrawing a
+ *                passport.
+ *   consent      a recorded fact, not an answer being revised (§4).
+ *   language     the same. They chose it; starting over does not unchoose it.
+ *   history      the audit trail of what changed and when. Deleting it would
+ *                erase the record of the very session being restarted.
+ *   reminderSentAt  §21 allows exactly one reminder per candidate, and a
+ *                restart does not make someone a different candidate. Clearing
+ *                it would let a candidate earn a fresh reminder by restarting.
+ */
+export function restartPatch(candidate: CandidateDoc): Partial<CandidateDoc> {
+  return {
+    stage: 'NEW',
+    status: BOT_OWNED.has(candidate.status) ? 'new_enquiry' : candidate.status,
+    profile: {},
+    fieldMeta: {},
+    editQueue: [],
+    unclearCount: 0,
+  };
+}
+
 async function restartRegistration(candidate: CandidateDoc): Promise<void> {
   await recordAudit({
     waId: candidate.waId,
@@ -1650,21 +1808,12 @@ async function restartRegistration(candidate: CandidateDoc): Promise<void> {
     detail: 'candidate chose to start from the beginning',
   });
 
-  // $unset, not $set to {} — a stale `currentStep` left behind would have the
-  // next tap answer the question they abandoned.
   await recordsFor(candidate.enquiry).updateOne(
     { _id: candidate._id },
-    { $unset: { currentStep: '', pendingMulti: '', sessionEndedAt: '' } },
+    { $unset: Object.fromEntries(RESTART_UNSETS.map((key) => [key, ''])) },
   );
 
-  await setState(candidate, {
-    stage: 'NEW',
-    status: BOT_OWNED.has(candidate.status) ? 'new_enquiry' : candidate.status,
-    profile: {},
-    fieldMeta: {},
-    editQueue: [],
-    unclearCount: 0,
-  });
+  await setState(candidate, restartPatch(candidate));
 
   Object.assign(candidate, {
     currentStep: undefined,

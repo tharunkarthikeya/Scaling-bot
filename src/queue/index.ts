@@ -8,6 +8,13 @@ export interface JobPayloads {
   inbound_message: { waId: string; wamid: string; profileName?: string };
   /** One stored document ready for OCR. OCR is slow (120s), so it never runs inline. */
   ocr: { waId: string; docType: string; uploadId: string };
+  /**
+   * One finished registration to hand to the CRM.
+   *
+   * Queued after the candidate has confirmed, so a CRM outage delays a delivery
+   * rather than failing a registration the candidate has already completed.
+   */
+  crm_sync: { waId: string };
 }
 
 export type JobName = keyof JobPayloads;

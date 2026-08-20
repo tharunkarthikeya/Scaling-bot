@@ -377,15 +377,73 @@ export const COUNTRY_CHOICES: Choice[] = [
   },
   { id: 'europe', label: { en: 'Europe', ta: 'ஐரோப்பா', hi: 'यूरोप', te: 'యూరప్', ml: 'യൂറോപ്പ്' } },
   { id: 'russia_cis', label: { en: 'Russia / CIS', ta: 'ரஷ்யா/CIS', hi: 'रूस/CIS', te: 'రష్యా / CIS', ml: 'റഷ്യ / CIS' } },
+  // Two options, not one.
+  //
+  // These used to share a row as "Singapore / Malaysia", which was fine while
+  // the answer was only a preference. It stopped being fine the moment the CRM
+  // began deciding the CV requirement from the destination: a rule about
+  // Malaysia cannot be applied to someone whose record says "Singapore or
+  // Malaysia, we never asked". `destination_country` has to name one country,
+  // so the question has to offer one country.
   {
-    id: 'singapore_malaysia',
-    label: { en: 'Singapore / Malaysia', ta: 'சிங்கப்பூர்/மலேசியா', hi: 'सिंगापुर/मलेशिया', te: 'సింగపూర్ / మలేషియా', ml: 'സിംഗപ്പൂർ / മലേഷ്യ' },
+    id: 'singapore',
+    label: { en: 'Singapore', ta: 'சிங்கப்பூர்', hi: 'सिंगापुर', te: 'సింగపూర్', ml: 'സിംഗപ്പൂർ' },
+  },
+  {
+    id: 'malaysia',
+    label: { en: 'Malaysia', ta: 'மலேசியா', hi: 'मलेशिया', te: 'మలేషియా', ml: 'മലേഷ്യ' },
   },
   { id: 'any', label: { en: 'Any country', ta: 'எந்த நாடும்', hi: 'कोई भी देश', te: 'ఏ దేశమైనా', ml: 'ഏത് രാജ്യവും' } },
   {
     id: 'select',
     label: { en: 'Select countries', ta: 'நாடுகளைத் தேர்வு', hi: 'देश चुनें', te: 'దేశాలు ఎంచుకోండి', ml: 'രാജ്യങ്ങൾ തിരഞ്ഞെടുക്കൂ' },
   },
+];
+
+/**
+ * The job a candidate is looking for, as a controlled value.
+ *
+ * Ten rows, which is WhatsApp's ceiling for a list. The ids deliberately match
+ * `TRADE_CHOICES` wherever the same job appears in both, so one vocabulary
+ * covers what a candidate *does* and what they *want* — and so the CRM does not
+ * have to hold two mappings.
+ *
+ * This exists because the CV requirement is decided from it. A free-text answer
+ * cannot be matched against a policy table: "General Worker", "general labour"
+ * and "helper" are one job written three ways, and every unmatched spelling
+ * falls through to the default, which looks like a working rule and is not one.
+ * The candidate's own words are still kept — see `desiredOccupation` — they are
+ * just not what the decision reads.
+ */
+export const JOB_CATEGORY_CHOICES: Choice[] = [
+  {
+    id: 'general_worker',
+    label: { en: 'General worker / Helper', ta: 'பொது வேலை/ஹெல்பர்', hi: 'जनरल वर्कर/हेल्पर', te: 'జనరల్ వర్కర్ / హెల్పర్', ml: 'ജനറൽ വർക്കർ / ഹെൽപ്പർ' },
+  },
+  {
+    id: 'factory_warehouse',
+    label: { en: 'Factory / Warehouse', ta: 'தொழிற்சாலை/கிடங்கு', hi: 'फैक्ट्री/वेयरहाउस', te: 'ఫ్యాక్టరీ / గోడాము', ml: 'ഫാക്ടറി / വെയർഹൗസ്' },
+  },
+  {
+    id: 'cleaning_housekeeping',
+    label: { en: 'Cleaning / Housekeeping', ta: 'க்ளீனிங்/ஹவுஸ்கீப்பிங்', hi: 'क्लीनिंग/हाउसकीपिंग', te: 'క్లీనింగ్ / హౌస్‌కీపింగ్', ml: 'ക്ലീനിങ്/ഹൗസ്കീപ്പിങ്' },
+  },
+  { id: 'hospitality', label: { en: 'Hospitality', ta: 'ஹாஸ்பிடாலிட்டி', hi: 'हॉस्पिटैलिटी', te: 'హాస్పిటాలిటీ', ml: 'ഹോസ്പിറ്റാലിറ്റി' } },
+  { id: 'construction', label: { en: 'Construction', ta: 'கட்டுமானம்', hi: 'निर्माण', te: 'నిర్మాణం', ml: 'നിർമ്മാണം' } },
+  {
+    id: 'driver_operator',
+    label: { en: 'Driver / Operator', ta: 'டிரைவர்/ஆபரேட்டர்', hi: 'ड्राइवर/ऑपरेटर', te: 'డ్రైవర్ / ఆపరేటర్', ml: 'ഡ്രൈവർ / ഓപ്പറേറ്റർ' },
+  },
+  {
+    id: 'fabrication_welding',
+    label: { en: 'Fabrication / Welding', ta: 'ஃபேப்ரிகேஷன்/வெல்டிங்', hi: 'फैब्रिकेशन/वेल्डिंग', te: 'ఫాబ్రికేషన్ / వెల్డింగ్', ml: 'ഫാബ്രിക്കേഷൻ / വെൽഡിംഗ്' },
+  },
+  {
+    id: 'electrical_mechanical',
+    label: { en: 'Electrical / Mechanical', ta: 'எலெக்ட்ரிகல்/மெக்கானிக்', hi: 'इलेक्ट्रिकल/मैकेनिकल', te: 'ఎలక్ట్రికల్ / మెకానికల్', ml: 'ഇലക്ട്രിക്കൽ/മെക്കാനിക്' },
+  },
+  { id: 'technician', label: { en: 'Technician', ta: 'தொழில்நுட்பர்', hi: 'टेक्नीशियन', te: 'టెక్నీషియన్', ml: 'ടെക്നീഷ്യൻ' } },
+  { id: 'other', label: OTHER },
 ];
 
 export const DOCUMENT_CHOICES: Choice[] = [
@@ -531,7 +589,41 @@ const START_STEPS: FlowStep[] = [
  * the passport settles are never put to the candidate at all.
  */
 export function inSingaporeMalaysiaBranch(c: CandidateDoc): boolean {
-  return p(c).countryPreference === 'singapore_malaysia';
+  return SINGAPORE_MALAYSIA.has(String(p(c).countryPreference));
+}
+
+/**
+ * The destinations that take the passport-first route.
+ *
+ * A set rather than a comparison, because the two used to be one option and are
+ * now two — and because `singapore_malaysia` still exists on every record
+ * answered before the split. Those candidates chose this branch and must keep
+ * it; §22 does not let a menu change rewrite what someone already said.
+ */
+const SINGAPORE_MALAYSIA: ReadonlySet<string> = new Set([
+  'singapore',
+  'malaysia',
+  // Historical, pre-split. Read-only: nothing writes it any more.
+  'singapore_malaysia',
+]);
+
+/**
+ * The destination country as a country name, for the CRM.
+ *
+ * The bot stores an option id; the CRM's CV policy keys on a real country. Only
+ * the ids that *are* single countries map — `gcc` covers six and `europe`
+ * covers a continent, and inventing a country for them would put a fact on the
+ * record nobody established. Those candidates reach the CRM with no
+ * destination, and the policy defaults to requiring a CV, which is the safe
+ * direction.
+ */
+const DESTINATION_COUNTRY_BY_ID: Record<string, string> = {
+  singapore: 'Singapore',
+  malaysia: 'Malaysia',
+};
+
+export function destinationCountryOf(c: CandidateDoc): string | undefined {
+  return DESTINATION_COUNTRY_BY_ID[String(p(c).countryPreference)];
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -571,6 +663,57 @@ const SINGAPORE_MALAYSIA_STEPS: FlowStep[] = [
     // this and the candidate is not asked twice (§1).
     satisfied: (c) => documentSatisfied(c, 'passport'),
   },
+
+  {
+    /**
+     * What they are looking for, asked before the CV and before what they
+     * already do.
+     *
+     * Before the CV because the CV requirement is computed from destination and
+     * job together: asking for a document before knowing whether it is needed
+     * is either a wasted request or a missing one. Before `main_trade` because
+     * the passport has already established who this person is, so the
+     * conversation can open on what they actually came to talk about — and §9's
+     * separation of "what you do" from "what you want" is preserved either way,
+     * since the two write different fields.
+     *
+     * A tap, not free text, and that is the load-bearing detail — see
+     * `JOB_CATEGORY_CHOICES`. Their own words are still captured when they type
+     * instead of tapping.
+     */
+    id: 'sgmy_job_category',
+    section: 'job_preference',
+    prompt: {
+      en: 'Which job are you looking for?',
+      ta: 'எந்த வேலையைத் தேடுகிறீர்கள்?',
+      hi: 'आप कौन सी नौकरी ढूंढ रहे हैं?',
+      te: 'మీరు ఏ ఉద్యోగం కోసం చూస్తున్నారు?',
+      ml: 'നിങ്ങൾ ഏത് ജോലിയാണ് അന്വേഷിക്കുന്നത്?',
+    },
+    input: 'choice',
+    choices: JOB_CATEGORY_CHOICES,
+    acceptsOccupation: 'category',
+    when: inSingaporeMalaysiaBranch,
+    satisfied: (c) => has(p(c).jobCategory),
+    /**
+     * A tapped row records the category. Anything typed records the category the
+     * interpreter mapped it to *and* what they actually said.
+     *
+     * `desiredOccupation` is filled here too, so the general flow's
+     * `desired_job` is already answered and never asked again (§1).
+     */
+    apply: (a) => {
+      const typed = (a.value ?? a.raw ?? '').trim();
+      if (a.ids?.length) {
+        return {
+          jobCategory: a.ids[0],
+          ...(typed && !a.tapped ? { desiredOccupation: typed } : {}),
+        };
+      }
+      return typed ? { jobCategory: 'other', desiredOccupation: typed } : {};
+    },
+    clears: ['jobCategory', 'desiredOccupation', 'cvRequired', 'cvPolicyVersion'],
+  },
 ];
 
 /**
@@ -600,6 +743,16 @@ const CV_STEP: FlowStep = {
   ],
   hiddenChoices: DOCUMENT_FALLBACKS,
   allowStaff: true,
+  /**
+   * Skipped where the CV policy says no CV is needed.
+   *
+   * Only on the Singapore / Malaysia route, and only once the CRM has actually
+   * answered — `cvRequired` is undefined until then, and an undefined answer
+   * asks for the CV rather than assuming it away. Everywhere else this is
+   * unconditional exactly as it always was: the CV is where registration begins
+   * for a Gulf or Europe candidate and nothing here changes that.
+   */
+  when: (c) => !(inSingaporeMalaysiaBranch(c) && p(c).cvRequired === false),
   satisfied: (c) => documentSatisfied(c, 'cv'),
 };
 
@@ -825,38 +978,6 @@ const PERSONAL_STEPS: FlowStep[] = [
  * ───────────────────────────────────────────────────────────────────────────*/
 
 const EXPERIENCE_STEPS: FlowStep[] = [
-  {
-    /**
-     * What they are looking for, asked before what they already do.
-     *
-     * Only on the Singapore / Malaysia route, and deliberately ahead of
-     * `main_trade`. Everywhere else the order is the other way round — §9 keeps
-     * what someone does and what they want strictly apart, and asking what they
-     * do first is what stops the two blurring into one another. Here the
-     * passport has already established who they are, so the conversation can
-     * open on the thing the candidate actually came to talk about.
-     *
-     * Free text, and stored as typed. `desiredOccupation` is the same field the
-     * general flow's `desired_job` writes, so answering here satisfies that one
-     * too and it is never asked a second time (§1).
-     */
-    id: 'sgmy_desired_job',
-    section: 'job_preference',
-    prompt: {
-      en: 'Which job are you looking for?',
-      ta: 'எந்த வேலையைத் தேடுகிறீர்கள்?',
-      hi: 'आप कौन सी नौकरी ढूंढ रहे हैं?',
-      te: 'మీరు ఏ ఉద్యోగం కోసం చూస్తున్నారు?',
-      ml: 'നിങ്ങൾ ഏത് ജോലിയാണ് അന്വേഷിക്കുന്നത്?',
-    },
-    input: 'text',
-    allowMedia: true,
-    acceptsOccupation: 'named',
-    when: inSingaporeMalaysiaBranch,
-    satisfied: (c) => has(p(c).desiredOccupation),
-    apply: (a) => ({ desiredOccupation: a.value }),
-    clears: ['desiredOccupation'],
-  },
 
   {
     id: 'main_trade',

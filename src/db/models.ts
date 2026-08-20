@@ -219,6 +219,29 @@ export interface CandidateProfile {
   previousOccupations?: string[];
   currentOccupation?: string;
   desiredOccupation?: string;
+  /**
+   * The job they want, as a controlled value from `JOB_CATEGORY_CHOICES`.
+   *
+   * Kept beside `desiredOccupation` rather than replacing it: that field holds
+   * the candidate's own words (§27) and a button id is not their words. This
+   * one exists because the CRM's CV policy has to key on something matchable,
+   * and "General Worker", "general labour" and "helper" are the same job typed
+   * three ways.
+   */
+  jobCategory?: string;
+
+  /**
+   * Whether this candidate must supply a CV, and which policy version said so.
+   *
+   * The CRM decides — see `crm/client.ts`. Cached here because the bot needs
+   * the answer mid-conversation to know whether the next question is "send your
+   * CV", and because the CRM being briefly unreachable must not stall a
+   * registration. It is never the authority: `POST /candidates` re-derives the
+   * requirement and can still refuse, which is what makes this a cache rather
+   * than a decision.
+   */
+  cvRequired?: boolean;
+  cvPolicyVersion?: string;
 
   /* trade-specific answers, keyed by question id (§8) */
   tradeAnswers?: Record<string, string[]>;
@@ -372,6 +395,32 @@ export interface CandidateDoc {
   unclearCount?: number;
 
   humanHandoff?: { reason: string; at: Date; returnedAt?: Date };
+
+  /**
+   * How this candidate's handover to the recruitment CRM is going.
+   *
+   * The registration is complete and stored here the moment the candidate
+   * confirms it; reaching the CRM is a separate thing that can fail on its own.
+   * Keeping the two apart is what stops a CRM outage from costing a
+   * registration — the record is safe, and this says whether it has been
+   * delivered yet.
+   *
+   *   pending   queued, not yet accepted
+   *   synced    the CRM has it, and `candidateId` is its id for them
+   *   failed    attempts exhausted; an operator has to look
+   *   needs_cv  the CRM's policy wants a CV this candidate has not sent. Not a
+   *             failure of ours to fix by retrying — the candidate is asked
+   *             again and the same submission is resent afterwards.
+   */
+  crmSync?: {
+    status: 'pending' | 'synced' | 'failed' | 'needs_cv';
+    /** The CRM's id for this candidate, which is not the same as ours. */
+    candidateId?: string;
+    attempts: number;
+    lastError?: string;
+    lastAttemptAt?: Date;
+    syncedAt?: Date;
+  };
 
   /**
    * An application lookup part-way through its identity check (§25, §27).

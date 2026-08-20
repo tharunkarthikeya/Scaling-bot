@@ -7,6 +7,7 @@ import { queue, withCandidateLock } from './queue/index.js';
 import { endIdleSessions, handleInboundMessage, sendReminders } from './conversation/engine.js';
 import { validateCopy } from './conversation/validate.js';
 import { processOcrJob } from './ocr/veris.js';
+import { reconcileCrmSync, syncCandidateToCrm } from './crm/sync.js';
 import { buildServer } from './server.js';
 
 /** How often the §21 reminder sweep runs. The claim is per candidate, not per sweep. */
@@ -47,6 +48,11 @@ async function main(): Promise<void> {
   // OCR is slow and independent per document, so it runs wider.
   queue.register('ocr', processOcrJob, 4);
 
+  // Handing finished registrations to the CRM. One at a time per candidate is
+  // unnecessary — the submission is idempotent by key, so a duplicate job
+  // returns the same candidate rather than creating a second one.
+  queue.register('crm_sync', syncCandidateToCrm, 4);
+
   await queue.start();
 
   const app = await buildServer();
@@ -65,6 +71,17 @@ async function main(): Promise<void> {
   }, SESSION_SWEEP_MS);
   sessionSweep.unref();
 
+  // Candidates the CRM has not accepted yet.
+  //
+  // The queue retries a call that failed; this catches what the queue cannot
+  // see — a job lost to a restart, a registration completed while the CRM was
+  // unconfigured. Nothing is ever dropped for being old: an undelivered
+  // candidate stays undelivered until they are delivered.
+  const crmSweep = setInterval(() => {
+    void reconcileCrmSync().catch((err) => logger.error({ err }, 'crm sync sweep failed'));
+  }, config.INGESTION_RECONCILE_INTERVAL_MS);
+  crmSweep.unref();
+
   logger.info(
     {
       port: config.PORT,
@@ -72,6 +89,7 @@ async function main(): Promise<void> {
       model: config.CLAUDE_MODEL,
       shadowMode: config.SHADOW_MODE,
       queue: config.REDIS_URL ? 'redis' : 'in-process',
+      crm: config.CRM_API_URL ? 'configured' : 'not configured',
     },
     'adira whatsapp bot started',
   );
@@ -80,6 +98,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'shutting down');
     clearInterval(reminderSweep);
     clearInterval(sessionSweep);
+    clearInterval(crmSweep);
     try {
       await app.close();
       await queue.close();
