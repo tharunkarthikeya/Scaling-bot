@@ -265,13 +265,35 @@ export interface CandidateProfile {
 
   /* passport (§12) */
   passportStatus?: string;
-  /** MM/YYYY as the candidate gives it. */
+  /**
+   * MM/YYYY, read off the passport by the extractor.
+   *
+   * No longer typed by the candidate: the flow asks whether they hold a passport
+   * and then for the booklet, and the date comes from the page. A value here
+   * that predates that change may still be one they typed — `fieldMeta` says
+   * which.
+   */
   passportExpiry?: string;
+  /**
+   * The expiry the candidate has already been warned about (§12).
+   *
+   * Keyed on the date rather than a boolean so a *new* passport that is also
+   * near expiry produces a new warning, while a clearer photo of the same
+   * booklet does not produce a second one.
+   */
+  passportExpiryNotifiedFor?: string;
+  /**
+   * Retired with the passport-validity questions, which the extractor now
+   * answers. Kept for records that hold them.
+   */
   passportAppliedWhen?: string;
   passportRenewalIntent?: string;
   passportApplyWillingness?: string;
 
-  /* Europe / Russia document branch (§13) */
+  /**
+   * Retired with the Europe/Russia document branch — documents are asked of
+   * everyone now. Kept for records that hold them.
+   */
   documentAvailability?: string;
   availableDocuments?: string[];
 
@@ -383,6 +405,16 @@ export interface CandidateDoc {
 
   /** The step whose answer the next inbound message is presumed to be. */
   currentStep?: string;
+  /**
+   * The flow question a resume or reminder prompt displaced.
+   *
+   * There is only one open-step pointer, and a prompt offering "Continue" or
+   * "Restart" has to hold it — otherwise the candidate's tap is read as an
+   * answer to whatever was underneath. This is where the question underneath
+   * waits, so "Continue session" can put it back rather than merely recomputing
+   * the next one. Cleared the moment it is used, and by a restart.
+   */
+  resumeStep?: string;
   /** Partial selection for a multi-select step, held until the candidate taps Done. */
   pendingMulti?: { step: string; selected: string[] };
   /** Steps queued by an UPDATE or an edit request (§18, §22). Drains before normal flow. */
@@ -684,6 +716,14 @@ export interface AuditEventDoc {
     | 'reminder_sent'
     | 'session_timed_out'
     | 'application_status_changed'
+    /**
+     * What the passport extractor read about the booklet's expiry (§12).
+     *
+     * Audited rather than merely logged because it is a thing the candidate was
+     * told, and "nobody warned me" is a claim staff need to be able to answer.
+     */
+    | 'passport_expired'
+    | 'passport_expiring_soon'
     /** A business contact chose the B2B branch (§2), so data collection began. */
     | 'b2b_enquiry_started';
   detail?: string;

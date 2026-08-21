@@ -20,8 +20,8 @@
  * happen.
  */
 
-import { destinationCountryOf } from '../conversation/flow.js';
 import type { CandidateDoc } from '../db/models.js';
+import { destinationCountryOf } from '../conversation/flow.js';
 
 /** The profile shape `POST /candidates` accepts. Their names, not ours. */
 export interface CrmProfile {

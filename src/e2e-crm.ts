@@ -6,24 +6,28 @@
  *
  * `harness` proves the bot works. `verify:crm` proves the link is up. Neither
  * proves the thing this integration is for: that a person can hold a WhatsApp
- * conversation and come out of it as a candidate in the CRM, correctly, with
- * the CV policy having decided whether they needed a résumé.
+ * conversation and come out of it as a candidate in the CRM, correctly.
  *
  * So this drives real registrations — real webhooks with real signatures, the
  * real conversation engine, real OCR on the documents, the real queue — into a
  * real CRM over HTTP, and then reads the result back out of the CRM's own API
  * to check it arrived as the right kind of record.
  *
- * Four scenarios, and the fourth is the one that matters most:
+ * Two scenarios, and the second is the one that matters most:
  *
- *   A  Malaysia + general worker   the policy exempts them; no CV is asked for
- *   B  Malaysia + technician       the policy requires one; the CV is asked for
- *   C  Singapore + technician      the same rule, a different country — proof
- *                                  the split of Singapore from Malaysia reaches
- *                                  all the way through
- *   D  the CRM is down when a registration finishes, and comes back
+ *   A  an ordinary registration    the CV is asked for, the documents are
+ *                                  collected, and the candidate arrives in the
+ *                                  CRM with a job category and a résumé
+ *   B  the CRM is down when a registration finishes, and comes back
  *
- * D is the one that would quietly ruin a database. A candidate who finishes
+ * There used to be three of the first kind, one per destination-and-job pair,
+ * because the CRM's policy decided whether each pair needed a CV and the
+ * conversation branched on the answer. The flow no longer asks where a candidate
+ * wants to work, so there is no pair to key a policy on and no branch to test:
+ * every candidate is asked for a CV. `verify:taxonomy` still probes the policy
+ * endpoint, which the CRM continues to apply on its own side.
+ *
+ * B is the one that would quietly ruin a database. A candidate who finishes
  * while the CRM is unreachable must not be lost, and the retry that delivers
  * them later must not create a second person. Both halves are asserted.
  *
@@ -227,12 +231,8 @@ async function waitFor(
 interface Scenario {
   label: string;
   waId: string;
-  /** Which country row to tap at `country_preference`. */
-  destination: 'malaysia' | 'singapore';
-  /** Which row to tap at `sgmy_job_category`. */
+  /** Which row to tap at `job_category`, and what must arrive in the CRM. */
   jobCategory: string;
-  /** What the CRM's policy should decide for this pair. */
-  expectCvRequired: boolean;
 }
 
 const TYPED: Record<string, string> = {
@@ -242,10 +242,8 @@ const TYPED: Record<string, string> = {
   education_course: 'Welder trade',
   main_trade_other: 'TIG welder',
   overseas_countries: 'Qatar and Saudi Arabia',
-  selected_countries: 'Malaysia',
   availability_date: 'Next month',
   desired_job: 'General worker',
-  passport_applied_when: 'Last month',
   language_other: 'Malayalam',
 };
 
@@ -296,17 +294,18 @@ async function answerCurrentQuestion(
       entry: 'apply',
       language: 'en',
       consent: 'yes',
-      // The two answers this whole test turns on.
-      country_preference: scenario.destination,
-      sgmy_job_category: scenario.jobCategory,
       cv: 'upload_cv',
+      // A region, deliberately: it is what most candidates answer, and it is the
+      // case where no country may be claimed for them.
+      country_preference: 'gcc',
+      // The controlled value that has to survive all the way to the CRM.
+      job_category: scenario.jobCategory,
       education: 'iti',
       main_trade: 'fabrication_welding',
       trade_disambiguation: 'welding',
       total_experience: '5_10',
       job_preference: 'current_trade',
       related_acceptance: 'related_ok',
-      country_strictness: 'prefer',
       availability: 'within_30',
       passport_status: 'yes',
       confirm: 'correct',
@@ -421,25 +420,9 @@ const created = new Set<string>();
 
 const SCENARIOS: Scenario[] = [
   {
-    label: 'A  Malaysia + general worker  (no CV expected)',
+    label: 'A  an ordinary registration',
     waId: '919700000001',
-    destination: 'malaysia',
-    jobCategory: 'general_worker',
-    expectCvRequired: false,
-  },
-  {
-    label: 'B  Malaysia + technician      (CV expected)',
-    waId: '919700000002',
-    destination: 'malaysia',
     jobCategory: 'technician',
-    expectCvRequired: true,
-  },
-  {
-    label: 'C  Singapore + technician     (CV expected)',
-    waId: '919700000003',
-    destination: 'singapore',
-    jobCategory: 'technician',
-    expectCvRequired: true,
   },
 ];
 
@@ -464,21 +447,33 @@ for (const scenario of SCENARIOS) {
     continue;
   }
 
-  // 1. The policy was consulted, and its answer is on our record.
+  // 1. The CV is asked for, unconditionally and before anything it can answer.
+  check(steps.includes('cv'), 'the CV was requested', `${steps.length} questions asked`);
   check(
-    candidate!.profile?.cvRequired === scenario.expectCvRequired,
-    'crm cv policy applied',
-    `cvRequired=${candidate!.profile?.cvRequired} policy=${candidate!.profile?.cvPolicyVersion ?? '—'}`,
+    steps.indexOf('cv') < steps.indexOf('full_name'),
+    'and before the questions it can answer',
+    `steps: ${steps.filter((s) => ['cv', 'full_name', 'job_category'].includes(s)).join(' → ')}`,
   );
 
-  // 2. And the conversation actually reflected it: the CV was asked for, or it
-  //    was not. This is the difference a candidate would notice.
-  const askedForCv = steps.includes('cv');
+  // 2. The destination is asked, and asked after the personal details — but
+  //    none of the machinery the two removed countries used to trigger runs.
+  check(steps.includes('country_preference'), 'the destination was asked');
   check(
-    askedForCv === scenario.expectCvRequired,
-    scenario.expectCvRequired ? 'the CV was requested' : 'the CV step was skipped',
-    `steps: ${steps.filter((s) => ['country_preference', 'sgmy_passport', 'sgmy_job_category', 'cv'].includes(s)).join(' → ')}`,
+    steps.indexOf('full_name') < steps.indexOf('country_preference'),
+    'after the personal details',
+    `steps: ${steps.filter((s) => ['cv', 'full_name', 'country_preference', 'main_trade'].includes(s)).join(' → ')}`,
   );
+  check(
+    !steps.some((s) => ['sgmy_passport', 'sgmy_job_category', 'europe_docs'].includes(s)),
+    'and none of the Singapore/Malaysia route ran',
+    steps.join(' → ').slice(0, 90),
+  );
+
+  // 3. Both identity documents were asked for, of a candidate who named no
+  //    country at all — which is the whole point of removing the gate.
+  for (const asked of ['aadhaar_upload', 'pan_upload']) {
+    check(steps.includes(asked), `${asked.replace('_upload', '')} was requested`);
+  }
 
   // What actually went over the wire, so a merge or a duplicate can be read off
   // the output rather than guessed at.
@@ -487,7 +482,7 @@ for (const scenario of SCENARIOS) {
     const sent = toCrmPayload(candidate!, config.WHATSAPP_PHONE_NUMBER_ID);
     console.log(
       `  ${DIM}sent  key=${sent.idempotency_key}  phone=${sent.profile.phone_e164 ?? '—'}  ` +
-        `destination=${sent.profile.destination_country ?? '—'}${RESET}`,
+        `job=${sent.profile.job_category ?? '—'}${RESET}`,
     );
   }
 
@@ -511,13 +506,8 @@ for (const scenario of SCENARIOS) {
 
   check(record!.source === 'whatsapp', 'source = whatsapp', record!.source);
   check(
-    record!.cv_required === scenario.expectCvRequired,
-    'the CRM recorded its own cv decision',
-    `cv_required=${record!.cv_required} version=${record!.cv_policy_version ?? '—'}`,
-  );
-  check(
-    scenario.expectCvRequired ? !!record!.resume : record!.resume == null,
-    scenario.expectCvRequired ? 'the résumé is stored in the CRM' : 'no résumé, and none invented',
+    !!record!.resume,
+    'the résumé is stored in the CRM',
     record!.resume ? `${record!.resume.size} bytes at ${record!.resume.storage_key}` : 'resume=null',
   );
   if (record!.resume?.storage_key) {
@@ -530,13 +520,14 @@ for (const scenario of SCENARIOS) {
   }
   check(!!record!.assigned_staff_id, 'allocated by the existing balancer', record!.assigned_staff_id ?? '—');
 
-  // 5. Residence and destination stayed apart, and the destination is a country.
+  // 5. Residence arrived, and no destination was invented. The driver answers
+  //    "Gulf countries", which is six countries — `destinationCountryOf`
+  //    refuses to name one, and that refusal is the assertion.
   const profile = record!.profile as Record<string, string | undefined>;
   check(
-    profile.country === 'India' &&
-      profile.destination_country === (scenario.destination === 'malaysia' ? 'Malaysia' : 'Singapore'),
-    'residence and destination are separate',
-    `country=${profile.country} destination=${profile.destination_country}`,
+    profile.country === 'India' && profile.destination_country == null,
+    'residence recorded, and a region is not named as a country',
+    `country=${profile.country} destination=${profile.destination_country ?? '—'}`,
   );
   check(
     profile.job_category === scenario.jobCategory,
@@ -546,7 +537,7 @@ for (const scenario of SCENARIOS) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
- * D. The CRM is down when someone finishes
+ * B. The CRM is down when someone finishes
  *
  * Simulated by pointing the client at a port nothing is listening on, which
  * produces exactly the failure a stopped CRM produces: the connection is
@@ -554,14 +545,12 @@ for (const scenario of SCENARIOS) {
  * must not create a second person.
  * ──────────────────────────────────────────────────────────────────────────*/
 
-heading('D  the CRM is unreachable, then comes back');
+heading('B  the CRM is unreachable, then comes back');
 
 const outage: Scenario = {
-  label: 'D',
+  label: 'B',
   waId: '919700000004',
-  destination: 'malaysia',
   jobCategory: 'general_worker',
-  expectCvRequired: false,
 };
 
 const liveUrl = config.CRM_API_URL;

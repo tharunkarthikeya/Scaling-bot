@@ -17,16 +17,13 @@ import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import { chunkText } from './whatsapp/client.js';
 import { attributeInboundDocument, initialSlots, requirementFor } from './conversation/checklist.js';
-import { DOCUMENTS } from './conversation/rules.js';
+import { assertOcrRoutingIsSafe, DOCUMENTS, NEVER_OCR } from './conversation/rules.js';
 import {
-  destinationCountryOf,
   disambiguationChoices,
   fieldsToClear,
-  inSingaporeMalaysiaBranch,
   inferTradeAnswers,
   inferTradePacks,
   occupationForQuestions,
-  inEuropeRussiaBranch,
   nextStep,
   stepById,
   STEPS,
@@ -339,9 +336,7 @@ await check('an unreadable B2B document leaves its question open', () => {
 await check('a candidate document still stops being chased at the ceiling (§14)', () => {
   // The candidate rule is deliberate and unchanged: their identity documents are
   // optional and staff collect them on a call.
-  const c = candidate({
-    profile: { countryPreference: 'europe', documentAvailability: 'all' },
-  });
+  const c = candidate({ profile: { lookingForOverseasJob: true } });
   c.documents.aadhaar = {
     status: 'incomplete',
     askedCount: TUNABLES.maxAsksPerDocument,
@@ -410,23 +405,22 @@ await check('asks for consent before anything personal (§4)', () => {
   assert.equal(nextStep(c)?.id, 'consent');
 });
 
+await check('the CV is the first thing asked after consent (§5)', () => {
+  const c = candidate({ profile: { lookingForOverseasJob: true } });
+  assert.equal(nextStep(c)?.id, 'cv');
+
+  // Unconditionally. There is no longer a destination to key a policy on, so
+  // nothing can decide a candidate does not need one.
+  assert.equal(stepById('cv')!.when, undefined, 'the CV step must not be conditional');
+});
+
 await check('skips a question the CV already answered (§1, §5)', () => {
-  // `countryPreference` is set on both: it is now the first question after
-  // consent, because it decides whether the passport or the CV comes next.
-  // Gulf is the branch that leaves the rest of the flow as it was.
-  const withoutCv = candidate({
-    profile: { lookingForOverseasJob: true, countryPreference: 'gcc', countryStrictness: 'any' },
-  });
+  const withoutCv = candidate({ profile: { lookingForOverseasJob: true } });
   withoutCv.documents.cv!.status = 'unavailable';
   assert.equal(nextStep(withoutCv)?.id, 'full_name');
 
   const withName = candidate({
-    profile: {
-      lookingForOverseasJob: true,
-      countryPreference: 'gcc',
-      countryStrictness: 'any',
-      fullName: 'Asha Kumari',
-    },
+    profile: { lookingForOverseasJob: true, fullName: 'Asha Kumari' },
   });
   withName.documents.cv!.status = 'ocr_done';
   assert.notEqual(nextStep(withName)?.id, 'full_name');
@@ -440,72 +434,151 @@ await check('asks for a trade course only for ITI, diploma or graduate (§6)', (
   assert.equal(stepById('education_course')!.when!(iti), true);
 });
 
-await check('a Gulf candidate is never asked for identity documents (§13)', () => {
-  const gcc = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'gcc' } });
-  assert.equal(inEuropeRussiaBranch(gcc), false);
-  assert.equal(stepById('europe_docs')!.when!(gcc), false);
-  assert.equal(stepById('aadhaar_upload')!.when!(gcc), false);
+await check('every candidate is asked for Aadhaar and PAN (§13)', () => {
+  // This used to be gated on a Europe/Russia destination, so a Gulf candidate
+  // finished registration without ever being asked for an identity document.
+  // There is no destination question any more, and no gate: both are asked of
+  // everyone, in that order.
+  const c = candidate({ profile: { lookingForOverseasJob: true } });
+  assert.equal(stepById('aadhaar_upload')!.when, undefined, 'Aadhaar must not be conditional');
+  assert.equal(stepById('pan_upload')!.when, undefined, 'PAN must not be conditional');
+
+  const ids = STEPS.map((step) => step.id);
+  assert.ok(
+    ids.indexOf('aadhaar_upload') < ids.indexOf('pan_upload'),
+    'Aadhaar is read and PAN is not, so Aadhaar goes first',
+  );
+  assert.equal(stepById('aadhaar_upload')!.satisfied(c), false);
+  assert.equal(stepById('pan_upload')!.satisfied(c), false);
 });
 
-await check('choosing Europe opens the document branch (§13)', () => {
-  const europe = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'europe' } });
-  assert.equal(inEuropeRussiaBranch(europe), true);
-  assert.equal(stepById('europe_docs')!.when!(europe), true);
+await check('the passport is asked as a question before it is asked as a file (§12)', () => {
+  const ids = STEPS.map((step) => step.id);
+  assert.ok(
+    ids.indexOf('passport_status') < ids.indexOf('passport_upload'),
+    'ask whether they have one before asking them to photograph it',
+  );
+  assert.ok(
+    ids.indexOf('passport_upload') < ids.indexOf('aadhaar_upload'),
+    'passport, then the two cards',
+  );
+
+  // Both belong to the documents section now, so one UPDATE opens all of them.
+  for (const id of ['passport_status', 'passport_upload', 'aadhaar_upload', 'pan_upload']) {
+    assert.equal(stepById(id)!.section, 'documents', id);
+  }
 });
 
-await check('naming Romania opens the branch even under "select countries" (§13)', () => {
-  const named = candidate({
-    profile: {
-      lookingForOverseasJob: true,
-      countryPreference: 'select',
-      selectedCountries: ['Romania', 'Serbia'],
-    },
+await check('only someone who says they hold a passport is asked to send it (§12)', () => {
+  const step = stepById('passport_upload')!;
+
+  const holds = candidate({ profile: { lookingForOverseasJob: true, passportStatus: 'yes' } });
+  assert.equal(step.when!(holds), true);
+
+  // "Applied", "expired" and "no" are answers, not evasions. Following any of
+  // them with "please photograph your passport" asks for something they have
+  // just said does not exist.
+  for (const status of ['applied', 'expired', 'no']) {
+    const c = candidate({ profile: { lookingForOverseasJob: true, passportStatus: status } });
+    assert.equal(step.when!(c), false, status);
+  }
+});
+
+await check('nothing asks the candidate about passport validity (§12)', () => {
+  // The expiry is read off the page by the extractor. The questions that used to
+  // ask for it from memory are gone, and their absence is the assertion — a
+  // reintroduced "when does it expire?" is exactly the regression this catches.
+  const ids = STEPS.map((step) => step.id);
+  for (const retired of [
+    'passport_applied_when',
+    'passport_renewal',
+    'passport_apply_willing',
+    'passport_document',
+  ]) {
+    assert.ok(!ids.includes(retired), `"${retired}" is back in the flow`);
+  }
+
+  // And no step writes the expiry, which is what would make it a typed answer.
+  for (const step of STEPS) {
+    assert.ok(
+      !(step.clears ?? []).includes('passportExpiry') || step.id === 'passport_status',
+      `"${step.id}" treats the passport expiry as an answer`,
+    );
+  }
+});
+
+await check('Singapore and Malaysia are gone, and the branch with them (§10)', () => {
+  // The two rows were the trigger for a whole route — the passport collected
+  // before the CV, the job asked early so a CV policy could be resolved from
+  // destination plus job. Removing the options removed the route; the question
+  // itself stays, because every other destination always used it.
+  const offered = stepById('country_preference')!.choices!.map((c) => c.id);
+  for (const removed of ['singapore', 'malaysia', 'singapore_malaysia']) {
+    assert.ok(!offered.includes(removed), `"${removed}" is still on the menu`);
+  }
+  // And what remains is still a usable question.
+  for (const kept of ['gcc', 'europe', 'russia_cis', 'any', 'select']) {
+    assert.ok(offered.includes(kept), `"${kept}" was lost with the two countries`);
+  }
+
+  const ids = STEPS.map((step) => step.id);
+  for (const retired of ['sgmy_passport', 'sgmy_job_category', 'europe_docs', 'europe_docs_which']) {
+    assert.ok(!ids.includes(retired), `"${retired}" is back in the flow`);
+  }
+
+  // Nothing is left in the flow claiming to belong to a section that no longer
+  // exists — a step with an orphaned section would break `STAGE_BY_SECTION`.
+  for (const step of STEPS) {
+    assert.ok(
+      ['start', 'b2b', 'language', 'consent', 'cv', 'personal', 'experience',
+       'job_preference', 'country', 'availability', 'documents', 'confirm'].includes(step.section),
+      `"${step.id}" is in the removed "${step.section}" section`,
+    );
+  }
+});
+
+await check('the country question is asked after the personal details (§10)', () => {
+  const ids = STEPS.map((step) => step.id);
+
+  // After the personal section, because it is a preference rather than a branch
+  // point now: nothing below it changes shape depending on the answer.
+  for (const personal of ['full_name', 'location', 'dob', 'education']) {
+    assert.ok(
+      ids.indexOf(personal) < ids.indexOf('country_preference'),
+      `"${personal}" must be asked before the country question`,
+    );
+  }
+  assert.ok(
+    ids.indexOf('country_preference') < ids.indexOf('main_trade'),
+    'and before the experience questions',
+  );
+
+  // The follow-ups hang off it in order.
+  assert.ok(ids.indexOf('country_preference') < ids.indexOf('selected_countries'));
+  assert.ok(ids.indexOf('selected_countries') < ids.indexOf('country_strictness'));
+
+  // "Select countries" is only followed up when it is what they chose, and the
+  // strictness question is meaningless once they have said anywhere will do.
+  const selected = candidate({
+    profile: { lookingForOverseasJob: true, countryPreference: 'select' },
   });
-  assert.equal(inEuropeRussiaBranch(named), true);
-});
+  assert.equal(stepById('selected_countries')!.when!(selected), true);
+  assert.equal(stepById('country_strictness')!.when!(selected), true);
 
-await check('"any country" does not open the document branch', () => {
-  const any = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'any' } });
-  assert.equal(inEuropeRussiaBranch(any), false);
-});
-
-await check('only the documents the candidate says they have are requested (§13)', () => {
-  const some = candidate({
-    profile: {
-      lookingForOverseasJob: true,
-      countryPreference: 'europe',
-      documentAvailability: 'some',
-      availableDocuments: ['passport'],
-    },
+  const anywhere = candidate({
+    profile: { lookingForOverseasJob: true, countryPreference: 'any' },
   });
-  assert.equal(stepById('passport_upload')!.when!(some), true);
-  assert.equal(stepById('aadhaar_upload')!.when!(some), false);
-  assert.equal(stepById('pan_upload')!.when!(some), false);
+  assert.equal(stepById('selected_countries')!.when!(anywhere), false);
+  assert.equal(stepById('country_strictness')!.when!(anywhere), false);
 });
 
-await check('"upload later" stops the bot asking for files at all (§13)', () => {
-  const later = candidate({
-    profile: {
-      lookingForOverseasJob: true,
-      countryPreference: 'europe',
-      documentAvailability: 'later',
-    },
-  });
-  assert.equal(stepById('passport_upload')!.when!(later), false);
-});
-
-await check('a strict country preference is stored separately from the countries (§10)', () => {
-  const strict = candidate({
-    profile: {
-      lookingForOverseasJob: true,
-      countryPreference: 'select',
-      selectedCountries: ['Romania'],
-      countryStrictness: 'strict',
-    },
-  });
-  // §25 relies on this pair: the list, and whether it may be departed from.
-  assert.equal(strict.profile.countryStrictness, 'strict');
-  assert.deepEqual(strict.profile.selectedCountries, ['Romania']);
+await check('a region is never sent to the CRM as a destination country', () => {
+  // "Gulf countries" is six countries and "Europe" is a continent. Naming one
+  // for the candidate would put a fact on the record nobody established.
+  for (const region of ['gcc', 'europe', 'russia_cis', 'any', 'select']) {
+    const c = candidate({ profile: { lookingForOverseasJob: true, countryPreference: region } });
+    assert.equal(toCrmPayload(c, '111').profile.destination_country, undefined, region);
+  }
 });
 
 /* ------------------------------------------------------------------ */
@@ -1557,11 +1630,13 @@ await check('a pack keyword is a word, not a run of letters inside one (§8)', (
 
 await check('§12 asks for the passport, not for facts about it', () => {
   // Typed-from-memory expiry dates are the least reliable thing on the record,
-  // and the document that settles it is one tap away.
+  // and the document that settles it is one tap away. There is now exactly one
+  // upload question rather than two, and no question about the date at all.
   assert.equal(stepById('passport_expiry'), undefined);
+  assert.equal(stepById('passport_document'), undefined);
 
   const holder = candidate({ profile: { lookingForOverseasJob: true, passportStatus: 'yes' } });
-  const step = stepById('passport_document')!;
+  const step = stepById('passport_upload')!;
   assert.equal(step.when!(holder), true);
   assert.equal(step.document, 'passport');
   assert.equal(step.satisfied(holder), false);
@@ -1573,8 +1648,6 @@ await check('a passport already on file is never asked for again (§1, §12)', (
   const c = candidate({ profile: { lookingForOverseasJob: true, passportStatus: 'yes' } });
   c.documents.passport = { status: 'ocr_queued', askedCount: 0, updatedAt: new Date() };
 
-  assert.equal(stepById('passport_document')!.satisfied(c), true);
-  // And the Europe/Russia upload question does not ask for it a second time.
   assert.equal(stepById('passport_upload')!.satisfied(c), true);
 });
 
@@ -1955,49 +2028,60 @@ await check('every document kind the flow can ask for has a section to live in',
   }
 });
 
-console.log('\nwhere they want to work decides how they are registered');
+console.log('\nthe order registration runs in');
 
-/** A candidate who has consented and is standing at the country question. */
-function atCountryQuestion(preference?: string): CandidateDoc {
-  return candidate({
-    stage: 'NEW',
-    profile: {
-      lookingForOverseasJob: true,
-      ...(preference ? { countryPreference: preference, countryStrictness: 'any' } : {}),
-    },
-  });
+/** A candidate who has consented and has been asked nothing else. */
+function justConsented(): CandidateDoc {
+  return candidate({ stage: 'NEW', profile: { lookingForOverseasJob: true } });
 }
 
-await check('the country question comes before the CV, not two thirds of the way in', () => {
-  // It is the branch point now: it decides whether the passport or the CV is
-  // asked for next, and a branch point asked after the branch cannot branch.
-  const ids = STEPS.map((s) => s.id);
-  assert.ok(ids.indexOf('country_preference') < ids.indexOf('cv'), 'country must precede the CV');
-  assert.ok(
-    ids.indexOf('consent') < ids.indexOf('country_preference'),
-    'nothing is asked before consent',
-  );
+await check('the flow runs in the order the protocol lays out', () => {
+  const ids = STEPS.map((step) => step.id);
+  const at = (id: string) => {
+    const i = ids.indexOf(id);
+    assert.ok(i !== -1, `"${id}" is missing from the flow`);
+    return i;
+  };
 
-  // And it is what a freshly consented candidate is actually asked.
-  assert.equal(nextStep(atCountryQuestion())?.id, 'country_preference');
-});
+  // Apply → consent → CV → personal → experience → trade → job preferences →
+  // documents → confirm.
+  const order = [
+    'entry',
+    'language',
+    'consent',
+    'cv',
+    'full_name',
+    'main_trade',
+    'trade_disambiguation',
+    'job_category',
+    'passport_status',
+    'aadhaar_upload',
+    'pan_upload',
+    'confirm',
+  ];
 
-await check('Singapore or Malaysia asks for the passport before anything else', () => {
-  const sgmy = atCountryQuestion('malaysia');
-  assert.equal(inSingaporeMalaysiaBranch(sgmy), true);
-  assert.equal(nextStep(sgmy)?.id, 'sgmy_passport');
-
-  // Every other destination is unchanged: the CV still comes first.
-  for (const elsewhere of ['gcc', 'europe', 'russia_cis', 'any']) {
-    const c = atCountryQuestion(elsewhere);
-    assert.equal(inSingaporeMalaysiaBranch(c), false, elsewhere);
-    assert.equal(nextStep(c)?.id, 'cv', elsewhere);
+  for (let i = 1; i < order.length; i++) {
+    assert.ok(
+      at(order[i]!) > at(order[i - 1]!),
+      `"${order[i]}" must come after "${order[i - 1]}"`,
+    );
   }
 });
 
-await check('what the passport says is never asked as a question', () => {
-  // The whole point of reading the passport first (§1, §5). The extractor fills
-  // these, and a filled field is a question that is never put to the candidate.
+await check('the CV is asked before every section it can answer (§1, §5)', () => {
+  // The reason it sits where it does. Every one of these is a question the
+  // resume extractor can fill, and filling it is only useful if the CV arrives
+  // first — afterwards the candidate has already been asked by hand.
+  const ids = STEPS.map((step) => step.id);
+  for (const answerable of ['full_name', 'dob', 'education', 'main_trade', 'total_experience']) {
+    assert.ok(ids.indexOf('cv') < ids.indexOf(answerable), `the CV must precede "${answerable}"`);
+  }
+
+  // And it is what a freshly consented candidate is actually asked.
+  assert.equal(nextStep(justConsented())?.id, 'cv');
+});
+
+await check('what a document says is never asked as a question (§1, §5)', () => {
   const passportFields: OcrField[] = [
     { key: 'name', value: 'RAVI KUMAR', confidence: 0.97 },
     { key: 'date_of_birth', value: '1994-03-11', confidence: 0.97 },
@@ -2011,112 +2095,37 @@ await check('what the passport says is never asked as a question', () => {
   assert.equal(patch.nationality, 'INDIAN');
   assert.equal(patch.passportNumber, 'Z1234567');
 
-  const sgmy = atCountryQuestion('malaysia');
-  sgmy.documents.passport = { status: 'ocr_done', askedCount: 1, updatedAt: new Date() };
-  Object.assign(sgmy.profile, patch);
+  const c = justConsented();
+  c.documents.passport = { status: 'ocr_done', askedCount: 1, updatedAt: new Date() };
+  Object.assign(c.profile, patch);
 
-  assert.equal(stepById('full_name')!.satisfied(sgmy), true, 'name still being asked');
-  assert.equal(stepById('dob')!.satisfied(sgmy), true, 'date of birth still being asked');
-  // And the passport itself is not asked for a second time further down.
-  assert.equal(stepById('passport_status')!.satisfied(sgmy), true);
-});
-
-await check('the CV is skipped only when the CRM says it is not needed', () => {
-  const cvStep = stepById('cv')!;
-
-  // The policy has not answered yet. An unknown requirement asks for the CV —
-  // the cost of an unnecessary question is one question, and the cost of
-  // skipping a required one is a submission refused after the conversation has
-  // already ended.
-  const undecided = atCountryQuestion('malaysia');
-  assert.equal(cvStep.when!(undecided), true);
-
-  // Policy says no. Skipped.
-  const exempt = atCountryQuestion('malaysia');
-  exempt.profile.cvRequired = false;
-  assert.equal(cvStep.when!(exempt), false);
-
-  // Policy says yes. Asked.
-  const required = atCountryQuestion('malaysia');
-  required.profile.cvRequired = true;
-  assert.equal(cvStep.when!(required), true);
-});
-
-await check('every other destination still always asks for the CV', () => {
-  // The one thing that must not change. A Gulf or Europe candidate's
-  // registration begins with the CV exactly as it always has, and no policy
-  // answer can turn it off for them.
-  const cvStep = stepById('cv')!;
-  for (const region of ['gcc', 'europe', 'russia_cis', 'any']) {
-    const c = atCountryQuestion(region);
-    assert.equal(cvStep.when!(c), true, region);
-    // Even if a stale requirement were somehow on the record.
-    c.profile.cvRequired = false;
-    assert.equal(cvStep.when!(c), true, `${region} with a stale cvRequired`);
-  }
-});
-
-await check('candidates who chose the old combined option keep their branch', () => {
-  // Singapore and Malaysia used to be one row. §22 does not let a menu change
-  // rewrite what someone already answered, so records carrying the old id stay
-  // on the passport-first route.
-  const legacy = atCountryQuestion('singapore_malaysia');
-  assert.equal(inSingaporeMalaysiaBranch(legacy), true);
-  // But no country can be claimed for them — the question was never asked.
-  assert.equal(toCrmPayload(legacy, '111').profile.destination_country, undefined);
+  assert.equal(stepById('full_name')!.satisfied(c), true, 'name still being asked');
+  assert.equal(stepById('dob')!.satisfied(c), true, 'date of birth still being asked');
+  // A passport that arrived unprompted, or inside a CV, answers the question
+  // about whether they have one.
+  assert.equal(stepById('passport_status')!.satisfied(c), true);
 });
 
 await check('a promised passport does not count as a passport', () => {
   // `documentOnFile`, not `documentSatisfied`. Someone who said "I don't have
   // one" has answered the upload question without giving us a document, and is
   // exactly who "do you have a valid passport?" needs to be put to.
-  const sgmy = atCountryQuestion('malaysia');
+  const c = justConsented();
   for (const status of ['unavailable', 'promised'] as const) {
-    sgmy.documents.passport = { status, askedCount: 1, updatedAt: new Date() };
+    c.documents.passport = { status, askedCount: 1, updatedAt: new Date() };
     assert.equal(
-      stepById('passport_status')!.satisfied(sgmy),
+      stepById('passport_status')!.satisfied(c),
       false,
       `"${status}" must not answer the passport question`,
     );
   }
 });
 
-await check('the job is asked before the CV, because it decides whether one is needed', () => {
-  // The reordering this branch exists for. A CV requirement computed from
-  // destination and job cannot be computed before the job is known, so asking
-  // for the document first is either a wasted request or a missing one.
-  const ids = STEPS.map((s) => s.id);
-  assert.ok(
-    ids.indexOf('sgmy_job_category') < ids.indexOf('cv'),
-    'the job category must be established before the CV is asked for',
-  );
-  assert.ok(
-    ids.indexOf('country_preference') < ids.indexOf('sgmy_passport'),
-    'the destination decides the branch, so it comes first',
-  );
-  assert.ok(
-    ids.indexOf('sgmy_passport') < ids.indexOf('sgmy_job_category'),
-    'passport, then job',
-  );
-  assert.ok(
-    ids.indexOf('sgmy_job_category') < ids.indexOf('main_trade'),
-    'what they want is asked before what they already do',
-  );
-  assert.ok(
-    ids.indexOf('main_trade') < ids.indexOf('total_experience'),
-    'experience follows the current job',
-  );
-
-  // Only on this branch. Everyone else keeps §9's order, where what someone
-  // does is established before what they want.
-  assert.equal(stepById('sgmy_job_category')!.when!(atCountryQuestion('gcc')), false);
-  assert.equal(stepById('sgmy_job_category')!.when!(atCountryQuestion('malaysia')), true);
-});
-
 await check('the job is a controlled value, not free text', () => {
-  // A policy table cannot match "general labour", "helper" and "GW" against a
-  // rule about general workers. The tap is what makes the CV decision possible.
-  const step = stepById('sgmy_job_category')!;
+  // A recruiter filter cannot match "general labour", "helper" and "GW" against
+  // one category. The tap is what makes `job_category` a filter rather than a
+  // second free-text field.
+  const step = stepById('job_category')!;
   assert.equal(step.input, 'choice');
   assert.ok(step.choices?.length, 'the job question must offer a fixed list');
 
@@ -2126,27 +2135,71 @@ await check('the job is a controlled value, not free text', () => {
   }
   // WhatsApp lists cap at ten rows; an eleventh would silently not render.
   assert.ok(ids.length <= 10, `too many rows for a WhatsApp list: ${ids.length}`);
+
+  // Asked of everyone now, not only the route it was invented for.
+  assert.equal(step.when, undefined, 'the job category must not be conditional');
 });
 
-await check('answering it once answers it everywhere', () => {
+await check('answering the job once answers it everywhere', () => {
   // The tap records the category; typing records the category *and* their own
-  // words. Either way `desiredOccupation` is filled, so the general flow's
-  // `desired_job` is already answered and never asked twice (§1).
-  const tapped = atCountryQuestion('malaysia');
+  // words. Either way `desiredOccupation` is filled, so `desired_job` further
+  // down is already answered and never asked twice (§1).
+  const tapped = justConsented();
   Object.assign(
     tapped.profile,
-    stepById('sgmy_job_category')!.apply!({ ids: ['general_worker'], tapped: true }, tapped),
+    stepById('job_category')!.apply!({ ids: ['general_worker'], tapped: true }, tapped),
   );
   assert.equal(tapped.profile.jobCategory, 'general_worker');
 
-  const typed = atCountryQuestion('malaysia');
+  const typed = justConsented();
   Object.assign(
     typed.profile,
-    stepById('sgmy_job_category')!.apply!({ value: 'Warehouse packer' }, typed),
+    stepById('job_category')!.apply!({ value: 'Warehouse packer' }, typed),
   );
   assert.equal(typed.profile.desiredOccupation, 'Warehouse packer');
   assert.equal(typed.profile.jobCategory, 'other');
   assert.equal(stepById('desired_job')!.satisfied(typed), true);
+});
+
+console.log('\nwhat may be sent to an extractor');
+
+await check('the PAN is never routed to an extractor (§15, §16)', () => {
+  // The requirement, stated three ways, because one of them will be the one
+  // somebody edits.
+  assert.equal(requirementFor('pan')!.ocr, 'none');
+  assert.ok(NEVER_OCR.has('pan'));
+
+  // The flow does ask for it — storing it is the point — it just never reads it.
+  assert.equal(stepById('pan_upload')!.document, 'pan');
+});
+
+await check('a PAN routed to an extractor fails the boot, not a candidate', () => {
+  // The check that makes the promise above enforceable. `validateCopy` runs it
+  // before the server accepts traffic, so an edit that gives the PAN a route
+  // breaks the deploy rather than quietly posting tax identifiers to a third
+  // party.
+  const pan = DOCUMENTS.find((d) => d.id === 'pan')!;
+  const original = pan.ocr;
+  try {
+    (pan as { ocr: string }).ocr = 'aadhaar';
+    assert.throws(() => assertOcrRoutingIsSafe(), /pan/i);
+  } finally {
+    (pan as { ocr: string }).ocr = original;
+  }
+  // And it passes as shipped.
+  assertOcrRoutingIsSafe();
+});
+
+await check('only the three documents with extractors built for them are read', () => {
+  // A kind either has an extractor written for it or it is not read at all.
+  // There is deliberately no generic route, so a new slot cannot inherit one.
+  for (const doc of DOCUMENTS) {
+    assert.ok(
+      ['passport', 'resume', 'aadhaar', 'none'].includes(doc.ocr),
+      `"${doc.id}" routes to an extractor that does not exist: ${doc.ocr}`,
+    );
+    if (NEVER_OCR.has(doc.id)) assert.equal(doc.ocr, 'none', doc.id);
+  }
 });
 
 await check('a name read off a passport never overwrites one the candidate typed', () => {
@@ -2160,7 +2213,7 @@ await check('a name read off a passport never overwrites one the candidate typed
   assert.equal(c.fieldMeta.fullName?.source, 'chat');
 });
 
-console.log('\ncontinue keeps the half-finished session; restart throws it away');
+console.log('\ncontinue resumes; restart re-walks. Neither deletes anything');
 
 /**
  * Someone who answered four questions and then went quiet.
@@ -2183,8 +2236,6 @@ function halfFinished(over: Partial<CandidateDoc> = {}): CandidateDoc {
     documents: slots,
     profile: {
       lookingForOverseasJob: true,
-      countryPreference: 'gcc',
-      countryStrictness: 'any',
       fullName: 'Ravi Kumar',
       currentCity: 'Chennai',
       currentState: 'Tamil Nadu',
@@ -2199,8 +2250,6 @@ function halfFinished(over: Partial<CandidateDoc> = {}): CandidateDoc {
 }
 
 await check('continue keeps every answer already given', () => {
-  // Continue reopens the session and asks the next question. It changes no
-  // answer, so everything the candidate already said is still there.
   const c = halfFinished();
 
   assert.equal(c.profile.fullName, 'Ravi Kumar');
@@ -2212,15 +2261,29 @@ await check('continue keeps every answer already given', () => {
   }
 });
 
-await check('continue resumes at the first question still unanswered', () => {
-  // `nextStep` is computed from state, not from a stored cursor — which is why
-  // "resume where you stopped" needs no bookmark. The engine clears
-  // `currentStep` and asks again; the scheduler walks past everything answered.
-  const c = halfFinished();
-  c.currentStep = undefined; // what the engine does on 'continue'
-  c.sessionEndedAt = undefined;
+await check('continue returns to the exact question the prompt interrupted', () => {
+  // The prompt has to occupy `currentStep` — otherwise the candidate's tap on
+  // "Continue" would be read as an answer to the question underneath — so the
+  // engine stashes what it displaced in `resumeStep` and puts it back. Without
+  // the stash, "continue" could only ever mean "recompute", which is what the
+  // other button does.
+  const c = halfFinished({ resumeStep: 'education', currentStep: 'menu:resume' });
 
-  assert.equal(nextStep(c)?.id, 'education', 'continue must resume at the open question');
+  const stashed = stepById(c.resumeStep!)!;
+  assert.equal(stashed.satisfied(c), false, 'the stashed question must still be open');
+  assert.ok(!stashed.when || stashed.when(c), 'the stashed question must still apply');
+  assert.equal(stashed.id, 'education');
+});
+
+await check('continue falls back to the scheduler when the stash went stale', () => {
+  // The stashed question was answered while the prompt was on screen — a
+  // document arrived and filled it. Re-asking would break §1, so the fallback
+  // is the ordinary scheduler.
+  const c = halfFinished({ resumeStep: 'full_name', currentStep: 'menu:resume' });
+  assert.equal(stepById(c.resumeStep!)!.satisfied(c), true, 'fixture is not stale');
+
+  c.currentStep = undefined;
+  assert.equal(nextStep(c)?.id, 'education', 'the scheduler must take over');
 });
 
 await check('continue does not re-ask anything already answered', () => {
@@ -2228,16 +2291,18 @@ await check('continue does not re-ask anything already answered', () => {
   c.currentStep = undefined;
 
   const { order } = walkFlow(c);
-  for (const answered of ['full_name', 'location', 'dob', 'country_preference']) {
+  for (const answered of ['full_name', 'location', 'dob']) {
     assert.ok(!order.includes(answered), `continue re-asked "${answered}"`);
   }
   // And the CV, which is on file (§1, §22).
   assert.ok(!order.includes('cv'), 'continue re-asked for a CV already on file');
 });
 
-await check('restart throws away every answer the candidate typed', () => {
-  // The half-finished session goes. That is what starting over means, and it
-  // is the difference between the two buttons.
+await check('restart keeps every answer, document and extraction', () => {
+  // The behaviour this replaced: a restart emptied `profile` and `fieldMeta`,
+  // so someone who tapped "start again" because they mistyped one answer lost
+  // all of them. Restarting a conversation is not withdrawing the answers given
+  // during it — DELETE is what does that, and it asks first (§23).
   const before = halfFinished({
     editQueue: ['location'],
     pendingMulti: { step: 'general_jobs', selected: ['warehouse'] },
@@ -2245,69 +2310,127 @@ await check('restart throws away every answer the candidate typed', () => {
   const after: CandidateDoc = { ...before, ...restartPatch(before) };
   for (const key of RESTART_UNSETS) delete (after as unknown as Record<string, unknown>)[key];
 
-  assert.deepEqual(after.profile, {}, 'a typed answer survived the restart');
-  assert.deepEqual(after.fieldMeta, {}, 'field provenance survived the restart');
-  assert.deepEqual(after.editQueue, [], 'a queued edit survived the restart');
-  assert.equal(after.unclearCount, 0);
-  assert.equal(after.stage, 'NEW');
-
-  // The open question, the half-made multi-select and the closed session are
-  // removed outright — left behind, `currentStep` would have the next tap
-  // answer the question they just abandoned.
-  assert.equal(after.currentStep, undefined);
-  assert.equal(after.pendingMulti, undefined);
-  assert.equal(after.sessionEndedAt, undefined);
-});
-
-await check('restart keeps the things that are not answers', () => {
-  const before = halfFinished();
-  const after: CandidateDoc = { ...before, ...restartPatch(before) };
-
-  // §22 — re-answering the questions is not withdrawing a passport.
-  assert.equal(after.documents.cv?.status, 'ocr_done');
+  assert.equal(after.profile.fullName, 'Ravi Kumar', 'a typed answer was destroyed by a restart');
+  assert.equal(after.profile.dateOfBirth, '1994-03-11');
+  assert.equal(after.fieldMeta.fullName?.source, 'chat', 'field provenance was destroyed');
+  assert.equal(after.documents.cv?.status, 'ocr_done', 'an uploaded CV was destroyed');
   // §4 and §3 — recorded facts, not answers being revised.
   assert.equal(after.consent?.given, true);
   assert.equal(after.language, 'en');
   assert.equal(after.languageChosen, true);
 });
 
-await check('restart runs the same workflow, from the top', () => {
-  // The complaint this fixes: a restart that drops someone into the middle, or
-  // into a different set of questions, is not a restart.
+await check('restart clears the position and nothing else', () => {
+  const before = halfFinished({
+    editQueue: ['location'],
+    pendingMulti: { step: 'general_jobs', selected: ['warehouse'] },
+    resumeStep: 'education',
+  });
+  const after: CandidateDoc = { ...before, ...restartPatch(before) };
+  for (const key of RESTART_UNSETS) delete (after as unknown as Record<string, unknown>)[key];
+
+  assert.deepEqual(after.editQueue, [], 'a queued edit survived the restart');
+  assert.equal(after.unclearCount, 0);
+  assert.equal(after.stage, 'NEW');
+
+  // The open question, the stashed one, the half-made multi-select and the
+  // closed session are removed outright — left behind, `currentStep` would have
+  // the next tap answer a question the candidate has moved on from.
+  assert.equal(after.currentStep, undefined);
+  assert.equal(after.resumeStep, undefined);
+  assert.equal(after.pendingMulti, undefined);
+  assert.equal(after.sessionEndedAt, undefined);
+});
+
+await check('restart re-walks from the top and asks only what is missing', () => {
+  // Both halves of what the candidate is promised. The flow starts at the first
+  // step; every step already satisfied is skipped; the first question they
+  // actually see is the first genuinely unanswered one.
   const before = halfFinished();
   const after: CandidateDoc = { ...before, ...restartPatch(before) };
   for (const key of RESTART_UNSETS) delete (after as unknown as Record<string, unknown>)[key];
 
-  // Back at the opening menu, because `lookingForOverseasJob` went with the
-  // profile — and then the same ordered flow every candidate walks.
-  assert.equal(nextStep(after)?.id, 'entry');
-
   const { order, indexes } = walkFlow(after);
-  assert.equal(order[0], 'entry');
+
+  // Never backwards: the scheduler walks one ordered list, so a restart cannot
+  // drop someone into the middle of a different one.
   for (let i = 1; i < indexes.length; i++) {
     assert.ok(indexes[i]! > indexes[i - 1]!, `restart went backwards at "${order[i]}"`);
   }
+
+  // Nothing already answered is put again.
+  for (const answered of ['entry', 'language', 'consent', 'cv', 'full_name', 'location', 'dob']) {
+    assert.ok(!order.includes(answered), `restart re-asked "${answered}"`);
+  }
+  assert.equal(order[0], 'education', 'restart must resume at the first unanswered step');
+});
+
+await check('a restart with nothing missing runs straight to the confirmation', () => {
+  // The honest answer to "start again" from someone whose answers are all on
+  // file. Asking them to re-enter a complete profile would be the old
+  // behaviour wearing a different hat.
+  const complete = halfFinished({
+    profile: {
+      lookingForOverseasJob: true,
+      fullName: 'Ravi Kumar',
+      currentCity: 'Chennai',
+      currentState: 'Tamil Nadu',
+      dateOfBirth: '1994-03-11',
+      education: 'class_10',
+      primaryTrade: 'helper',
+      tradePacks: [],
+      generatedQuestions: [],
+      totalExperienceBand: '1_3',
+      hasOverseasExperience: false,
+      countryPreference: 'gcc',
+      countryStrictness: 'any',
+      jobCategory: 'general_worker',
+      desiredOccupation: 'Warehouse packing',
+      workTypePreference: 'general',
+      generalWorkWillingness: 'any_suitable',
+      availability: 'immediate',
+      passportStatus: 'no',
+    },
+  });
+  for (const slot of ['aadhaar', 'pan'] as const) {
+    complete.documents[slot] = { status: 'received', askedCount: 1, updatedAt: new Date() };
+  }
+
+  const after: CandidateDoc = { ...complete, ...restartPatch(complete) };
+  for (const key of RESTART_UNSETS) delete (after as unknown as Record<string, unknown>)[key];
+
+  assert.equal(nextStep(after)?.id, 'confirm');
 });
 
 await check('a new session field cannot be forgotten by a restart', () => {
   // The real risk is not today's code, it is the field somebody adds in six
-  // months. Everything that holds half-session state must be named in the
-  // restart contract; anything missing here is a stale answer that survives.
+  // months. Everything that holds the conversation's *position* must be named
+  // in the restart contract; anything missing here is a stale pointer that
+  // survives.
   const patch = restartPatch(halfFinished());
   const cleared = new Set([...Object.keys(patch), ...RESTART_UNSETS]);
 
-  for (const field of ['profile', 'fieldMeta', 'editQueue', 'unclearCount', 'currentStep', 'pendingMulti']) {
+  for (const field of ['editQueue', 'unclearCount', 'currentStep', 'resumeStep', 'pendingMulti']) {
     assert.ok(cleared.has(field), `"${field}" is session state that a restart does not clear`);
   }
-  // And the deliberate survivors are absent from the patch, not accidentally in it.
-  for (const kept of ['documents', 'consent', 'language', 'history', 'reminderSentAt']) {
+  // And what a restart must not touch is absent from the patch, not accidentally
+  // in it. `profile` and `fieldMeta` are on this list now, which is the change.
+  for (const kept of [
+    'profile',
+    'fieldMeta',
+    'documents',
+    'consent',
+    'language',
+    'history',
+    'reminderSentAt',
+  ]) {
     assert.ok(!cleared.has(kept), `"${kept}" must survive a restart`);
   }
 });
 
 console.log('\nhanding a finished registration to the CRM');
 
-/** A candidate who has finished registering on the Singapore/Malaysia route. */
+/** A candidate who has finished registering. */
 function readyForCrm(overrides: Partial<CandidateDoc['profile']> = {}): CandidateDoc {
   return candidate({
     stage: 'REGISTRATION_COMPLETED',
@@ -2315,7 +2438,6 @@ function readyForCrm(overrides: Partial<CandidateDoc['profile']> = {}): Candidat
     profileName: 'Ravi',
     profile: {
       lookingForOverseasJob: true,
-      countryPreference: 'malaysia',
       fullName: 'Ravi Kumar',
       currentCity: 'Chennai',
       currentState: 'Tamil Nadu',
@@ -2330,25 +2452,29 @@ function readyForCrm(overrides: Partial<CandidateDoc['profile']> = {}): Candidat
   });
 }
 
-await check('residence and destination are sent as two different facts', () => {
-  // Their `country` means where someone lives; ours also records where they
-  // want to go. Merging them would file a Chennai candidate as living in
-  // Malaysia, and every recruiter filter on residence would be wrong.
+await check('residence is sent, and no destination is invented', () => {
+  // Their `country` means where someone lives. The flow no longer asks where a
+  // candidate wants to go, so nothing is sent for it — and sending the
+  // residence in its place would file a Chennai candidate as wanting to work in
+  // India, which is a fact nobody established.
   const payload = toCrmPayload(readyForCrm(), '111222333');
   assert.equal(payload.profile.country, 'India');
-  assert.equal(payload.profile.destination_country, 'Malaysia');
   assert.equal(payload.profile.location, 'Chennai, Tamil Nadu');
+  assert.equal(payload.profile.destination_country, undefined);
 });
 
-await check('a region is never sent as a destination country', () => {
-  // "Gulf countries" is six countries and "Europe" is a continent. Sending
-  // either as `destination_country` would put a fact on the record that nobody
-  // established — so nothing is sent, and the CRM's policy defaults to
-  // requiring a CV, which is the safe direction.
-  for (const region of ['gcc', 'europe', 'russia_cis', 'any', 'select']) {
+await check('a legacy destination on the record is still not sent', () => {
+  // Records answered before the question was removed still carry it. It is kept
+  // on the profile so a recruiter can see what they said (§22), and it is not
+  // resurrected into the payload — a preference from months ago is not a
+  // statement about this submission.
+  for (const region of ['gcc', 'europe', 'malaysia', 'singapore']) {
     const payload = toCrmPayload(readyForCrm({ countryPreference: region }), '111');
     assert.equal(payload.profile.destination_country, undefined, region);
   }
+
+  // And the job category, which the flow does still ask, does reach the CRM.
+  assert.equal(toCrmPayload(readyForCrm(), '111').profile.job_category, 'general_worker');
 });
 
 await check('the experience band is sent as a band, never as a number', () => {
@@ -2624,17 +2750,16 @@ await check('the status messages never quote the date of birth back', () => {
 /* question.                                                           */
 /* ------------------------------------------------------------------ */
 
-console.log('\njobs and countries from the CRM');
+console.log('\njobs from the CRM');
 
-const jobStep = stepById('sgmy_job_category')!;
-const countryStep = stepById('country_preference')!;
+const jobStep = stepById('job_category')!;
 
 /** A candidate parked on the job question, which is all `choicesFor` reads. */
 function atJobStep(overrides: Partial<CandidateDoc['profile']> = {}): CandidateDoc {
   return {
     ...candidate(),
-    currentStep: 'sgmy_job_category',
-    profile: { countryPreference: 'malaysia', ...overrides },
+    currentStep: 'job_category',
+    profile: { lookingForOverseasJob: true, ...overrides },
   } as CandidateDoc;
 }
 
@@ -2690,12 +2815,11 @@ await check('the job list never exceeds what WhatsApp will accept', () => {
 await check('a country an admin added is offered, and the regions survive', () => {
   setTaxonomyForTests({
     countries: [
-      { id: 'singapore', name: 'Singapore', order: 1 },
-      { id: 'malaysia', name: 'Malaysia', order: 2 },
-      { id: 'kuwait', name: 'Kuwait', order: 3 },
+      { id: 'kuwait', name: 'Kuwait', order: 1 },
+      { id: 'qatar', name: 'Qatar', order: 2 },
     ],
   });
-  const rendered = choicesFor(countryStep, atJobStep());
+  const rendered = choicesFor(stepById('country_preference')!, atJobStep());
   const ids = rendered.map((c) => c.id);
   assert.ok(ids.includes('kuwait'), 'a country added in the CRM never reached the candidate');
   assert.ok(ids.includes('gcc'), 'the regions are still real answers and must remain');
@@ -2704,42 +2828,16 @@ await check('a country an admin added is offered, and the regions survive', () =
   resetTaxonomy();
 });
 
-await check('a candidate choosing a new country still gets a CV ruling', () => {
-  // The point of the branch, and the reason a new country joins it: the CV
-  // policy is keyed on destination *and* job, so a candidate who names one
-  // country has to be asked their job and has to have a country name to send.
+await check('the CRM can name a country it added, and refuses to name a region', () => {
+  // `destination_country` has to be a country. An admin adding Kuwait is what
+  // makes Kuwait nameable; "the Gulf" is six countries and stays unnamed.
   setTaxonomyForTests({ countries: [{ id: 'kuwait', name: 'Kuwait', order: 1 }] });
-  const kuwait = { ...candidate(), profile: { countryPreference: 'kuwait' } } as CandidateDoc;
 
-  assert.ok(
-    inSingaporeMalaysiaBranch(kuwait),
-    'a candidate bound for Kuwait skipped the route where the job and the CV rule are settled',
-  );
-  assert.equal(destinationCountryOf(kuwait), 'Kuwait');
-  resetTaxonomy();
-});
+  const kuwait = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'kuwait' } });
+  assert.equal(toCrmPayload(kuwait, '111').profile.destination_country, 'Kuwait');
 
-await check('a region is still not a destination country', () => {
-  // "The Gulf" is six countries with six sets of rules. Naming one of them for
-  // the candidate would put a fact on the record nobody established.
-  setTaxonomyForTests({ countries: [{ id: 'kuwait', name: 'Kuwait', order: 1 }] });
-  const gulf = { ...candidate(), profile: { countryPreference: 'gcc' } } as CandidateDoc;
-  assert.equal(destinationCountryOf(gulf), undefined);
-  assert.equal(inSingaporeMalaysiaBranch(gulf), false);
-  resetTaxonomy();
-});
-
-await check('the two compiled-in countries answer the same way with or without the CRM', () => {
-  const malaysia = { ...candidate(), profile: { countryPreference: 'malaysia' } } as CandidateDoc;
-
-  resetTaxonomy();
-  const before = destinationCountryOf(malaysia);
-
-  setTaxonomyForTests({ countries: [{ id: 'malaysia', name: 'Malaysia', order: 1 }] });
-  const after = destinationCountryOf(malaysia);
-
-  assert.equal(before, 'Malaysia');
-  assert.equal(after, 'Malaysia');
+  const gulf = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'gcc' } });
+  assert.equal(toCrmPayload(gulf, '111').profile.destination_country, undefined);
   resetTaxonomy();
 });
 

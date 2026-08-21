@@ -257,7 +257,6 @@ const TYPED: Record<string, string> = {
   selected_countries: 'Romania, Serbia and Russia',
   availability_date: 'After Diwali, around November',
   desired_job: 'Warehouse supervisor',
-  passport_applied_when: 'Last month',
   language_other: 'Malayalam',
   b2b_name: 'Priya Raman',
 };
@@ -303,7 +302,8 @@ async function answerCurrentQuestion(
     }
 
     // Prefer an answer that keeps the run going through the interesting
-    // branches: a real trade, Europe (so the document branch runs), a passport.
+    // branches: a real trade, and a passport the candidate holds — which is the
+    // answer that opens the upload and puts the extractor on the path.
     const preferred: Record<string, string> = {
       entry: 'apply',
       language: 'en',
@@ -313,13 +313,15 @@ async function answerCurrentQuestion(
       main_trade: 'fabrication_welding',
       trade_disambiguation: 'welding',
       total_experience: '5_10',
+      job_category: 'fabrication_welding',
       job_preference: 'current_trade',
       related_acceptance: 'related_ok',
-      country_preference: 'europe',
+      // "Select countries" so the free-typed follow-up and the strictness
+      // question both run — the branch-maximal path this driver exists to take.
+      country_preference: 'select',
       country_strictness: 'prefer',
       availability: 'within_30',
       passport_status: 'yes',
-      europe_docs: 'all',
       confirm: 'correct',
     };
 
@@ -426,16 +428,44 @@ let statusApiOk = false;
 if (registered?.candidateId) {
   heading('Application tracking (§25)');
 
-  {
-    const before = await outboundCount();
-    // Typed unprompted, mid-menu — it is answered wherever it arrives.
-    await postWebhook(textMessage(registered.candidateId));
-    await waitForReply(before);
-    const said = await lastOutbound();
-    const ok = said.includes(registered.candidateId);
-    trackingOk = ok;
+/**
+   * Answers the §27 identity check and returns whatever the bot then said.
+   *
+   * The check used to stop at the first reply and assert the status was in it,
+   * which nothing could ever satisfy: quoting an id is met with "send the date
+   * of birth on this application", and the status only follows once that is
+   * answered. It passed for years by never running — the driver's registration
+   * did not complete, so `candidateId` was undefined and this whole block was
+   * skipped.
+   */
+  const quoteIdAndConfirm = async (): Promise<string> => {
+    {
+      const before = await outboundCount();
+      // Typed unprompted, mid-menu — it is answered wherever it arrives.
+      await postWebhook(textMessage(registered.candidateId!));
+      await waitForReply(before);
+    }
+
+    const asked = await lastOutbound();
+    const askedForDob = /date of birth|பிறந்த தேதி|जन्म तिथि/i.test(asked);
     console.log(
-      `  ${ok ? green('ok') : red('FAIL')}  an id sent unprompted is answered with its status`,
+      `  ${askedForDob ? green('ok') : red('FAIL')}  an id is met with the identity check (§27)`,
+    );
+    if (!askedForDob) return asked;
+
+    // The date as a candidate types it, from the date the record actually holds.
+    const [yyyy, mm, dd] = (registered.profile?.dateOfBirth ?? '').split('-');
+    const before = await outboundCount();
+    await postWebhook(textMessage(`${dd}/${mm}/${yyyy}`));
+    await waitForReply(before);
+    return lastOutbound();
+  };
+
+  {
+    const said = await quoteIdAndConfirm();
+    trackingOk = said.includes(registered.candidateId);
+    console.log(
+      `  ${trackingOk ? green('ok') : red('FAIL')}  the status is reported once identity is confirmed`,
     );
     console.log(dim(`       ${said.split('\n').slice(0, 2).join(' / ')}`));
   }
@@ -458,10 +488,7 @@ if (registered?.candidateId) {
       `  ${rejected ? green('ok') : red('FAIL')}  an unauthenticated write is refused (${unauthorised.status})`,
     );
 
-    const before = await outboundCount();
-    await postWebhook(textMessage(registered.candidateId!));
-    await waitForReply(before);
-    const said = await lastOutbound();
+    const said = await quoteIdAndConfirm();
     statusApiOk = res.ok && rejected && /Completed|முடிந்தது|पूरा/.test(said);
     console.log(
       `  ${statusApiOk ? green('ok') : red('FAIL')}  the candidate is told the new outcome`,
@@ -904,21 +931,69 @@ let idleOk = false;
   console.log(`  ${savedOk ? green('ok') : red('FAIL')}  the answers already given are kept`);
   idleOk = idleOk && savedOk;
 
+  // ── Continue: back to the exact question the prompt interrupted ──────────
   {
+    const before = await outboundCount(IDLE_WA_ID);
+    await postWebhook(tapMessage('continue', 'Continue session', IDLE_WA_ID), IDLE_WA_ID);
+    await waitForReply(before, IDLE_WA_ID);
+
+    const fresh = await candidates().findOne({ waId: IDLE_WA_ID });
+    const resumed =
+      fresh?.sessionEndedAt == null &&
+      fresh?.currentStep === stepBefore &&
+      fresh?.resumeStep == null;
+    console.log(
+      `  ${resumed ? green('ok') : red('FAIL')}  "continue" resumes the interrupted question`,
+    );
+    console.log(dim(`       stopped at ${stepBefore}, resumed at ${fresh?.currentStep}`));
+    idleOk = idleOk && resumed;
+  }
+
+  // Answer it, so the restart below has something it must not throw away.
+  {
+    const before = await outboundCount(IDLE_WA_ID);
+    await postWebhook(tapMessage('en', 'English', IDLE_WA_ID), IDLE_WA_ID);
+    await waitForReply(before, IDLE_WA_ID);
+  }
+
+  const answered = await candidates().findOne({ waId: IDLE_WA_ID });
+  const fieldsBefore = Object.keys(answered?.profile ?? {}).length;
+
+  // ── Restart: the flow from the top, the record untouched ─────────────────
+  {
+    // Lapse it a second time so the same prompt is on screen.
+    await candidates().updateOne({ waId: IDLE_WA_ID }, { $set: { lastInboundAt: longAgo } });
+    await endIdleSessions();
+
     const before = await outboundCount(IDLE_WA_ID);
     await postWebhook(tapMessage('restart', 'Restart session', IDLE_WA_ID), IDLE_WA_ID);
     await waitForReply(before, IDLE_WA_ID);
 
     const fresh = await candidates().findOne({ waId: IDLE_WA_ID });
-    // Answers go, consent stays: it is a recorded fact, not an answer being
-    // revised, and §4 is satisfied either way.
-    const restarted =
-      Object.keys(fresh?.profile ?? {}).length === 0 && fresh?.sessionEndedAt == null;
-    console.log(`  ${restarted ? green('ok') : red('FAIL')}  "start from first" clears the answers`);
+    const fieldsAfter = Object.keys(fresh?.profile ?? {}).length;
+
+    // Nothing deleted. This is the change: a restart used to empty `profile`,
+    // so tapping "start again" over one mistyped answer cost the candidate all
+    // of them. DELETE is what withdraws answers, and it asks first (§23).
+    const kept = fieldsAfter >= fieldsBefore && fieldsBefore > 0;
+    console.log(`  ${kept ? green('ok') : red('FAIL')}  "restart" keeps every stored answer`);
+    console.log(dim(`       ${fieldsBefore} fields before, ${fieldsAfter} after`));
+
+    // And the position is reset: the session is open again and the bot is
+    // asking something, having walked the flow from the first step.
+    const rewound = fresh?.sessionEndedAt == null && !!fresh?.currentStep;
+    console.log(`  ${rewound ? green('ok') : red('FAIL')}  and re-walks the flow from the top`);
+
+    // Skipping what it already knows, which is the other half of the promise.
+    const language = stepById('language')!;
+    const reAsked = fresh?.currentStep === 'language' && !language.satisfied(fresh);
     console.log(
-      dim(`       stage=${fresh?.stage} step=${fresh?.currentStep} fields=${Object.keys(fresh?.profile ?? {}).length}`),
+      `  ${!reAsked ? green('ok') : red('FAIL')}  without re-asking an answered question (§1)`,
     );
-    idleOk = idleOk && restarted;
+    console.log(
+      dim(`       stage=${fresh?.stage} step=${fresh?.currentStep} fields=${fieldsAfter}`),
+    );
+    idleOk = idleOk && kept && rewound && !reAsked;
   }
 }
 
@@ -1034,11 +1109,11 @@ verdict(
 );
 
 // §28 asks for roughly 7–10 questions for a typical registration, and this run
-// is not typical: the driver deliberately takes every expensive branch. Europe
-// adds `europe_docs` and three uploads, "Fabrication/Welding" runs two trade
-// packs, and a valid passport adds its expiry — about ten steps a Gulf candidate
-// with a clean CV never sees. The ceiling below is for that branch-maximal path;
-// exceeding it means questions are being asked that the CV already answered.
+// is not typical: the driver deliberately takes every expensive branch.
+// "Fabrication/Welding" runs two trade packs, and holding a passport adds the
+// upload on top of the two cards every candidate is now asked for. The ceiling
+// below is for that branch-maximal path; exceeding it means questions are being
+// asked that the CV already answered.
 verdict(
   'question count is reasonable (§28)',
   questionsAsked > 0 && questionsAsked <= 20,

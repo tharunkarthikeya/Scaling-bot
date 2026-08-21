@@ -29,12 +29,7 @@ import {
   WELCOME,
   render,
 } from './copy.js';
-import {
-  DOCUMENTS,
-  EUROPE_RUSSIA_COUNTRIES,
-  EUROPE_RUSSIA_PREFERENCES,
-  TUNABLES,
-} from './rules.js';
+import { DOCUMENTS, TUNABLES } from './rules.js';
 import {
   answersFromEvidence,
   disambiguationFor,
@@ -42,9 +37,8 @@ import {
   resolvePacks,
   type TradeQuestion,
 } from './trades.js';
-import { isTaxonomyCountry, taxonomyCountryName } from '../crm/taxonomy.js';
 import { MAX_GENERATED_QUESTIONS } from './tradeQuestions.js';
-import { passportExpiryFlag } from './profile.js';
+import { taxonomyCountryName } from '../crm/taxonomy.js';
 import {
   availabilityBand,
   experienceBand,
@@ -69,7 +63,6 @@ export type Section =
   | 'job_preference'
   | 'country'
   | 'availability'
-  | 'passport'
   | 'documents'
   | 'confirm';
 
@@ -178,47 +171,6 @@ const has = (v: unknown): boolean =>
 /* ─────────────────────────────────────────────────────────────────────────────
  * Predicates shared by several steps
  * ───────────────────────────────────────────────────────────────────────────*/
-
-function normaliseCountry(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .trim();
-}
-
-/**
- * Whether the candidate is in the Europe/Russia identity-document branch (§13).
- *
- * Triggered by the preference they picked, or by naming a listed country when
- * they chose "Select countries". Deliberately not triggered by "Any country" —
- * asking for Aadhaar and PAN from someone open to anywhere would collect
- * identity documents we have no specific reason to hold.
- */
-export function inEuropeRussiaBranch(c: CandidateDoc): boolean {
-  const pref = p(c).countryPreference;
-  if (pref && EUROPE_RUSSIA_PREFERENCES.includes(pref)) return true;
-
-  for (const country of p(c).selectedCountries ?? []) {
-    const n = normaliseCountry(country);
-    if (EUROPE_RUSSIA_COUNTRIES.some((known) => n.includes(known))) return true;
-  }
-  return false;
-}
-
-/** Whether we should still be asking for `docId` in the document branch. */
-function wantsDocument(c: CandidateDoc, docId: string): boolean {
-  if (!inEuropeRussiaBranch(c)) return false;
-
-  const availability = p(c).documentAvailability;
-  // "Upload later" is a promise, not a refusal — the slot is marked pending and
-  // staff chase it. Asking again in the same conversation would be pestering.
-  if (availability === 'later') return false;
-  if (availability === 'some') {
-    return (p(c).availableDocuments ?? []).includes(docId);
-  }
-  return availability === 'all';
-}
 
 function documentSatisfied(c: CandidateDoc, docId: string): boolean {
   const slot = c.documents?.[docId];
@@ -360,47 +312,6 @@ export const GENERAL_JOB_CHOICES: Choice[] = [
   { id: 'other', label: OTHER },
 ];
 
-export const COUNTRY_CHOICES: Choice[] = [
-  // Labelled the way candidates say it — "Gulf countries", never "GCC". The
-  // acronym is trade jargon; the people answering this question say Gulf, and
-  // every other language here already did. The id stays `gcc`: it is written
-  // into every record that has already answered this question, and renaming it
-  // would orphan their stored preference.
-  {
-    id: 'gcc',
-    label: {
-      en: 'Gulf countries',
-      ta: 'வளைகுடா நாடுகள்',
-      hi: 'गल्फ देश',
-      te: 'గల్ఫ్ దేశాలు',
-      ml: 'ഗൾഫ് രാജ്യങ്ങൾ',
-    },
-  },
-  { id: 'europe', label: { en: 'Europe', ta: 'ஐரோப்பா', hi: 'यूरोप', te: 'యూరప్', ml: 'യൂറോപ്പ്' } },
-  { id: 'russia_cis', label: { en: 'Russia / CIS', ta: 'ரஷ்யா/CIS', hi: 'रूस/CIS', te: 'రష్యా / CIS', ml: 'റഷ്യ / CIS' } },
-  // Two options, not one.
-  //
-  // These used to share a row as "Singapore / Malaysia", which was fine while
-  // the answer was only a preference. It stopped being fine the moment the CRM
-  // began deciding the CV requirement from the destination: a rule about
-  // Malaysia cannot be applied to someone whose record says "Singapore or
-  // Malaysia, we never asked". `destination_country` has to name one country,
-  // so the question has to offer one country.
-  {
-    id: 'singapore',
-    label: { en: 'Singapore', ta: 'சிங்கப்பூர்', hi: 'सिंगापुर', te: 'సింగపూర్', ml: 'സിംഗപ്പൂർ' },
-  },
-  {
-    id: 'malaysia',
-    label: { en: 'Malaysia', ta: 'மலேசியா', hi: 'मलेशिया', te: 'మలేషియా', ml: 'മലേഷ്യ' },
-  },
-  { id: 'any', label: { en: 'Any country', ta: 'எந்த நாடும்', hi: 'कोई भी देश', te: 'ఏ దేశమైనా', ml: 'ഏത് രാജ്യവും' } },
-  {
-    id: 'select',
-    label: { en: 'Select countries', ta: 'நாடுகளைத் தேர்வு', hi: 'देश चुनें', te: 'దేశాలు ఎంచుకోండి', ml: 'രാജ്യങ്ങൾ തിരഞ്ഞെടുക്കൂ' },
-  },
-];
-
 /**
  * The job a candidate is looking for, as a controlled value.
  *
@@ -447,11 +358,58 @@ export const JOB_CATEGORY_CHOICES: Choice[] = [
   { id: 'other', label: OTHER },
 ];
 
-export const DOCUMENT_CHOICES: Choice[] = [
-  { id: 'passport', label: { en: 'Passport', ta: 'பாஸ்போர்ட்', hi: 'पासपोर्ट', te: 'పాస్‌పోర్ట్', ml: 'പാസ്‌പോർട്ട്' } },
-  { id: 'aadhaar', label: { en: 'Aadhaar', ta: 'ஆதார்', hi: 'आधार', te: 'ఆధార్', ml: 'ആധാർ' } },
-  { id: 'pan', label: { en: 'PAN', ta: 'PAN', hi: 'PAN', te: 'PAN', ml: 'PAN' } },
+/**
+ * Where a candidate would like to work.
+ *
+ * Singapore and Malaysia are deliberately absent. They were two rows here and
+ * the trigger for a whole branch — the passport collected before the CV, the job
+ * asked early so the CRM's CV policy could be resolved from destination plus job
+ * — and the agency stopped placing into them. Removing the rows removed the
+ * branch; what is left is the ordinary question every other destination always
+ * used.
+ *
+ * The remaining ids are unchanged, because they are written into every record
+ * that has already answered this and renaming one would orphan a stored
+ * preference (§22).
+ */
+export const COUNTRY_CHOICES: Choice[] = [
+  // Labelled the way candidates say it — "Gulf countries", never "GCC". The
+  // acronym is trade jargon; the people answering this question say Gulf, and
+  // every other language here already did. The id stays `gcc`: it is written
+  // into every record that has already answered this question, and renaming it
+  // would orphan their stored preference.
+  {
+    id: 'gcc',
+    label: {
+      en: 'Gulf countries',
+      ta: 'வளைகுடா நாடுகள்',
+      hi: 'गल्फ देश',
+      te: 'గల్ఫ్ దేశాలు',
+      ml: 'ഗൾഫ് രാജ്യങ്ങൾ',
+    },
+  },
+  { id: 'europe', label: { en: 'Europe', ta: 'ஐரோப்பா', hi: 'यूरोप', te: 'యూరప్', ml: 'യൂറോപ്പ്' } },
+  { id: 'russia_cis', label: { en: 'Russia / CIS', ta: 'ரஷ்யா/CIS', hi: 'रूस/CIS', te: 'రష్యా / CIS', ml: 'റഷ്യ / CIS' } },
+  { id: 'gulf countries', label: { en: 'Gulf countries', ta: 'வளைகுடா நாடுகள்', hi: 'गल्फ देश', te: 'గల్ఫ్ దేశాలు', ml: 'ഗൾഫ് രാജ്യങ്ങൾ' } },
+  { id: 'any', label: { en: 'Any country', ta: 'எந்த நாடும்', hi: 'कोई भी देश', te: 'ఏ దేశమైనా', ml: 'ഏത് രാജ്യവും' } },
+  {
+    id: 'select',
+    label: { en: 'Select countries', ta: 'நாடுகளைத் தேர்வு', hi: 'देश चुनें', te: 'దేశాలు ఎంచుకోండి', ml: 'രാജ്യങ്ങൾ തിരഞ്ഞെടുക്കൂ' },
+  },
 ];
+
+/**
+ * The destination as a country name, for the CRM.
+ *
+ * The bot stores an option id; the CRM keys on a real country. Only the ids that
+ * *are* single countries resolve, and every one of those now comes from the
+ * CRM's own country list — `gcc` covers six and `europe` covers a continent, and
+ * inventing a country for either would put a fact on the record nobody
+ * established. Those candidates reach the CRM with no destination.
+ */
+export function destinationCountryOf(c: CandidateDoc): string | undefined {
+  return taxonomyCountryName(String(p(c).countryPreference));
+}
 
 const YES_NO: Choice[] = [
   { id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ', te: 'అవును', ml: 'അതെ' } },
@@ -582,165 +540,21 @@ const START_STEPS: FlowStep[] = [
 ];
 
 /**
- * Whether this candidate is on the Singapore / Malaysia route.
+ * The CV, asked immediately after consent.
  *
- * The one branch that changes the shape of registration rather than adding a
- * question to it: the passport is collected first and answers what a CV would
- * otherwise be asked to answer, so the CV becomes optional and the questions
- * the passport settles are never put to the candidate at all.
- */
-export function inSingaporeMalaysiaBranch(c: CandidateDoc): boolean {
-  const chosen = String(p(c).countryPreference);
-  // Any country the CRM lists takes this route, not only the two that were
-  // compiled in. The branch was never really about Singapore and Malaysia — it
-  // is the route for a candidate who named *one country*, which is the only
-  // case where `destination_country + job` can be resolved into a CV rule at
-  // all. A region cannot: "the Gulf" is six countries with six sets of rules.
-  //
-  // So an admin adding Kuwait gets Kuwait candidates asked for a passport
-  // first, then their job, then whatever the CV policy says for that pair —
-  // which is what makes adding a country in the CRM actually work.
-  return SINGAPORE_MALAYSIA.has(chosen) || isTaxonomyCountry(chosen);
-}
-
-/**
- * The destinations that take the passport-first route.
+ * First because of what it saves: the resume extractor fills the name, the date
+ * of birth, the trade, the experience and the certifications, and every field it
+ * fills is a question `nextStep` then skips (§1, §5). Asking for it before the
+ * personal and experience sections is what makes that saving available to those
+ * sections rather than arriving after they have already been put to the
+ * candidate one at a time.
  *
- * A set rather than a comparison, because the two used to be one option and are
- * now two — and because `singapore_malaysia` still exists on every record
- * answered before the split. Those candidates chose this branch and must keep
- * it; §22 does not let a menu change rewrite what someone already said.
- */
-const SINGAPORE_MALAYSIA: ReadonlySet<string> = new Set([
-  'singapore',
-  'malaysia',
-  // Historical, pre-split. Read-only: nothing writes it any more.
-  'singapore_malaysia',
-]);
-
-/**
- * The destination country as a country name, for the CRM.
- *
- * The bot stores an option id; the CRM's CV policy keys on a real country. Only
- * the ids that *are* single countries map — `gcc` covers six and `europe`
- * covers a continent, and inventing a country for them would put a fact on the
- * record nobody established. Those candidates reach the CRM with no
- * destination, and the policy defaults to requiring a CV, which is the safe
- * direction.
- *
- * The two below are the ones compiled in. Anything else a candidate can choose
- * came from the CRM's country list, and its name comes from there too — see
- * `destinationCountryOf`.
- */
-const DESTINATION_COUNTRY_BY_ID: Record<string, string> = {
-  singapore: 'Singapore',
-  malaysia: 'Malaysia',
-};
-
-export function destinationCountryOf(c: CandidateDoc): string | undefined {
-  const chosen = String(p(c).countryPreference);
-  // The CRM first: a country an admin added exists only there, and for the two
-  // that exist in both the answer is identical.
-  return taxonomyCountryName(chosen) ?? DESTINATION_COUNTRY_BY_ID[chosen];
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * The Singapore / Malaysia branch
- *
- * Placed before the CV rather than after it, which is the whole point. The
- * passport carries the candidate's legal name, their date of birth, their
- * nationality and the number and expiry staff need — all of it printed, none of
- * it typed from memory. Reading it first means the name and date-of-birth
- * questions are never asked, because §1 does not ask for what is already on
- * file and §5 turns what a document says into profile fields.
- *
- * The CV still follows, and is still offered rather than required: someone who
- * has one gives us their work history, and someone who does not is not held up
- * over it.
- * ───────────────────────────────────────────────────────────────────────────*/
-
-const SINGAPORE_MALAYSIA_STEPS: FlowStep[] = [
-  {
-    id: 'sgmy_passport',
-    section: 'passport',
-    prompt: {
-      en: 'Please send a clear photo or scan of your passport — the page with your photo and details.\nWe will read your name and date of birth from it, so you will not have to type them.',
-      ta: 'உங்கள் பாஸ்போர்ட்டின் புகைப்படம் மற்றும் விவரங்கள் உள்ள பக்கத்தைத் தெளிவாக அனுப்பவும்.\nஉங்கள் பெயரையும் பிறந்த தேதியையும் அதிலிருந்தே எடுத்துக்கொள்வோம் — நீங்கள் தட்டச்சு செய்ய வேண்டாம்.',
-      hi: 'कृपया अपने पासपोर्ट की साफ़ फ़ोटो या स्कैन भेजें — जिस पेज पर आपकी फ़ोटो और जानकारी है।\nहम आपका नाम और जन्मतिथि उसी से पढ़ लेंगे, आपको टाइप नहीं करना पड़ेगा।',
-      te: 'దయచేసి మీ పాస్‌పోర్ట్ ఫోటో లేదా స్కాన్ పంపండి — మీ ఫోటో, వివరాలు ఉన్న పేజీ.\nమీ పేరు, పుట్టిన తేదీ మేము దాన్నుంచే తీసుకుంటాం, మీరు టైప్ చేయాల్సిన పని లేదు.',
-      ml: 'ദയവായി നിങ്ങളുടെ പാസ്‌പോർട്ടിന്റെ വ്യക്തമായ ഫോട്ടോ അയക്കൂ — ഫോട്ടോയും വിവരങ്ങളും ഉള്ള പേജ്.\nനിങ്ങളുടെ പേരും ജനന തീയതിയും അതിൽ നിന്ന് തന്നെ എടുത്തുകൊള്ളാം, ടൈപ്പ് ചെയ്യേണ്ട.',
-    },
-    input: 'document',
-    document: 'passport',
-    allowMedia: true,
-    allowStaff: true,
-    hiddenChoices: DOCUMENT_FALLBACKS,
-    when: inSingaporeMalaysiaBranch,
-    // The same slot `passport_document` fills, so a passport that arrived any
-    // other way — sent unprompted, or found inside a CV — already satisfies
-    // this and the candidate is not asked twice (§1).
-    satisfied: (c) => documentSatisfied(c, 'passport'),
-  },
-
-  {
-    /**
-     * What they are looking for, asked before the CV and before what they
-     * already do.
-     *
-     * Before the CV because the CV requirement is computed from destination and
-     * job together: asking for a document before knowing whether it is needed
-     * is either a wasted request or a missing one. Before `main_trade` because
-     * the passport has already established who this person is, so the
-     * conversation can open on what they actually came to talk about — and §9's
-     * separation of "what you do" from "what you want" is preserved either way,
-     * since the two write different fields.
-     *
-     * A tap, not free text, and that is the load-bearing detail — see
-     * `JOB_CATEGORY_CHOICES`. Their own words are still captured when they type
-     * instead of tapping.
-     */
-    id: 'sgmy_job_category',
-    section: 'job_preference',
-    prompt: {
-      en: 'Which job are you looking for?',
-      ta: 'எந்த வேலையைத் தேடுகிறீர்கள்?',
-      hi: 'आप कौन सी नौकरी ढूंढ रहे हैं?',
-      te: 'మీరు ఏ ఉద్యోగం కోసం చూస్తున్నారు?',
-      ml: 'നിങ്ങൾ ഏത് ജോലിയാണ് അന്വേഷിക്കുന്നത്?',
-    },
-    input: 'choice',
-    choices: JOB_CATEGORY_CHOICES,
-    acceptsOccupation: 'category',
-    when: inSingaporeMalaysiaBranch,
-    satisfied: (c) => has(p(c).jobCategory),
-    /**
-     * A tapped row records the category. Anything typed records the category the
-     * interpreter mapped it to *and* what they actually said.
-     *
-     * `desiredOccupation` is filled here too, so the general flow's
-     * `desired_job` is already answered and never asked again (§1).
-     */
-    apply: (a) => {
-      const typed = (a.value ?? a.raw ?? '').trim();
-      if (a.ids?.length) {
-        return {
-          jobCategory: a.ids[0],
-          ...(typed && !a.tapped ? { desiredOccupation: typed } : {}),
-        };
-      }
-      return typed ? { jobCategory: 'other', desiredOccupation: typed } : {};
-    },
-    clears: ['jobCategory', 'desiredOccupation', 'cvRequired', 'cvPolicyVersion'],
-  },
-];
-
-/**
- * The CV.
- *
- * Its own step rather than the tail of `START_STEPS`, because it is no longer
- * always the first thing asked for. On the Singapore / Malaysia route the
- * passport comes first and this follows it; everywhere else this is still where
- * registration begins in earnest.
+ * Unconditional. It was once skippable on the single-country route, where the
+ * CRM's policy could rule a CV unnecessary for a given destination and job — but
+ * that policy keys on a destination this flow no longer collects, so there is
+ * nothing left to evaluate and the honest default is to ask. The CRM may still
+ * refuse a submission for a missing CV, and `reopenCvForCrm` reopens this slot
+ * when it does.
  */
 const CV_STEP: FlowStep = {
   id: 'cv',
@@ -761,16 +575,6 @@ const CV_STEP: FlowStep = {
   ],
   hiddenChoices: DOCUMENT_FALLBACKS,
   allowStaff: true,
-  /**
-   * Skipped where the CV policy says no CV is needed.
-   *
-   * Only on the Singapore / Malaysia route, and only once the CRM has actually
-   * answered — `cvRequired` is undefined until then, and an undefined answer
-   * asks for the CV rather than assuming it away. Everywhere else this is
-   * unconditional exactly as it always was: the CV is where registration begins
-   * for a Gulf or Europe candidate and nothing here changes that.
-   */
-  when: (c) => !(inSingaporeMalaysiaBranch(c) && p(c).cvRequired === false),
   satisfied: (c) => documentSatisfied(c, 'cv'),
 };
 
@@ -995,6 +799,98 @@ const PERSONAL_STEPS: FlowStep[] = [
  * §7  Experience and skills
  * ───────────────────────────────────────────────────────────────────────────*/
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §10  Where they want to work
+ *
+ * After the personal details rather than before the CV, which is where it sat
+ * while it was a branch point — it decided whether the passport or the CV came
+ * first, and a branch point asked after the branch cannot branch. It no longer
+ * decides anything about the shape of the flow: every candidate is asked for a
+ * CV, and every candidate is asked for the same documents. So it is an ordinary
+ * preference again, and it is asked once the bot knows who it is talking to.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+const COUNTRY_STEPS: FlowStep[] = [
+  {
+    id: 'country_preference',
+    section: 'country',
+    prompt: {
+      en: 'Where would you like to work?',
+      ta: 'எங்கு வேலை செய்ய விரும்புகிறீர்கள்?',
+      hi: 'आप कहाँ काम करना चाहेंगे?',
+      te: 'మీరు ఎక్కడ పని చేయాలనుకుంటున్నారు?',
+      ml: 'നിങ്ങൾക്ക് എവിടെയാണ് ജോലി ചെയ്യണ്ടത്?',
+    },
+    input: 'choice',
+    choices: COUNTRY_CHOICES,
+    satisfied: (c) => has(p(c).countryPreference),
+    apply: (a) => ({ countryPreference: a.ids?.[0] }),
+    clears: ['countryPreference', 'selectedCountries', 'countryStrictness'],
+  },
+
+  {
+    id: 'selected_countries',
+    section: 'country',
+    prompt: {
+      en: 'Please type the countries you prefer.',
+      ta: 'நீங்கள் விரும்பும் நாடுகளைத் தட்டச்சு செய்யவும்.',
+      hi: 'कृपया अपने पसंदीदा देश टाइप करें।',
+      te: 'మీకు నచ్చిన దేశాల పేర్లు టైప్ చేయండి.',
+      ml: 'നിങ്ങൾക്ക് ഇഷ്ടമുള്ള രാജ്യങ്ങൾ ടൈപ്പ് ചെയ്യൂ.',
+    },
+    hint: {
+      en: 'Example: Romania, Serbia and Russia',
+      ta: 'எடுத்துக்காட்டு: ருமேனியா, செர்பியா மற்றும் ரஷ்யா',
+      hi: 'उदाहरण: रोमानिया, सर्बिया और रूस',
+      te: 'ఉదాహరణ: రొమేనియా, సెర్బియా మరియు రష్యా',
+      ml: 'ഉദാഹരണം: റൊമാനിയ, സെർബിയ, റഷ്യ',
+    },
+    input: 'text',
+    when: (c) => p(c).countryPreference === 'select',
+    satisfied: (c) => has(p(c).selectedCountries),
+    apply: (a) => ({
+      selectedCountries: (a.value ?? '')
+        .split(/[,;/]| and | மற்றும் | और /i)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    }),
+    clears: ['selectedCountries'],
+  },
+
+  {
+    id: 'country_strictness',
+    section: 'country',
+    prompt: {
+      en: 'Is this your strict preference?',
+      ta: 'இது கண்டிப்பான விருப்பமா?',
+      hi: 'क्या यह आपकी सख़्त पसंद है?',
+      te: 'ఇదే మీ పక్కా ఇష్టమా?',
+      ml: 'ഇത് നിങ്ങളുടെ ഉറച്ച തീരുമാനമാണോ?',
+    },
+    input: 'choice',
+    choices: [
+      {
+        id: 'strict',
+        label: { en: 'Only these countries', ta: 'இந்த நாடுகள் மட்டும்', hi: 'सिर्फ़ ये देश', te: 'ఈ దేశాలే కావాలి', ml: 'ഈ രാജ്യങ്ങൾ മാത്രം' },
+      },
+      {
+        id: 'prefer',
+        label: { en: 'Others okay too', ta: 'மற்ற நாடுகளும் சரி', hi: 'दूसरे देश भी चलेंगे', te: 'ఇతరాలు కూడా సరే', ml: 'മറ്റുള്ളവയും ആകാം' },
+      },
+      {
+        id: 'any',
+        label: { en: 'Any suitable country', ta: 'ஏதேனும் நாடு', hi: 'कोई भी देश', te: 'ఏ దేశమైనా సరిపోతుంది', ml: 'ഏത് രാജ്യവും മതി' },
+      },
+    ],
+    // Only meaningful once they have named somewhere specific. "Any country"
+    // already answers this question.
+    when: (c) => p(c).countryPreference !== 'any',
+    satisfied: (c) => has(p(c).countryStrictness),
+    apply: (a) => ({ countryStrictness: a.ids?.[0] }),
+    clears: ['countryStrictness'],
+  },
+];
+
 const EXPERIENCE_STEPS: FlowStep[] = [
 
   {
@@ -1133,89 +1029,55 @@ const EXPERIENCE_STEPS: FlowStep[] = [
  * point that is asked two thirds of the way through cannot branch anything.
  * ---------------------------------------------------------------------------*/
 
-const COUNTRY_STEPS: FlowStep[] = [
-  {
-    id: 'country_preference',
-    section: 'country',
-    prompt: {
-      en: 'Where would you like to work?',
-      ta: 'எங்கு வேலை செய்ய விரும்புகிறீர்கள்?',
-      hi: 'आप कहाँ काम करना चाहेंगे?',
-      te: 'మీరు ఎక్కడ పని చేయాలనుకుంటున్నారు?',
-      ml: 'നിങ്ങൾക്ക് എവിടെയാണ് ജോലി ചെയ്യണ്ടത്?',
-    },
-    input: 'choice',
-    choices: COUNTRY_CHOICES,
-    satisfied: (c) => has(p(c).countryPreference),
-    apply: (a) => ({ countryPreference: a.ids?.[0] }),
-    clears: ['countryPreference', 'selectedCountries', 'countryStrictness'],
-  },
-
-  {
-    id: 'selected_countries',
-    section: 'country',
-    prompt: {
-      en: 'Please type the countries you prefer.',
-      ta: 'நீங்கள் விரும்பும் நாடுகளைத் தட்டச்சு செய்யவும்.',
-      hi: 'कृपया अपने पसंदीदा देश टाइप करें।',
-      te: 'మీకు నచ్చిన దేశాల పేర్లు టైప్ చేయండి.',
-      ml: 'നിങ്ങൾക്ക് ഇഷ്ടമുള്ള രാജ്യങ്ങൾ ടൈപ്പ് ചെയ്യൂ.',
-    },
-    hint: {
-      en: 'Example: Romania, Serbia and Russia',
-      ta: 'எடுத்துக்காட்டு: ருமேனியா, செர்பியா மற்றும் ரஷ்யா',
-      hi: 'उदाहरण: रोमानिया, सर्बिया और रूस',
-      te: 'ఉదాహరణ: రొమేనియా, సెర్బియా మరియు రష్యా',
-      ml: 'ഉദാഹരണം: റൊമാനിയ, സെർബിയ, റഷ്യ',
-    },
-    input: 'text',
-    when: (c) => p(c).countryPreference === 'select',
-    satisfied: (c) => has(p(c).selectedCountries),
-    apply: (a) => ({
-      selectedCountries: (a.value ?? '')
-        .split(/[,;/]| and | மற்றும் | और /i)
-        .map((s) => s.trim())
-        .filter(Boolean),
-    }),
-    clears: ['selectedCountries'],
-  },
-
-  {
-    id: 'country_strictness',
-    section: 'country',
-    prompt: {
-      en: 'Is this your strict preference?',
-      ta: 'இது கண்டிப்பான விருப்பமா?',
-      hi: 'क्या यह आपकी सख़्त पसंद है?',
-      te: 'ఇదే మీ పక్కా ఇష్టమా?',
-      ml: 'ഇത് നിങ്ങളുടെ ഉറച്ച തീരുമാനമാണോ?',
-    },
-    input: 'choice',
-    choices: [
-      {
-        id: 'strict',
-        label: { en: 'Only these countries', ta: 'இந்த நாடுகள் மட்டும்', hi: 'सिर्फ़ ये देश', te: 'ఈ దేశాలే కావాలి', ml: 'ഈ രാജ്യങ്ങൾ മാത്രം' },
-      },
-      {
-        id: 'prefer',
-        label: { en: 'Others okay too', ta: 'மற்ற நாடுகளும் சரி', hi: 'दूसरे देश भी चलेंगे', te: 'ఇతరాలు కూడా సరే', ml: 'മറ്റുള്ളവയും ആകാം' },
-      },
-      {
-        id: 'any',
-        label: { en: 'Any suitable country', ta: 'ஏதேனும் நாடு', hi: 'कोई भी देश', te: 'ఏ దేశమైనా సరిపోతుంది', ml: 'ഏത് രാജ്യവും മതി' },
-      },
-    ],
-    // Only meaningful once they have named somewhere specific. "Any country"
-    // already answers this question.
-    when: (c) => p(c).countryPreference !== 'any',
-    satisfied: (c) => has(p(c).countryStrictness),
-    apply: (a) => ({ countryStrictness: a.ids?.[0] }),
-    clears: ['countryStrictness'],
-  },
-
-];
-
 const PREFERENCE_STEPS: FlowStep[] = [
+  {
+    /**
+     * What they are looking for, as a controlled value (§9).
+     *
+     * This was `sgmy_job_category` and ran only on the single-country route,
+     * where it fed the CRM's CV policy. The route is gone; the question is not,
+     * because it is the only thing that fills `job_category` — the controlled
+     * field the CRM matches vacancies on. Dropping it with the route would have
+     * left every candidate reaching the CRM with their own words and no
+     * category, which is a free-text field pretending to be a filter.
+     *
+     * A tap, not free text, and that is the load-bearing detail — see
+     * `JOB_CATEGORY_CHOICES`. Their own words are still captured when they type
+     * instead of tapping.
+     */
+    id: 'job_category',
+    section: 'job_preference',
+    prompt: {
+      en: 'Which job are you looking for?',
+      ta: 'எந்த வேலையைத் தேடுகிறீர்கள்?',
+      hi: 'आप कौन सी नौकरी ढूंढ रहे हैं?',
+      te: 'మీరు ఏ ఉద్యోగం కోసం చూస్తున్నారు?',
+      ml: 'നിങ്ങൾ ഏത് ജോലിയാണ് അന്വേഷിക്കുന്നത്?',
+    },
+    input: 'choice',
+    choices: JOB_CATEGORY_CHOICES,
+    acceptsOccupation: 'category',
+    satisfied: (c) => has(p(c).jobCategory),
+    /**
+     * A tapped row records the category. Anything typed records the category the
+     * interpreter mapped it to *and* what they actually said.
+     *
+     * `desiredOccupation` is filled here too, so `desired_job` below is already
+     * answered and never asked again (§1).
+     */
+    apply: (a) => {
+      const typed = (a.value ?? a.raw ?? '').trim();
+      if (a.ids?.length) {
+        return {
+          jobCategory: a.ids[0],
+          ...(typed && !a.tapped ? { desiredOccupation: typed } : {}),
+        };
+      }
+      return typed ? { jobCategory: 'other', desiredOccupation: typed } : {};
+    },
+    clears: ['jobCategory', 'desiredOccupation'],
+  },
+
   {
     id: 'job_preference',
     section: 'job_preference',
@@ -1477,10 +1339,34 @@ const PREFERENCE_STEPS: FlowStep[] = [
  * §12  Passport status
  * ───────────────────────────────────────────────────────────────────────────*/
 
-const PASSPORT_STEPS: FlowStep[] = [
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §13–§16  Documents
+ *
+ * Asked of every candidate. This section used to be gated on a Europe/Russia
+ * destination, which is how a Gulf candidate reached the end of registration
+ * without ever being asked for an identity document — and that gate read the
+ * country preference, a question this flow no longer asks. So the gate is gone
+ * and the three documents are asked in one order, of everyone.
+ *
+ * The passport comes first, and as two questions rather than one: whether they
+ * have one, and then the booklet itself. The split matters because "no" and
+ * "applied for it" are real answers that no upload can express, and because
+ * there is no point asking someone without a passport to photograph it.
+ *
+ * Nothing here asks about the passport's validity. It used to — an expiry date
+ * typed from memory, which is the least reliable thing anyone puts on a record.
+ * The date is read off the page by the passport extractor instead, and
+ * `resumeAfterDocument` tells the candidate when what it read has expired or is
+ * about to (§12).
+ *
+ * Aadhaar is read (§15). PAN is stored and never read — see `rules.ts`, where
+ * `ocr: 'none'` is enforced at boot rather than merely declared.
+ * ─────────────────────────────────────────────────────────────────────────────*/
+
+const DOCUMENT_STEPS: FlowStep[] = [
   {
     id: 'passport_status',
-    section: 'passport',
+    section: 'documents',
     prompt: {
       en: 'Do you have a valid passport?',
       ta: 'செல்லுபடியாகும் பாஸ்போர்ட் உள்ளதா?',
@@ -1495,49 +1381,40 @@ const PASSPORT_STEPS: FlowStep[] = [
       { id: 'expired', label: { en: 'Expired', ta: 'காலாவதியானது', hi: 'एक्सपायर हो गया', te: 'గడువు ముగిసింది', ml: 'കാലാവധി കഴിഞ്ഞു' } },
       { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
     ],
-    // A passport already on file answers this. The Singapore / Malaysia branch
-    // collects the booklet before anything else, and asking someone who has
-    // just sent us their passport whether they have one is the kind of question
-    // §1 exists to prevent.
-    //
-    // `documentOnFile`, not `documentSatisfied`: a candidate who said they have
-    // no passport, or promised one for tomorrow, has satisfied the upload
-    // question without giving us a passport — and they are exactly the person
-    // this question needs to be put to, so that `no` or `applied` is recorded
-    // rather than nothing at all.
+    /**
+     * A passport already on file answers this.
+     *
+     * `documentOnFile`, not `documentSatisfied`: a candidate who said they have
+     * no passport, or promised one for tomorrow, has satisfied the upload
+     * question without giving us a passport — and they are exactly the person
+     * this question needs to be put to, so that `no` or `applied` is recorded
+     * rather than nothing at all. A passport found inside a CV counts, which is
+     * why this can be answered before it is ever asked.
+     */
     satisfied: (c) => has(p(c).passportStatus) || documentOnFile(c, 'passport'),
     apply: (a) => ({ passportStatus: a.ids?.[0] }),
-    clears: [
-      'passportStatus',
-      'passportExpiry',
-      'passportAppliedWhen',
-      'passportRenewalIntent',
-      'passportApplyWillingness',
-    ],
+    clears: ['passportStatus', 'passportExpiry', 'passportNumber'],
   },
 
   {
     /**
-     * The passport itself, rather than facts about it (§12).
+     * The booklet itself (§12).
      *
-     * This used to ask "when does your passport expire?" and take the answer as
-     * typed. A date typed from memory is the least reliable thing on the record
-     * — people misremember the year, read the issue date, or type today's — and
-     * the document that settles it is one they can send in a single tap. So the
-     * question is the upload, and the expiry, the number and the name are read
-     * off the page (`profileFromIdentityDocument` in `ocr/veris.ts`).
+     * Only of someone who has just said they hold one. "Applied", "expired" and
+     * "no" are answers, not evasions, and following any of them with "please
+     * photograph your passport" asks for something the candidate has already
+     * told us does not exist.
      *
-     * Satisfied by the passport slot rather than by `passportExpiry`, so a
-     * candidate who already sent their passport — including inside their CV,
-     * which `ocr/veris.ts` files against this slot — is never asked for it again
-     * (§1).
+     * Satisfied by the slot rather than by any field, so a passport that arrived
+     * another way — sent unprompted, or found inside a CV, which `ocr/veris.ts`
+     * files against this slot — is never asked for twice (§1).
      */
-    id: 'passport_document',
-    section: 'passport',
+    id: 'passport_upload',
+    section: 'documents',
     prompt: {
       en: 'Please send a clear photo or scan of your passport — the page with your photo and details.',
       ta: 'உங்கள் பாஸ்போர்ட்டின் புகைப்படம் மற்றும் விவரங்கள் உள்ள பக்கத்தைத் தெளிவாக அனுப்பவும்.',
-      hi: 'कृपया अपने पासपोर्ट की साफ़ फ़ोटो या स्कैन भेजें — जिस पेज पर आपकी फ़ोटो और जानकारी है।',
+      hi: 'कृपया अपने पासपोर्ट की साफ़़ फ़ोटो या स्कैन भेजें — जिस पेज पर आपकी फ़ोटो और जानकारी है।',
       te: 'దయచేసి మీ పాస్‌పోర్ట్ ఫోటో లేదా స్కాన్ పంపండి — మీ ఫోటో, వివరాలు ఉన్న పేజీ.',
       ml: 'ദയവായി നിങ്ങളുടെ പാസ്‌പോർട്ടിന്റെ വ്യക്തമായ ഫോട്ടോ സ്കാൻ അയക്കൂ — ഫോട്ടോയും വിവരങ്ങളും ഉള്ള പേജ്.',
     },
@@ -1550,173 +1427,17 @@ const PASSPORT_STEPS: FlowStep[] = [
     satisfied: (c) => documentSatisfied(c, 'passport'),
   },
 
-  {
-    id: 'passport_applied_when',
-    section: 'passport',
-    prompt: {
-      en: 'When did you apply for it?',
-      ta: 'எப்போது விண்ணப்பித்தீர்கள்?',
-      hi: 'आपने कब अप्लाई किया था?',
-      te: 'దాని కోసం ఎప్పుడు అప్లై చేశారు?',
-      ml: 'നിങ്ങൾ എപ്പോഴാണ് ഇതിന് അപേക്ഷിച്ചത്?',
-    },
-    input: 'text',
-    when: (c) => p(c).passportStatus === 'applied',
-    satisfied: (c) => has(p(c).passportAppliedWhen),
-    apply: (a) => ({ passportAppliedWhen: a.value }),
-    clears: ['passportAppliedWhen'],
-  },
-
-  {
-    id: 'passport_renewal',
-    section: 'passport',
-    prompt: {
-      en: 'Are you applying for renewal?',
-      ta: 'புதுப்பிக்க விண்ணப்பிக்கிறீர்களா?',
-      hi: 'क्या आप रिन्यूअल के लिए अप्लाई कर रहे हैं?',
-      te: 'రెన్యువల్ కోసం అప్లై చేస్తున్నారా?',
-      ml: 'നിങ്ങൾ റിന്യൂവലിന് അപേക്ഷിക്കുന്നുണ്ടോ?',
-    },
-    input: 'choice',
-    choices: YES_NO,
-    /**
-     * Asked of an expired passport, and of a valid one that runs out soon.
-     *
-     * §12 already flags a passport expiring within
-     * `TUNABLES.passportExpiryWarningMonths` for staff; this asks the candidate
-     * about it while we have them. Deliberately not asked of someone whose
-     * passport is good for years — "are you applying for renewal?" against a
-     * 2031 expiry is a question with no answer worth recording.
-     */
-    when: (c) => {
-      if (p(c).passportStatus === 'expired') return true;
-      if (p(c).passportStatus !== 'yes') return false;
-      const flag = passportExpiryFlag(p(c));
-      return !!flag && (flag.expired || flag.expiringSoon);
-    },
-    satisfied: (c) => has(p(c).passportRenewalIntent),
-    apply: (a) => ({ passportRenewalIntent: a.ids?.[0] }),
-    clears: ['passportRenewalIntent'],
-  },
-
-  {
-    id: 'passport_apply_willing',
-    section: 'passport',
-    prompt: {
-      en: 'Are you willing to apply for a passport?',
-      ta: 'பாஸ்போர்ட்டுக்கு விண்ணப்பிக்கத் தயாரா?',
-      hi: 'क्या आप पासपोर्ट के लिए अप्लाई करने को तैयार हैं?',
-      te: 'పాస్‌పోర్ట్ కోసం అప్లై చేయడానికి మీకు ఇష్టమేనా?',
-      ml: 'നിങ്ങൾ പാസ്‌പോർട്ടിന് അപേക്ഷിക്കാൻ തയ്യാറാണോ?',
-    },
-    input: 'choice',
-    choices: YES_NO,
-    when: (c) => p(c).passportStatus === 'no',
-    satisfied: (c) => has(p(c).passportApplyWillingness),
-    apply: (a) => ({ passportApplyWillingness: a.ids?.[0] }),
-    clears: ['passportApplyWillingness'],
-  },
-];
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * §13–§16  Europe / Russia document branch
- *
- * Every step here is gated on `inEuropeRussiaBranch`. A Gulf candidate never
- * sees any of it and is never asked for an identity document.
- * ───────────────────────────────────────────────────────────────────────────*/
-
-const DOCUMENT_STEPS: FlowStep[] = [
-  {
-    id: 'europe_docs',
-    section: 'documents',
-    prompt: {
-      en: 'For Europe/Russia opportunities, we need your passport, Aadhaar and PAN for document verification. Are they available?',
-      ta: 'ஐரோப்பா/ரஷ்யா வாய்ப்புகளுக்கு, ஆவணச் சரிபார்ப்புக்காக உங்கள் பாஸ்போர்ட், ஆதார் மற்றும் PAN தேவை. அவை உள்ளனவா?',
-      hi: 'यूरोप/रूस के अवसरों के लिए दस्तावेज़ सत्यापन हेतु आपका पासपोर्ट, आधार और PAN चाहिए। क्या ये उपलब्ध हैं?',
-      te: 'యూరప్/రష్యా అవకాశాల కోసం, డాక్యుమెంట్ వెరిఫికేషన్ కి మీ పాస్‌పోర్ట్, ఆధార్, PAN కావాలి. ఇవి మీ దగ్గర ఉన్నాయా?',
-      ml: 'യൂറോപ്പ്/റഷ്യ ജോലികൾക്ക് ഡോക്യുമെന്റ് വെരിഫിക്കേഷന് പാസ്‌പോർട്ട്, ആധാർ, PAN എന്നിവ വേണം. ഇവ കയ്യിൽ ഉണ്ടോ?',
-    },
-    input: 'choice',
-    choices: [
-      { id: 'all', label: { en: 'All available', ta: 'எல்லாம் உள்ளன', hi: 'सभी उपलब्ध हैं', te: 'అన్నీ ఉన్నాయి', ml: 'എല്ലാം ഉണ്ട്' } },
-      { id: 'some', label: { en: 'Some are missing', ta: 'சில இல்லை', hi: 'कुछ नहीं हैं', te: 'కొన్ని లేవు', ml: 'ചിലത് ഇല്ല' } },
-      { id: 'later', label: { en: 'Upload later', ta: 'பிறகு அனுப்புகிறேன்', hi: 'बाद में भेजूँगा', te: 'తర్వాత అప్‌లోడ్', ml: 'പിന്നീട് അയക്കാം' } },
-    ],
-    when: inEuropeRussiaBranch,
-    satisfied: (c) => has(p(c).documentAvailability),
-    apply: (a) => ({
-      documentAvailability: a.ids?.[0],
-      // "All available" answers the follow-up question before it is asked.
-      ...(a.ids?.[0] === 'all' ? { availableDocuments: ['passport', 'aadhaar', 'pan'] } : {}),
-    }),
-    clears: ['documentAvailability', 'availableDocuments'],
-  },
-
-  {
-    id: 'europe_docs_which',
-    section: 'documents',
-    prompt: {
-      en: 'Which documents do you have with you?',
-      ta: 'உங்களிடம் எந்த ஆவணங்கள் உள்ளன?',
-      hi: 'आपके पास कौन-कौन से दस्तावेज़ हैं?',
-      te: 'మీ దగ్గర ఏ డాక్యుమెంట్లు ఉన్నాయి?',
-      ml: 'നിങ്ങളുടെ കയ്യിൽ ഏതൊക്കെ ഡോക്യുമെന്റ് ഉണ്ട്?',
-    },
-    input: 'multi_choice',
-    choices: DOCUMENT_CHOICES,
-    when: (c) => inEuropeRussiaBranch(c) && p(c).documentAvailability === 'some',
-    satisfied: (c) => has(p(c).availableDocuments),
-    apply: (a) => ({ availableDocuments: a.ids }),
-    clears: ['availableDocuments'],
-  },
-
-  {
-    id: 'passport_upload',
-    section: 'documents',
-    prompt: {
-      en: 'Please send a clear colour scan of all passport pages, including blank pages, in one PDF.',
-      ta: 'காலி பக்கங்கள் உட்பட அனைத்து பாஸ்போர்ட் பக்கங்களின் தெளிவான வண்ண ஸ்கேனை ஒரே PDF-ஆக அனுப்பவும்.',
-      hi: 'कृपया खाली पेज सहित पासपोर्ट के सभी पेजों का साफ़ रंगीन स्कैन एक ही PDF में भेजें।',
-      te: 'దయచేసి పాస్‌పోర్ట్ పేజీలన్నీ (ఖాళీ పేజీలతో సహా) క్లియర్‌గా కలర్ స్కాన్ చేసి, ఒక్క PDF లో పంపండి.',
-      ml: 'പാസ്പോർട്ടിന്റെ എല്ലാ പേജുകളും (ബ്ലാങ്ക് പേജുകൾ ഉൾപ്പെടെ) വ്യക്തമായ കളർ സ്കാൻ ചെയ്ത് ഒരൊറ്റ PDF ആയി അയക്കൂ.',
-    },
-    input: 'document',
-    document: 'passport',
-    allowMedia: true,
-    allowStaff: true,
-    hiddenChoices: DOCUMENT_FALLBACKS,
-    when: (c) => wantsDocument(c,'passport'),
-    satisfied: (c) => documentSatisfied(c, 'passport'),
-  },
-
-  // Order is passport → PAN → Aadhaar. Passport first because it is the one
-  // document the flow has already been talking about; the two cards follow.
-  {
-    id: 'pan_upload',
-    section: 'documents',
-    prompt: {
-      en: 'Please send your PAN card as a PDF, or as photos of the front and back.',
-      ta: 'உங்கள் PAN அட்டையை PDF ஆகவோ, முன் மற்றும் பின் பக்க புகைப்படங்களாகவோ அனுப்பவும்.',
-      hi: 'कृपया अपना PAN कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
-      te: 'దయచేసి మీ PAN కార్డు PDF గా పంపండి, లేదా ముందు వెనుక ఫోటోలు పంపండి.',
-      ml: 'നിങ്ങളുടെ PAN കാർഡ് PDF ആയോ, അല്ലെങ്കിൽ മുൻവശം പിൻവശം ഫോട്ടോ ആയോ അയക്കൂ.',
-    },
-    input: 'document',
-    document: 'pan',
-    allowMedia: true,
-    allowStaff: true,
-    hiddenChoices: DOCUMENT_FALLBACKS,
-    when: (c) => wantsDocument(c, 'pan'),
-    satisfied: (c) => documentSatisfied(c, 'pan'),
-  },
-
+  // Aadhaar before PAN. Aadhaar is the one that is read, and reading it is what
+  // supplies the name and date of birth the identity comparison needs (§17) —
+  // so it goes to the extractor while the candidate is still here to be asked
+  // for a clearer photo, rather than behind a card nothing is done with.
   {
     id: 'aadhaar_upload',
     section: 'documents',
     prompt: {
       en: 'Please send your Aadhaar card as a PDF, or as photos of the front and back.',
       ta: 'உங்கள் ஆதார் அட்டையை PDF ஆகவோ, முன் மற்றும் பின் பக்க புகைப்படங்களாகவோ அனுப்பவும்.',
-      hi: 'कृपया अपना आधार कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
+      hi: 'कृपया अपना आधार कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
       te: 'దయచేసి మీ ఆధార్ కార్డు PDF గా పంపండి, లేదా ముందు వెనుక ఫోటోలు పంపండి.',
       ml: 'നിങ്ങളുടെ ആധാർ കാർഡ് PDF ആയോ, അല്ലെങ്കിൽ മുൻവശം പിൻവശം ഫോട്ടോ ആയോ അയക്കൂ.',
     },
@@ -1725,8 +1446,33 @@ const DOCUMENT_STEPS: FlowStep[] = [
     allowMedia: true,
     allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
-    when: (c) => wantsDocument(c, 'aadhaar'),
     satisfied: (c) => documentSatisfied(c, 'aadhaar'),
+  },
+
+  {
+    /**
+     * The PAN, and the last thing registration asks for.
+     *
+     * Collected so a documentation officer has it on file. Nothing on it answers
+     * a question this flow asks, so it is stored exactly as it arrived and never
+     * sent to an extractor — `rules.ts` marks it `ocr: 'none'` and
+     * `assertOcrRoutingIsSafe` fails the boot if that is ever edited away.
+     */
+    id: 'pan_upload',
+    section: 'documents',
+    prompt: {
+      en: 'Please send your PAN card as a PDF, or as photos of the front and back.',
+      ta: 'உங்கள் PAN அட்டையை PDF ஆகவோ, முன் மற்றும் பின் பக்க புகைப்படங்களாகவோ அனுப்பவும்.',
+      hi: 'कृपया अपना PAN कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
+      te: 'దయచేసి మీ PAN కార్డు PDF గా పంపండి, లేదా ముందు వెనుక ఫోటోలు పంపండి.',
+      ml: 'നിങ്ങളുടെ PAN കാർഡ് PDF ആയോ, അല്ലെങ്കിൽ മുൻവശം പിൻവശം ഫോട്ടോ ആയോ അയക്കൂ.',
+    },
+    input: 'document',
+    document: 'pan',
+    allowMedia: true,
+    allowStaff: true,
+    hiddenChoices: DOCUMENT_FALLBACKS,
+    satisfied: (c) => documentSatisfied(c, 'pan'),
   },
 ];
 
@@ -1988,23 +1734,34 @@ const ALL_TRADE_STEPS: FlowStep[] = [
 /**
  * The flow, in order.
  *
+ * Apply → consent → CV → personal → country → experience → trade →
+ * job preferences → documents → confirm.
+ *
+ * The CV sits immediately after consent because it is the only step that can
+ * answer other steps. Everything the resume extractor fills — name, date of
+ * birth, education, trade, experience, certifications — is a question the four
+ * sections below it then skip, and that only works if it is collected before
+ * them rather than after.
+ *
  * Trade questions sit between the experience questions and the job preferences,
  * because they are about what the candidate has done — and §9 is about what they
  * want next. Keeping that order stops the two from bleeding into each other.
+ *
+ * Documents come last, once there is a profile for what they say to be compared
+ * against (§17).
  */
 export const STEPS: FlowStep[] = [
   ...START_STEPS,
   ...B2B_STEPS,
-  // Where they want to work is asked immediately after consent, because it is
-  // the branch point: it decides whether the passport or the CV comes next.
-  ...COUNTRY_STEPS,
-  ...SINGAPORE_MALAYSIA_STEPS,
   CV_STEP,
   ...PERSONAL_STEPS,
+  // Where they want to work, once the bot knows who it is talking to. It is a
+  // preference now rather than a branch point, so nothing below depends on it
+  // and it sits where it reads naturally in the conversation.
+  ...COUNTRY_STEPS,
   ...EXPERIENCE_STEPS,
   ...ALL_TRADE_STEPS,
   ...PREFERENCE_STEPS,
-  ...PASSPORT_STEPS,
   ...DOCUMENT_STEPS,
   CONFIRM_STEP,
 ];

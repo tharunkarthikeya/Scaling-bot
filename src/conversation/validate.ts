@@ -23,7 +23,7 @@ import {
 } from './language.js';
 import { assertFlowIsWellFormed, STEPS, type FlowStep } from './flow.js';
 import { TRADE_PACKS, DISAMBIGUATIONS } from './trades.js';
-import { DOCUMENTS } from './rules.js';
+import { assertOcrRoutingIsSafe, DOCUMENTS } from './rules.js';
 
 /** Three or fewer options render as buttons; more render as a list. */
 function limitsFor(count: number): { title: number; body: number } {
@@ -99,6 +99,11 @@ function checkInteractive(where: string, text: Localised): void {
  */
 export function validateCopy(): void {
   assertFlowIsWellFormed();
+
+  // Not copy, but the same argument for checking it here: a slot that must never
+  // be read is a promise, and a promise that is only true until someone edits a
+  // table is worth failing a deploy over. See `NEVER_OCR` in `rules.ts`.
+  assertOcrRoutingIsSafe();
 
   for (const step of STEPS) checkStep(step);
 

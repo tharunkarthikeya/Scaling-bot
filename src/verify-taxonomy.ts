@@ -10,14 +10,18 @@
  *   * the CRM can store the job but not publish it to the bot;
  *   * the bot can fetch it and not put it in the list;
  *   * the list can overflow WhatsApp's ten-row ceiling, which rejects the whole
- *     message rather than dropping a row;
- *   * the CV rule the admin set on the job can fail to reach the answer the
- *     conversation actually asks for.
+ *     message rather than dropping a row.
  *
- * So this creates a real job with a real country override, drives it through
- * the real fetch and the real rendering path, checks the real policy endpoint,
- * and deletes it again. It writes to the CRM, so it is opt-in the same way
- * `verify:crm -- --submit` is.
+ * So this creates a real job and a real country, drives both through the real
+ * fetch and the real rendering path, and deletes them again. It writes to the
+ * CRM, so it is opt-in the same way `verify:crm -- --submit` is.
+ *
+ * The CV policy is still probed at the end, but as an API check rather than a
+ * claim about the conversation: the flow no longer consults it. That rule keyed
+ * on destination + job, and the flow stopped asking for a destination — every
+ * candidate is asked for a CV now. The endpoint still matters because
+ * `crm/sync.ts` can have a submission refused for a missing CV, which is what
+ * reopens the CV step.
  *
  * Needs an admin login, because creating a job is an admin's job — the service
  * key deliberately cannot do it.
@@ -25,9 +29,8 @@
 import { config } from './config.js';
 import { crmConfigured } from './crm/client.js';
 import { refreshTaxonomy, resetTaxonomy, taxonomy } from './crm/taxonomy.js';
-import { stepById } from './conversation/flow.js';
+import { destinationCountryOf, stepById } from './conversation/flow.js';
 import { choicesFor } from './conversation/render.js';
-import { destinationCountryOf, inSingaporeMalaysiaBranch } from './conversation/flow.js';
 import type { CandidateDoc } from './db/models.js';
 
 const GREEN = '\x1b[32m';
@@ -128,11 +131,11 @@ try {
   );
 
   /* 2. Does a candidate get offered it? ------------------------------------ */
-  const step = stepById('sgmy_job_category')!;
+  const step = stepById('job_category')!;
   const candidate = {
     waId: '910000000000',
-    currentStep: 'sgmy_job_category',
-    profile: { countryPreference: 'malaysia' },
+    currentStep: 'job_category',
+    profile: {},
     documents: {},
   } as unknown as CandidateDoc;
 
@@ -149,7 +152,12 @@ try {
     '"Other" survives, so a job past the ninth row is still reachable',
   );
 
-  /* 3. Does the CV rule the admin wrote reach the conversation? ------------ */
+  /* 3. Does the policy endpoint still answer? ------------------------------ */
+  //
+  // Not a claim about the conversation any more — nothing asks this mid-flow.
+  // It is checked because `crm/sync.ts` relies on the CRM applying the same rule
+  // when a submission arrives, and a policy endpoint that has stopped answering
+  // is worth knowing about before it starts refusing registrations.
   const { fetchCvRequirement } = await import('./crm/client.js');
 
   const inMalaysia = await fetchCvRequirement({
@@ -158,7 +166,7 @@ try {
   });
   check(
     inMalaysia?.cv_required === false,
-    'Malaysia: no CV — the country override the admin set',
+    'the policy endpoint applies the country override the admin set',
     `cv_required=${inMalaysia?.cv_required} version=${inMalaysia?.policy_version}`,
   );
 
@@ -168,11 +176,13 @@ try {
   });
   check(
     elsewhere?.cv_required === true,
-    'Singapore: CV — the job default, since no override says otherwise',
+    'and falls back to the job default where no override says otherwise',
     `cv_required=${elsewhere?.cv_required}`,
   );
 
   /* 4. And a country added in the CRM? ------------------------------------- */
+  //
+  // The same loop as the job above, for the other list an admin controls.
   const country = await fetch(`${base}/countries`, {
     method: 'POST',
     headers: auth,
@@ -183,20 +193,34 @@ try {
   resetTaxonomy();
   await refreshTaxonomy();
 
+  check(
+    !!taxonomy()?.countries.some((c) => c.name === 'ZZ Probeland'),
+    'the bot fetched the new country',
+    `${taxonomy()?.countries.length ?? 0} countries`,
+  );
+
+  const countryStep = stepById('country_preference')!;
+  const offeredCountries = choicesFor(countryStep, candidate).map((c) => c.id);
+  check(
+    offeredCountries.includes('zz_probeland'),
+    'and offers it to a candidate',
+    `${offeredCountries.length} rows`,
+  );
+  check(
+    offeredCountries.includes('gcc') && offeredCountries.includes('any'),
+    'without crowding out the regions, which are real answers',
+  );
+
+  // The name is what fills `destination_country`; a region has no country to
+  // name and must not be given one.
   const probeCandidate = {
     ...candidate,
     profile: { countryPreference: 'zz_probeland' },
   } as unknown as CandidateDoc;
-
   check(
     destinationCountryOf(probeCandidate) === 'ZZ Probeland',
-    'the bot can name the new country for the CRM',
+    'and can name it for the CRM',
     destinationCountryOf(probeCandidate) ?? 'undefined',
-  );
-  check(
-    inSingaporeMalaysiaBranch(probeCandidate),
-    'and routes it through the questions that settle the CV rule',
-    'passport → job → policy',
   );
 
   await fetch(`${base}/countries/zz_probeland`, { method: 'DELETE', headers: auth });

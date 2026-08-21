@@ -219,6 +219,35 @@ export const PAN_RECEIVED: Localised = {
   ml: 'PAN കിട്ടി ✅ നന്ദി.',
 };
 
+/**
+ * §12 — what the passport page turned out to say about its own expiry.
+ *
+ * Sent after the extraction, never before: the bot no longer asks anyone to
+ * recall an expiry date, so until the booklet has been read there is nothing
+ * honest to say about it.
+ *
+ * Neither of these refuses anything or asks the candidate to do something they
+ * cannot do in this conversation. A passport is renewed at a passport office,
+ * not over WhatsApp; the useful thing the bot can do is tell them what it read
+ * and let staff take it from there, which is why both end by saying someone will
+ * be in touch rather than by demanding a new document.
+ */
+export const PASSPORT_EXPIRED: Localised = {
+  en: 'Thank you. The passport you sent shows an expiry of {{expiry}}, so it has run out. You can still continue here — our team will guide you on renewing it.',
+  ta: 'நன்றி. நீங்கள் அனுப்பிய பாஸ்போர்ட்டின் காலாவதி {{expiry}} — அது முடிந்துவிட்டது. இங்கே தொடரலாம்; புதுப்பிப்பது குறித்து எங்கள் குழு வழிகாட்டும்.',
+  hi: 'धन्यवाद। आपने जो पासपोर्ट भेजा है उसकी वैधता {{expiry}} तक थी, यानी वह एक्सपायर हो चुका है। आप यहाँ आगे बढ़ सकते हैं — रिन्यूअल के बारे में हमारी टीम आपको बताएगी।',
+  te: 'ధన్యవాదాలు. మీరు పంపిన పాస్‌పోర్ట్ గడువు {{expiry}}, అంటే అది అయిపోయింది. మీరు ఇక్కడ కొనసాగవచ్చు — రెన్యువల్ గురించి మా టీమ్ మీకు చెప్తుంది.',
+  ml: 'നന്ദി. നിങ്ങൾ അയച്ച പാസ്‌പോർട്ടിന്റെ കാലാവധി {{expiry}} ആണ്, അത് കഴിഞ്ഞു. നിങ്ങൾക്ക് ഇവിടെ തുടരാം — പുതുക്കുന്നതിനെക്കുറിച്ച് ഞങ്ങളുടെ ടീം പറഞ്ഞുതരും.',
+};
+
+export const PASSPORT_EXPIRING_SOON: Localised = {
+  en: 'Thank you. The passport you sent expires on {{expiry}}, which is quite soon. You can still continue here — our team will let you know if it needs renewing before you travel.',
+  ta: 'நன்றி. நீங்கள் அனுப்பிய பாஸ்போர்ட் {{expiry}} அன்று காலாவதியாகிறது — விரைவில். இங்கே தொடரலாம்; பயணத்திற்கு முன் புதுப்பிக்க வேண்டுமா என்பதை எங்கள் குழு தெரிவிக்கும்.',
+  hi: 'धन्यवाद। आपने जो पासपोर्ट भेजा है वह {{expiry}} को एक्सपायर हो रहा है, जो काफ़ी नज़दीक है। आप यहाँ आगे बढ़ सकते हैं — यात्रा से पहले रिन्यूअल ज़रूरी है या नहीं, हमारी टीम बता देगी।',
+  te: 'ధన్యవాదాలు. మీరు పంపిన పాస్‌పోర్ట్ {{expiry}} న గడువు ముగుస్తుంది, అది చాలా దగ్గరలో ఉంది. మీరు ఇక్కడ కొనసాగవచ్చు — ప్రయాణానికి ముందు రెన్యువల్ కావాలా అనేది మా టీమ్ చెప్తుంది.',
+  ml: 'നന്ദി. നിങ്ങൾ അയച്ച പാസ്‌പോർട്ടിന്റെ കാലാവധി {{expiry}} ന് തീരും, അത് വളരെ അടുത്താണ്. നിങ്ങൾക്ക് ഇവിടെ തുടരാം — യാത്രയ്ക്ക് മുൻപ് പുതുക്കേണ്ടതുണ്ടോ എന്ന് ഞങ്ങളുടെ ടീം അറിയിക്കും.',
+};
+
 export const DOCUMENT_RECEIVED: Localised = {
   en: 'Received ✅',
   ta: 'கிடைத்தது ✅',
@@ -629,12 +658,20 @@ export const RESUME_CHOICES: Choice[] = [
   { id: 'restart', label: { en: 'Restart session', ta: 'முதலிலிருந்து', hi: 'शुरू से', te: 'సెషన్ మళ్లీ మొదలు', ml: 'സെഷൻ പുനരാരംഭിക്കുക' } },
 ];
 
+/**
+ * Says what a restart actually does now.
+ *
+ * It used to be four words, and it used to be true: restarting emptied the
+ * profile. It no longer does — nothing is deleted — so the sentence has to carry
+ * the part the candidate cares about, which is that they are not about to be
+ * asked everything a second time.
+ */
 export const RESTARTED: Localised = {
-  en: 'Starting again from the beginning.',
-  ta: 'முதலிலிருந்து மீண்டும் தொடங்குகிறோம்.',
-  hi: 'शुरुआत से फिर से शुरू कर रहे हैं।',
-  te: 'మొదటి నుండి మళ్లీ మొదలుపెడుతున్నాము.',
-  ml: 'തുടക്കം മുതൽ വീണ്ടും തുടങ്ങുന്നു.',
+  en: 'Starting again from the beginning. Your saved answers and documents are kept, so I will only ask for anything still missing.',
+  ta: 'முதலிலிருந்து மீண்டும் தொடங்குகிறோம். நீங்கள் அளித்த பதில்களும் ஆவணங்களும் அப்படியே இருக்கும் — மீதமுள்ளதை மட்டும் கேட்பேன்.',
+  hi: 'शुरुआत से फिर से शुरू कर रहे हैं। आपके सेव किए गए जवाब और दस्तावेज़ वैसे ही रहेंगे — जो बाकी है सिर्फ़ वही पूछूँगा।',
+  te: 'మొదటి నుండి మళ్లీ మొదలుపెడుతున్నాము. మీరు ఇచ్చిన జవాబులు, డాక్యుమెంట్లు అలాగే ఉంటాయి — మిగిలినవి మాత్రమే అడుగుతాను.',
+  ml: 'തുടക്കം മുതൽ വീണ്ടും തുടങ്ങുന്നു. നിങ്ങൾ തന്ന ഉത്തരങ്ങളും രേഖകളും അതുപോലെ ഉണ്ടാകും — ബാക്കിയുള്ളത് മാത്രമേ ചോദിക്കൂ.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────

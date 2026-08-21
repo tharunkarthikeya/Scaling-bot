@@ -271,63 +271,49 @@ export const DOCUMENTS: DocumentRequirement[] = [
 ];
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 2. THE EUROPE / RUSSIA TRIGGER (§13)
+ * 2. WHAT MAY BE SENT TO AN EXTRACTOR
  *
- * Editing these lists changes who gets asked for identity documents. Nothing
- * else needs to change.
- * ───────────────────────────────────────────────────────────────────────────*/
+ * `ocr` above is a routing decision, and for three of these slots the decision
+ * is "nowhere". That is a promise made to the candidate, not a default, so it is
+ * checked at boot rather than trusted to review.
+ *
+ * The PAN is the one that matters most and the one most likely to be edited by
+ * accident: it carries a permanent tax identifier, nothing on it answers a
+ * question the flow asks, and there is no extractor built to read it. A future
+ * edit that gives it an `ocr` route — copying the Aadhaar entry, say — would
+ * silently start posting PAN cards to a third-party service. `validateCopy` runs
+ * `assertOcrRoutingIsSafe` before the server accepts traffic, so that edit fails
+ * the deploy instead.
+ * ─────────────────────────────────────────────────────────────────────────────*/
 
-/** Country-preference option ids that put a candidate in the document branch. */
-export const EUROPE_RUSSIA_PREFERENCES = ['europe', 'russia_cis'];
+/** Slots that must never reach an extractor, whatever `ocr` is set to. */
+export const NEVER_OCR: ReadonlySet<string> = new Set([
+  // A permanent tax identifier, filed for a documentation officer to open.
+  'pan',
+  // Read by a person when a driver's licence matters; no extractor exists for it.
+  'driving_licence',
+  // A company's registration certificate (§2). Filed, not read.
+  'company_registration',
+]);
 
 /**
- * Free-typed country names that also trigger the branch. Matched case- and
- * accent-insensitively against whatever the candidate types at `selected_countries`.
+ * Fails the boot if a slot on `NEVER_OCR` has been given a route.
+ *
+ * Deliberately an exception rather than a log line: a misrouted PAN is not
+ * something to notice in a dashboard the week after.
  */
-export const EUROPE_RUSSIA_COUNTRIES = [
-  'romania',
-  'serbia',
-  'russia',
-  'poland',
-  'croatia',
-  'hungary',
-  'slovakia',
-  'slovenia',
-  'czech',
-  'czechia',
-  'bulgaria',
-  'lithuania',
-  'latvia',
-  'estonia',
-  'portugal',
-  'spain',
-  'italy',
-  'germany',
-  'france',
-  'netherlands',
-  'belgium',
-  'austria',
-  'greece',
-  'malta',
-  'cyprus',
-  'ireland',
-  'norway',
-  'sweden',
-  'finland',
-  'denmark',
-  'belarus',
-  'kazakhstan',
-  'uzbekistan',
-  'georgia',
-  'armenia',
-  'azerbaijan',
-  'moldova',
-  'ukraine',
-  'albania',
-  'montenegro',
-  'macedonia',
-  'bosnia',
-];
+export function assertOcrRoutingIsSafe(): void {
+  for (const id of NEVER_OCR) {
+    const requirement = DOCUMENTS.find((d) => d.id === id);
+    if (!requirement) continue;
+    if (requirement.ocr !== 'none') {
+      throw new Error(
+        `"${id}" is on NEVER_OCR but rules.ts routes it to the "${requirement.ocr}" extractor. ` +
+          'Nothing on it is read by the bot and it must not be sent to a third-party service.',
+      );
+    }
+  }
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * 3. TUNABLES

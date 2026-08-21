@@ -150,7 +150,7 @@ export async function choices(
  * starting one: the CRM is seeded with exactly these rows.
  */
 function crmChoicesFor(step: FlowStep): Choice[] | undefined {
-  if (step.id === 'sgmy_job_category') {
+  if (step.id === 'job_category') {
     // One row is kept back for "Other", which is what makes a list of nine
     // usable when the agency recruits for thirty: a candidate whose job is not
     // shown types it, and the interpreter maps what they typed onto a job id.

@@ -57,11 +57,9 @@ import { saveFile } from '../storage/index.js';
 import { queue, withCandidateLock } from '../queue/index.js';
 import * as copy from './copy.js';
 import {
-  destinationCountryOf,
   fieldsToClear,
   inferTradeAnswers,
   inferTradePacks,
-  inSingaporeMalaysiaBranch,
   occupationForQuestions,
   nextStep,
   stepById,
@@ -73,7 +71,6 @@ import {
 import { attributeInboundDocument, initialSlots, withMissingSlots } from './checklist.js';
 import { extractFromCv, normaliseDate, profileFromIdentityDocument } from './cv.js';
 import { captureAttachment, ingestionForMessage } from '../ingestion/whatsapp.js';
-import { fetchCvRequirement } from '../crm/client.js';
 import { detectGlobalCommand, interpret } from './interpret.js';
 import { answerFromFaq } from './faq.js';
 import { explainWrongDocument, respondInContext } from './respond.js';
@@ -84,7 +81,7 @@ import {
   renderRetry,
   renderStep,
 } from './render.js';
-import { ageFrom, buildProfileWrite } from './profile.js';
+import { ageFrom, buildProfileWrite, passportExpiryFlag } from './profile.js';
 import { detectLanguage, type Choice, type Language, type Localised } from './language.js';
 import { DOCUMENTS, requirementFor, TUNABLES } from './rules.js';
 import { packById, type TradeQuestion } from './trades.js';
@@ -123,12 +120,19 @@ const OTHER_SUFFIX = '#other';
  * Documents whose acknowledgement waits for extraction rather than for arrival.
  * §5 wants the CV confirmed immediately but its questions skipped, and §14
  * forbids saying "Passport received" before the upload is known to be usable.
+ *
+ * The PAN is deliberately absent, and that absence is load-bearing rather than
+ * an oversight. It is never sent to an extractor, so no extraction will ever
+ * come back to release it — while it was listed here a candidate who sent their
+ * PAN was told "checking your document" and then heard nothing, because the
+ * only code that resumes a gated upload is the OCR worker. It is acknowledged
+ * on arrival instead, which is the truth about a document that is filed and not
+ * read.
  */
 const GATED = new Set([
   'cv',
   'passport',
   'aadhaar',
-  'pan',
   'b2b_aadhaar_front',
   'b2b_aadhaar_back',
 ]);
@@ -302,7 +306,6 @@ const STAGE_BY_SECTION: Record<Section, ConversationStage> = {
   job_preference: 'JOB_PREFERENCE_PENDING',
   country: 'JOB_PREFERENCE_PENDING',
   availability: 'JOB_PREFERENCE_PENDING',
-  passport: 'JOB_PREFERENCE_PENDING',
   documents: 'DOCUMENTS_PENDING',
   confirm: 'CONFIRMATION_PENDING',
 };
@@ -371,54 +374,6 @@ function statusForStage(stage: ConversationStage, current: CandidateStatus): Can
  * storing it is what stops a model call on every turn for the rest of the
  * registration.
  */
-/**
- * Asks the CRM whether this candidate needs a CV, once it can be asked.
- *
- * The CRM owns the rule, so the bot does not decide it — it fetches the answer
- * and caches it. Both halves of the key have to be known first: a rule about
- * "Malaysia + general worker" cannot be evaluated for someone who has named a
- * destination and not yet a job, which is exactly why the job question was moved
- * ahead of the CV.
- *
- * Runs once per candidate. `cvRequired` being set is the marker, and the answer
- * is cleared whenever the job category changes (see the step's `clears`), so a
- * candidate who changes their mind gets a fresh ruling rather than the old one.
- *
- * An unreachable CRM leaves it unset, and an unset requirement asks for the CV.
- * That is the safe direction: the cost of asking for a CV that was not needed is
- * one extra question, and the cost of skipping one that was is a submission the
- * CRM refuses after the conversation has ended.
- */
-async function ensureCvRequirement(candidate: CandidateDoc): Promise<void> {
-  if (!inSingaporeMalaysiaBranch(candidate)) return;
-  if (typeof candidate.profile?.cvRequired === 'boolean') return;
-
-  const destinationCountry = destinationCountryOf(candidate);
-  const jobCategory = candidate.profile?.jobCategory;
-  if (!destinationCountry || !jobCategory) return;
-
-  const answer = await fetchCvRequirement({ destinationCountry, jobCategory });
-  if (!answer) return;
-
-  await recordsFor(candidate.enquiry).updateOne(
-    { _id: candidate._id },
-    {
-      $set: {
-        'profile.cvRequired': answer.cv_required,
-        'profile.cvPolicyVersion': answer.policy_version,
-        updatedAt: new Date(),
-      },
-    },
-  );
-  candidate.profile.cvRequired = answer.cv_required;
-  candidate.profile.cvPolicyVersion = answer.policy_version;
-
-  logger.info(
-    { waId: candidate.waId, destinationCountry, jobCategory, cvRequired: answer.cv_required },
-    'cv requirement resolved from the crm policy',
-  );
-}
-
 async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
   const profile = candidate.profile ?? {};
 
@@ -465,11 +420,6 @@ async function askNextQuestion(
   candidate: CandidateDoc,
   lead?: Localised | string,
 ): Promise<void> {
-  // Whether this candidate needs a CV, before working out what to ask next —
-  // because on the Singapore / Malaysia route the answer decides whether the
-  // next question *is* the CV.
-  await ensureCvRequirement(candidate);
-
   // If what the candidate has already told us decides their trade questions,
   // record that now so the disambiguation question is skipped entirely (§8).
   const packs = inferTradePacks(candidate);
@@ -729,8 +679,11 @@ export async function reopenCvForCrm(candidate: CandidateDoc): Promise<void> {
   await setState(candidate, {
     documents: slots,
     currentStep: 'cv',
-    // The cached policy said no CV was needed and the CRM disagrees. Correcting
-    // it here stops the next question being computed from the same wrong answer.
+    // The flow no longer gates the CV on this — it is asked of everyone — so
+    // this no longer changes which question comes next. It is still written,
+    // because it is the CRM’s own ruling for this candidate and `toCrmPayload`
+    // sends it back as `cv_required_claim`: dropping it would have the next
+    // submission repeat the claim the CRM has just corrected.
     profile: { ...candidate.profile, cvRequired: true },
   });
 
@@ -1610,9 +1563,7 @@ async function handleMenuAnswer(
     case MENU.resume:
       switch (choiceId) {
         case 'continue':
-          await reopenSession(candidate);
-          await setState(candidate, { currentStep: undefined, unclearCount: 0 });
-          await askNextQuestion(candidate);
+          await continueSession(candidate);
           return;
         case 'restart':
           await restartRegistration(candidate);
@@ -1755,57 +1706,74 @@ async function reseedProfileFromDocuments(candidate: CandidateDoc): Promise<void
  * behind would have the candidate's next tap answer the question they just
  * abandoned.
  */
-export const RESTART_UNSETS = ['currentStep', 'pendingMulti', 'sessionEndedAt'] as const;
+export const RESTART_UNSETS = [
+  'currentStep',
+  'resumeStep',
+  'pendingMulti',
+  'sessionEndedAt',
+] as const;
 
 /**
- * Everything a half-finished registration accumulates, and what happens to it
- * when the candidate asks to start over.
+ * What "Restart session" resets, and — more importantly — what it does not.
  *
- * Written as a named list rather than inline, because the failure mode is a
- * field added to `CandidateDoc` months from now that nobody remembers to clear
- * — and a restart that silently keeps one stale answer is exactly the bug this
- * whole path exists to avoid. The smoke tests assert against this contract, so
- * a new session field has to be classified deliberately rather than forgotten.
+ * A restart moves the candidate back to the top of the flow. It does not throw
+ * anything away. That distinction used to be the other way round: `profile` and
+ * `fieldMeta` were emptied here, so someone who tapped "start again" because
+ * they had mistyped one answer lost every answer, and the CV they had already
+ * sent was re-read to put some of them back. Restarting a conversation is not
+ * the same act as withdrawing the answers given during it — that is what DELETE
+ * is for (§23), and it asks first.
  *
- * What goes:
+ * So what is cleared is the conversation's *position*, and nothing else:
  *
- *   profile      every answer they typed or tapped
- *   fieldMeta    the provenance of those answers
- *   editQueue    steps an UPDATE had queued
+ *   stage        back to the beginning of the flow
+ *   editQueue    steps an UPDATE had queued, which are not where they now are
  *   unclearCount the run of replies we could not read
  *   currentStep  the question that was open (via RESTART_UNSETS)
- *   pendingMulti a half-made multi-select
+ *   resumeStep   the question a resume prompt interrupted (via RESTART_UNSETS)
+ *   pendingMulti a half-made multi-select, which belongs to a question that is
+ *                about to be recomputed
  *
- * What stays, and why each one:
+ * Everything a candidate has told us or sent us stays: `profile`, `fieldMeta`,
+ * `documents`, `consent`, `language`, `history`, and `reminderSentAt` (§21
+ * allows one reminder per candidate, and restarting does not make someone a new
+ * one).
  *
- *   documents    §22 forbids destroying an upload the candidate has not
- *                withdrawn. Re-answering the questions is not withdrawing a
- *                passport.
- *   consent      a recorded fact, not an answer being revised (§4).
- *   language     the same. They chose it; starting over does not unchoose it.
- *   history      the audit trail of what changed and when. Deleting it would
- *                erase the record of the very session being restarted.
- *   reminderSentAt  §21 allows exactly one reminder per candidate, and a
- *                restart does not make someone a different candidate. Clearing
- *                it would let a candidate earn a fresh reminder by restarting.
+ * The visible result is what the candidate is promised: the flow starts over,
+ * `nextStep` walks it from the first step, and every step that is already
+ * satisfied is skipped — so they are asked only for what is genuinely still
+ * missing (§1). Where nothing is missing, a restart runs straight to the
+ * confirmation, which is the correct answer to "start again" from someone whose
+ * answers are all on file.
+ *
+ * The smoke tests assert against this contract, so a new session field has to be
+ * classified deliberately rather than forgotten.
  */
 export function restartPatch(candidate: CandidateDoc): Partial<CandidateDoc> {
   return {
     stage: 'NEW',
     status: BOT_OWNED.has(candidate.status) ? 'new_enquiry' : candidate.status,
-    profile: {},
-    fieldMeta: {},
     editQueue: [],
     unclearCount: 0,
   };
 }
 
+/**
+ * "Restart session" — the flow from the top, the record untouched.
+ *
+ * `askNextQuestion` recomputes from `STEPS[0]` every time it runs, so clearing
+ * the position *is* the restart: there is no cursor to rewind and no separate
+ * "start again" path that could disagree with the ordinary one. What the
+ * candidate then sees is the first step that is not already satisfied, which for
+ * someone part-way through is usually the question they were on, and for someone
+ * who has answered everything is the confirmation.
+ */
 async function restartRegistration(candidate: CandidateDoc): Promise<void> {
   await recordAudit({
     waId: candidate.waId,
     candidateId: candidate.candidateId,
     event: 'registration_restarted',
-    detail: 'candidate chose to start from the beginning',
+    detail: 'candidate chose to start from the beginning; answers and documents kept',
   });
 
   await recordsFor(candidate.enquiry).updateOne(
@@ -1817,19 +1785,88 @@ async function restartRegistration(candidate: CandidateDoc): Promise<void> {
 
   Object.assign(candidate, {
     currentStep: undefined,
+    resumeStep: undefined,
     pendingMulti: undefined,
     sessionEndedAt: undefined,
   });
 
-  // The documents stayed, so what they already answered has to come back with
-  // them — otherwise the CV counts as sent, its step is skipped, and the
-  // candidate is asked their name and date of birth by hand (§1, §5).
+  // Belt and braces on §5, and no longer load-bearing: the profile is not
+  // cleared above any more, so this is here for the uploads whose extraction
+  // landed while the record was being written — it replays what each current
+  // document said, and `buildProfileWrite` refuses to let any of it overwrite
+  // something the candidate typed.
   await reseedProfileFromDocuments(candidate);
 
-  logger.info({ waId: candidate.waId }, 'registration restarted at the candidate’s request');
+  logger.info(
+    { waId: candidate.waId },
+    'registration restarted at the candidate’s request; stored answers kept',
+  );
 
   await tell(candidate, copy.RESTARTED);
   await askNextQuestion(candidate);
+}
+
+/**
+ * "Continue session" — back to the exact question that was interrupted.
+ *
+ * `currentStep` cannot answer this on its own, because by the time the candidate
+ * taps Continue it holds the resume menu: the prompt has to occupy the open-step
+ * pointer, or their tap would be read as an answer to the question underneath
+ * instead of to the prompt. So `askResume` stashes what it displaced and this
+ * puts it back.
+ *
+ * Falls through to the ordinary scheduler whenever the stashed question is no
+ * longer a question — it was answered by a document that arrived in the
+ * meantime, or a step it depends on changed and `when` now excludes it. That
+ * fallback is also what handles a candidate who had no open question at all,
+ * which is everyone whose session lapsed between two questions.
+ */
+async function continueSession(candidate: CandidateDoc): Promise<void> {
+  await reopenSession(candidate);
+
+  const stashed = candidate.resumeStep;
+  await setState(candidate, { currentStep: undefined, resumeStep: undefined, unclearCount: 0 });
+
+  if (stashed) {
+    // A free-text follow-up to an "Other" choice. The base step is satisfied —
+    // they did answer it — so `nextStep` would walk straight past it and the
+    // words they were being asked for would never be collected.
+    if (stashed.endsWith(OTHER_SUFFIX)) {
+      const base = stepById(stashed.slice(0, -OTHER_SUFFIX.length));
+      if (base && (await askForOtherText(candidate, base))) return;
+    } else {
+      const step = stepById(stashed);
+      if (step && (!step.when || step.when(candidate)) && !step.satisfied(candidate)) {
+        await reply(candidate, await renderStep(step, candidate), step.id);
+        await setState(candidate, { currentStep: step.id });
+        return;
+      }
+    }
+  }
+
+  await askNextQuestion(candidate);
+}
+
+/**
+ * Pushes a resume or reminder prompt, remembering the question it interrupts.
+ *
+ * See `continueSession` for why the stash exists. Menus and the `ask:`
+ * pseudo-steps are deliberately not stashed: they are prompts rather than flow
+ * questions, and restoring one would put the candidate back in front of a menu
+ * they walked away from instead of in front of the registration they came for.
+ */
+async function askResume(
+  candidate: CandidateDoc,
+  body: Localised,
+  options: Choice[],
+  menu: string,
+  vars?: Record<string, string | undefined>,
+): Promise<void> {
+  const open = candidate.currentStep;
+  if (open && !open.startsWith('menu:') && !open.startsWith('ask:')) {
+    await setState(candidate, { resumeStep: open });
+  }
+  await ask(candidate, body, options, menu, vars);
 }
 
 /**
@@ -1905,7 +1942,7 @@ export async function endIdleSessions(limit = 200): Promise<number> {
       // a message Meta rejects for everyone who went quiet yesterday.
       if ((candidate.windowExpiresAt?.getTime() ?? 0) > Date.now()) {
         try {
-          await ask(candidate, copy.SESSION_ENDED, copy.RESUME_CHOICES, MENU.resume);
+          await askResume(candidate, copy.SESSION_ENDED, copy.RESUME_CHOICES, MENU.resume);
         } catch (err) {
           // The session is closed either way; `handleInboundMessage` still
           // offers the same choice on their next message.
@@ -2085,7 +2122,7 @@ export async function handleInboundMessage(payload: {
     (candidate.sessionEndedAt != null || sessionTimedOut(previousInboundAt, now))
   ) {
     const name = candidate.profile?.fullName ?? candidate.profileName ?? '';
-    await ask(candidate, copy.RESUME_PROMPT, copy.RESUME_CHOICES, MENU.resume, {
+    await askResume(candidate, copy.RESUME_PROMPT, copy.RESUME_CHOICES, MENU.resume, {
       name: name ? `, ${name}` : '',
     });
     return;
@@ -2617,7 +2654,11 @@ async function acknowledgeDocument(candidate: CandidateDoc, docType: string): Pr
     return;
   }
 
-  await tell(candidate, copy.DOCUMENT_RECEIVED);
+  // Nothing is read from this one, so there is nothing to wait for and nothing
+  // to hedge about: it arrived, it is on file, and the next question follows in
+  // the same turn. The PAN gets its own line rather than the generic one
+  // because "PAN card received" is what the candidate just did.
+  await tell(candidate, docType === 'pan' ? copy.PAN_RECEIVED : copy.DOCUMENT_RECEIVED);
   await askNextQuestion(candidate);
 }
 
@@ -2824,13 +2865,70 @@ export async function resumeAfterDocument(
   const acknowledgement: Record<string, Localised> = {
     passport: copy.PASSPORT_RECEIVED,
     aadhaar: copy.AADHAAR_RECEIVED,
-    pan: copy.PAN_RECEIVED,
     b2b_aadhaar_front: copy.AADHAAR_RECEIVED,
     b2b_aadhaar_back: copy.AADHAAR_RECEIVED,
   };
 
   if (acknowledgement[docType]) await tell(candidate, acknowledgement[docType]!);
+
+  // §12 — whether the passport is in date, decided from the page rather than
+  // from memory.
+  //
+  // The flow stopped asking "is it valid?" and "when does it expire?" because a
+  // date typed from memory is the least reliable thing on a record: people read
+  // the issue date, misremember the year, or type today's. The extractor has
+  // just read the real one, `mergeExtractedProfile` has already written it, and
+  // this is the first moment the answer is actually known.
+  //
+  // Said once, and only when there is something to say. An expired booklet and
+  // one with a few months left are different messages because they call for
+  // different things from the candidate. Neither stops the conversation: the
+  // passport is on file, staff can see the flag, and telling someone their
+  // renewal is due is not a reason to refuse their registration.
+  if (docType === 'passport') await reportPassportValidity(candidate);
+
   await askNextQuestion(candidate);
+}
+
+/**
+ * Tells the candidate what the passport extractor read about their expiry date.
+ *
+ * Marked on the record so it is said once per expiry date rather than once per
+ * upload — a candidate who sends a clearer photo of the same expired passport
+ * has already been told.
+ */
+async function reportPassportValidity(candidate: CandidateDoc): Promise<void> {
+  const expiry = candidate.profile?.passportExpiry;
+  if (!expiry) return;
+
+  const flag = passportExpiryFlag(candidate.profile ?? {});
+  if (!flag || (!flag.expired && !flag.expiringSoon)) return;
+
+  if (candidate.profile?.passportExpiryNotifiedFor === expiry) return;
+
+  await recordsFor(candidate.enquiry).updateOne(
+    { _id: candidate._id },
+    { $set: { 'profile.passportExpiryNotifiedFor': expiry, updatedAt: new Date() } },
+  );
+  candidate.profile.passportExpiryNotifiedFor = expiry;
+
+  await tell(
+    candidate,
+    flag.expired ? copy.PASSPORT_EXPIRED : copy.PASSPORT_EXPIRING_SOON,
+    { expiry },
+  );
+
+  await recordAudit({
+    waId: candidate.waId,
+    candidateId: candidate.candidateId,
+    event: flag.expired ? 'passport_expired' : 'passport_expiring_soon',
+    detail: `expiry ${expiry} read from the passport`,
+  });
+
+  logger.info(
+    { waId: candidate.waId, expiry, expired: flag.expired },
+    'candidate told what the passport says about its expiry',
+  );
 }
 
 /** Raised once, when documents disagree about who the candidate is (§17). */
@@ -2919,7 +3017,7 @@ export async function sendReminders(limit = 50): Promise<number> {
 
     try {
       if (insideWindow) {
-        await ask(candidate, copy.REMINDER, copy.REMINDER_CHOICES, MENU.reminder, {
+        await askResume(candidate, copy.REMINDER, copy.REMINDER_CHOICES, MENU.reminder, {
           name: candidate.profile?.fullName ?? candidate.profileName ?? '',
         });
       } else {

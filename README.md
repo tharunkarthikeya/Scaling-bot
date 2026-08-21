@@ -112,6 +112,58 @@ Meta webhook
         ask the next unsatisfied question, or finish
 ```
 
+### The registration flow
+
+```
+Apply
+  → Language
+  → Consent
+  → CV upload                  ← read by the resume extractor; everything it
+  → Personal details             yields is a question the sections below skip
+  → Country preference         ← Gulf / Europe / Russia-CIS / Any / Select
+  → Experience
+  → Trade-specific questions
+  → Job preferences
+  → Documents
+        Passport — do you have one?      → upload, if they do
+        Aadhaar  — uploaded and read
+        PAN      — uploaded and stored, never read
+  → Confirm
+  → Application ID
+```
+
+The CV sits directly after consent because it is the only step that can answer
+other steps: the resume extractor fills the name, date of birth, education,
+trade, experience and certifications, and `nextStep` then walks past every
+question those fill (§1, §5). Collected any later, the saving arrives after the
+candidate has already been asked by hand.
+
+**Singapore and Malaysia are no longer offered as destinations**, and the branch
+they triggered went with them. Naming one country used to collect the passport
+before the CV and ask the job early, so the CRM could resolve a CV requirement
+from destination plus job; a Europe/Russia answer was the only thing that
+triggered the identity documents at all. Neither runs now — every candidate is
+asked for a CV, and every candidate is asked for Aadhaar and PAN.
+
+The country question itself stays, minus those two rows, and has moved from
+first to after the personal details. It was asked first because it was a branch
+point, and a branch point asked after the branch cannot branch. It is an ordinary
+preference now, so it sits where it reads naturally. `destination_country` still
+reaches the CRM for a country an admin adds to the taxonomy; a region — "the
+Gulf" is six countries — is never named as one.
+
+**The PAN is never sent to an extractor.** Nothing on it answers a question the
+flow asks, so it is filed exactly as it arrived for a documentation officer to
+open. That is enforced rather than declared — `NEVER_OCR` in `rules.ts` lists it,
+and `assertOcrRoutingIsSafe` runs inside `validateCopy()` at boot, so an edit
+that gives it a route breaks the deploy instead of quietly posting tax
+identifiers to a third party.
+
+Nothing asks about the passport's validity either. The expiry is read off the
+page, and the candidate is told when what was read has expired or is close to it
+(§12) — an expiry typed from memory is the least reliable thing anyone puts on a
+record.
+
 The split that matters: **the bot never composes the flow.** Every question,
 confirmation and acknowledgement is written by a person in `flow.ts` or
 `copy.ts`, in all three languages. The model's job on the way in is to read what
@@ -243,11 +295,24 @@ Nothing is discarded — every answer is written as it arrives — so closing a
 session costs the candidate nothing but a tap, and it replaces a question they
 last saw hours ago with no memory of the context.
 
-Choosing **restart** clears the answers and keeps the documents. §22
-forbids destroying an upload without a version history, and someone re-answering
-questions has not withdrawn the passport they already sent; re-requesting it
-would also break §1. Consent and language survive for the same reason — both are
-recorded facts rather than answers being revised.
+**Neither choice deletes anything.** They differ in where the conversation
+resumes, and in nothing else:
+
+| | What it does |
+|---|---|
+| **Continue session** | Back to the exact question the prompt interrupted. The prompt has to occupy `currentStep` — otherwise the tap would be read as an answer to the question underneath — so the engine stashes what it displaced in `resumeStep` and puts it back. Where that question has since been answered (a document arrived and filled it), it falls through to the ordinary scheduler. |
+| **Restart session** | The flow from the first step. Only the conversation's *position* is cleared — `currentStep`, `resumeStep`, `pendingMulti`, the edit queue, the unclear counter. `nextStep` then walks `STEPS` from the top and skips everything already satisfied, so the candidate is asked only for what is genuinely still missing. Where nothing is missing, it runs straight to the confirmation. |
+
+Restarting used to empty `profile` and `fieldMeta`, which meant tapping *"start
+again"* over one mistyped answer cost the candidate all of them — and the CV they
+had already sent was re-read to put some of them back. It no longer does.
+Restarting a conversation is not the same act as withdrawing the answers given
+during it; DELETE is what does that (§23), and it asks first.
+
+Documents, consent, language, history and `reminderSentAt` survive both, as they
+always did. §22 forbids destroying an upload without a version history, someone
+re-answering questions has not withdrawn the passport they already sent, and §21
+allows one reminder per candidate — restarting does not make someone a new one.
 
 The sweep in `index.ts` runs every 60s, so `SESSION_SWEEP_MS` is the lag between
 a session lapsing and the candidate hearing about it — keep it well under the
