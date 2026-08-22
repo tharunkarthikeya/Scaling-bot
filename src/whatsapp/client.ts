@@ -2,7 +2,36 @@ import { config, graphBaseUrl } from '../config.js';
 import { logger } from '../logger.js';
 import { RateLimiter } from './rateLimiter.js';
 
-const limiter = new RateLimiter(config.OUTBOUND_RATE_PER_SECOND);
+/**
+ * Outbound Graph traffic, split by what Meta is actually being asked to do.
+ *
+ * One bucket used to cover all three, so every inbound message spent a token on
+ * its read receipt before the reply had been composed, and every document spent
+ * another fetching itself — roughly halving the messaging allowance the number
+ * actually has. A candidate's answer queued behind the acknowledgement of their
+ * own last message.
+ *
+ * The partition is the point: capacity cannot move between these, by
+ * construction rather than by priority. Replies keep the whole of the limit
+ * Meta grants for messages, and the other two are bounded on their own terms.
+ */
+const budgets = {
+  /** Messages to candidates. Waited for, never dropped. */
+  replies: new RateLimiter(config.OUTBOUND_RATE_PER_SECOND),
+  /** Blue ticks. Dropped when there is no room — see `markAsRead`. */
+  receipts: new RateLimiter(config.READ_RECEIPT_RATE_PER_SECOND),
+  /** Inbound document fetches. Waited for; the file matters. */
+  media: new RateLimiter(config.MEDIA_DOWNLOAD_RATE_PER_SECOND),
+} as const;
+
+/**
+ * The budgets, for tests and for load-test instrumentation.
+ *
+ * Exported so a test can prove the partition holds on the wiring itself rather
+ * than on a copy of it, and so a load run can report which budget is actually
+ * saturated.
+ */
+export const outboundBudgets = budgets;
 
 /** WhatsApp rejects text bodies longer than this. */
 const MAX_TEXT_LENGTH = 4096;
@@ -24,9 +53,16 @@ export class WhatsAppApiError extends Error {
   }
 }
 
+/**
+ * Posts to the Graph API. Deliberately does **not** rate limit.
+ *
+ * Which budget a call spends from is a property of what the call is for, not of
+ * how it is transported, and this function cannot tell the difference between a
+ * reply and a read receipt — they are the same endpoint. So every caller takes
+ * its token first, from the budget named above. Adding a caller here without
+ * taking one spends nobody's allowance and will eventually cost a real message.
+ */
 async function graphPost(path: string, body: unknown): Promise<any> {
-  await limiter.acquire();
-
   const res = await fetch(`${graphBaseUrl}/${path}`, {
     method: 'POST',
     headers: {
@@ -88,6 +124,9 @@ export async function sendText(to: string, text: string): Promise<SendResult[]> 
       results.push({ shadowed: true });
       continue;
     }
+
+    // One token per chunk, because Meta counts one message per chunk.
+    await budgets.replies.acquire();
 
     const json = await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
@@ -198,6 +237,8 @@ export async function send(to: string, message: Outbound): Promise<SendResult[]>
     return results;
   }
 
+  await budgets.replies.acquire();
+
   const json = await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
@@ -223,6 +264,8 @@ export async function sendReengagementTemplate(to: string): Promise<SendResult> 
     return { shadowed: true };
   }
 
+  await budgets.replies.acquire();
+
   const json = await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
     messaging_product: 'whatsapp',
     to,
@@ -236,9 +279,26 @@ export async function sendReengagementTemplate(to: string): Promise<SendResult> 
   return { wamid: json?.messages?.[0]?.id, shadowed: false };
 }
 
-/** Best-effort read receipt. Failing to mark read must never block processing. */
+/**
+ * Best-effort read receipt. Failing to mark read must never block processing.
+ *
+ * Spends from its own budget, and gives up rather than waiting for one. Both
+ * halves matter. Taking a reply token meant a blue tick could delay an answer;
+ * *waiting* for a token meant a caller that fires this and walks away — which is
+ * every caller, it is invoked as `void markAsRead(...)` — left a promise pending
+ * for as long as the overload lasted, one per message, remembered by nobody.
+ *
+ * A receipt that cannot be sent now is worth less than the memory of intending
+ * to send it, so it is dropped and logged at debug.
+ */
 export async function markAsRead(wamid: string): Promise<void> {
   if (config.SHADOW_MODE) return;
+
+  if (!budgets.receipts.tryAcquire()) {
+    logger.debug({ wamid }, 'read receipt dropped: no capacity in the receipt budget');
+    return;
+  }
+
   try {
     await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
       messaging_product: 'whatsapp',
@@ -257,28 +317,167 @@ export interface MediaPayload {
 }
 
 /**
+ * An inbound file larger than this instance is willing to hold.
+ *
+ * Permanent, and that is the whole reason it has its own class. Every other
+ * download failure is worth another go — a timeout, a 500, an expired URL. A
+ * file that is too big is still too big on the fifth attempt, and the ledger
+ * has to be able to tell the two apart or it spends `INGESTION_MAX_ATTEMPTS`
+ * re-fetching something it was always going to refuse.
+ *
+ * 413 rather than a Meta status code, because nothing on Meta's side went
+ * wrong. This is our limit, refusing their file.
+ */
+export class MediaTooLargeError extends WhatsAppApiError {
+  /** Read by `captureAttachment`, which schedules no retry when it is set. */
+  readonly permanent = true;
+
+  constructor(
+    what: string,
+    readonly limit: number,
+    /** Bytes, where anything was willing to say — absent when we stopped counting. */
+    readonly reported?: number,
+  ) {
+    super(
+      `${what} is larger than the ${limit}-byte limit` +
+        (reported === undefined ? '' : ` (${reported} bytes)`),
+      413,
+    );
+  }
+}
+
+/**
+ * The Graph host media metadata is resolved against.
+ *
+ * A `let` only so tests can point the first hop at a local server; production
+ * reads it once and never writes it. See `setMediaBaseUrlForTests`.
+ */
+let mediaBaseUrl: string = graphBaseUrl;
+
+/**
+ * Points media lookups at a stub. Tests only — it is how the size limit is
+ * exercised against real HTTP responses, chunked bodies and lying headers,
+ * without a network or a token.
+ */
+export function setMediaBaseUrlForTests(replacement: string): () => void {
+  const previous = mediaBaseUrl;
+  mediaBaseUrl = replacement;
+  return () => {
+    mediaBaseUrl = previous;
+  };
+}
+
+/**
+ * Reads a response body, refusing to hold more than `limit` bytes of it.
+ *
+ * Two layers, and they are not redundant.
+ *
+ * `Content-Length` is checked first because it costs nothing and, when it is
+ * both present and honest, the body is never opened at all. It is not a
+ * guarantee: the header is optional, a chunked response omits it entirely, and
+ * a value in it is a claim by whoever is sending rather than a promise about
+ * what the socket will deliver.
+ *
+ * So the bytes are counted as they arrive and the read is abandoned the moment
+ * the running total passes the limit. That is the layer that actually bounds
+ * memory, and it holds when the header is missing, when it is wrong, and when
+ * the far end simply keeps sending. What is held at the worst moment is the
+ * limit plus one chunk, never the whole file.
+ *
+ * `abort` is called before either refusal, so the socket is closed rather than
+ * left delivering a file nobody will read.
+ */
+export async function readCappedBody(
+  res: Pick<Response, 'headers' | 'body'>,
+  limit: number,
+  what: string,
+  abort?: () => void,
+): Promise<Buffer> {
+  // L2 — what the response claims, before the body is opened.
+  const advertised = Number(res.headers.get('content-length'));
+  if (Number.isFinite(advertised) && advertised > limit) {
+    abort?.();
+    throw new MediaTooLargeError(what, limit, advertised);
+  }
+
+  if (!res.body) return Buffer.alloc(0);
+
+  // L3 — what actually arrives.
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+
+    total += value.byteLength;
+
+    if (total > limit) {
+      // Stop the transfer before anything else. The chunks already read go out
+      // of scope with this function and the rest is never asked for.
+      abort?.();
+      await reader.cancel().catch(() => undefined);
+      throw new MediaTooLargeError(what, limit, undefined);
+    }
+
+    chunks.push(value);
+  }
+
+  return Buffer.concat(chunks, total);
+}
+
+/**
  * Media download is two hops: resolve the id to a short-lived signed URL, then
  * fetch that URL. The second request still needs the bearer token — Meta's CDN
  * rejects unauthenticated reads.
+ *
+ * The size limit is enforced three times, each at the first moment it becomes
+ * possible:
+ *
+ *   L1  `file_size` in the metadata response, before the file is requested at
+ *       all. This is the one that matters — a refusal here costs one small JSON
+ *       request and not a byte of the document.
+ *   L2  `Content-Length` on the file response, before its body is opened.
+ *   L3  the bytes themselves, counted as they arrive.
+ *
+ * Three rather than one because the first two are assertions by the other end
+ * and only the third is a measurement. `file_size` and `Content-Length` may be
+ * absent, may disagree with each other, and may both disagree with what the
+ * socket delivers. The earlier layers exist to make the common case cheap, not
+ * to make the last one unnecessary.
  */
 /**
  * `filename` is only ever read in mock mode, to choose which canned file to
  * serve. The real download is by id and Meta tells us the type itself.
  */
 export async function downloadMedia(mediaId: string, filename?: string): Promise<MediaPayload> {
+  const limit = config.MEDIA_MAX_BYTES;
+
   if (config.MOCK_WHATSAPP_MEDIA) {
     const { fixtureFor } = await import('../testing/fixtures.js');
     // The media id makes each mocked CV a distinct file. Two candidates sending
     // the identical résumé is not a thing that happens, and a CRM that
     // deduplicates on the résumé hash is right to treat it as one person.
     const pdf = fixtureFor(filename, mediaId);
+    // Held to the same limit as a real download. A fixture that outgrew it
+    // would otherwise take a path production cannot take, which is the one
+    // thing a fixture must never do.
+    if (pdf.byteLength > limit) {
+      throw new MediaTooLargeError(`mock media ${mediaId}`, limit, pdf.byteLength);
+    }
     logger.warn({ mediaId, filename }, 'MOCK_WHATSAPP_MEDIA is on — serving a canned file');
     return { buffer: pdf, mimeType: 'application/pdf', byteSize: pdf.byteLength };
   }
 
-  await limiter.acquire();
+  // Not a message, and not on the messaging budget. This runs inside the
+  // webhook before the acknowledgement, so keeping it out of the reply queue is
+  // also what stops a document arriving mid-conversation from adding that
+  // queue's latency to every ACK.
+  await budgets.media.acquire();
 
-  const metaRes = await fetch(`${graphBaseUrl}/${mediaId}`, {
+  const metaRes = await fetch(`${mediaBaseUrl}/${mediaId}`, {
     headers: { Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}` },
   });
 
@@ -286,18 +485,38 @@ export async function downloadMedia(mediaId: string, filename?: string): Promise
     throw new WhatsAppApiError(`media lookup failed for ${mediaId}`, metaRes.status);
   }
 
-  const meta = (await metaRes.json()) as { url?: string; mime_type?: string };
+  const meta = (await metaRes.json()) as {
+    url?: string;
+    mime_type?: string;
+    file_size?: number | string;
+  };
   if (!meta.url) throw new WhatsAppApiError(`media ${mediaId} has no download url`, 502);
+
+  // L1 — Meta states the size alongside the URL. Refusing here means an
+  // oversized document costs the metadata request and nothing else: the file is
+  // never requested, so none of it is ever in this process.
+  const declared = Number(meta.file_size);
+  if (Number.isFinite(declared) && declared > limit) {
+    logger.warn(
+      { mediaId, fileSize: declared, limit },
+      'media refused on its declared size; the file was not requested',
+    );
+    throw new MediaTooLargeError(`media ${mediaId}`, limit, declared);
+  }
+
+  const controller = new AbortController();
 
   const fileRes = await fetch(meta.url, {
     headers: { Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}` },
+    signal: controller.signal,
   });
 
   if (!fileRes.ok) {
+    controller.abort();
     throw new WhatsAppApiError(`media download failed for ${mediaId}`, fileRes.status);
   }
 
-  const buffer = Buffer.from(await fileRes.arrayBuffer());
+  const buffer = await readCappedBody(fileRes, limit, `media ${mediaId}`, () => controller.abort());
 
   return {
     buffer,

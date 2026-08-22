@@ -252,13 +252,123 @@ const MIN_TEXT_TO_JUDGE = 40;
 export interface UploadInspection {
   /** False when the file is not a document that will open at all. */
   readable: boolean;
-  /** Page count, when it can be established. Undefined means "could not tell". */
+  /**
+   * Page count, when it can be established. Undefined means "could not tell".
+   *
+   * Saturating, not exact: the scan stops at `PAGE_SCAN_STOP_AT` because that
+   * is the largest number any caller compares against. A `2` here means "two or
+   * more", and the only question asked of this field — `§14`'s "is this the
+   * photo page on its own?" — is answered identically either way.
+   */
   pages?: number;
   /** Plain-language problem, when `readable` is false. */
   problem?: string;
 }
 
 const PDF_MAGIC = '%PDF-';
+
+/** The two literals a page object is spelled with, as bytes rather than text. */
+const TYPE_MARKER = Buffer.from('/Type', 'latin1');
+const PAGE_MARKER = Buffer.from('/Page', 'latin1');
+
+/**
+ * How far into the file the page scan is allowed to read.
+ *
+ * A cap rather than a budget: page objects live in the body, and a document
+ * whose first two are past eight megabytes is not one this check can speak to
+ * honestly. Reaching the cap without an answer reports `undefined`, which is
+ * the same thing said about a PDF whose pages are hidden in compressed object
+ * streams — see the note on `inspectUpload`.
+ */
+const PAGE_SCAN_WINDOW = 8 * 1024 * 1024;
+
+/**
+ * Matches to find before stopping. `TUNABLES.passportMinPdfPages` is 2 and the
+ * count is only ever compared against it, so a third match cannot change any
+ * decision and a millionth would only cost the loop that found it.
+ */
+const PAGE_SCAN_STOP_AT = 2;
+
+/**
+ * The bytes JavaScript's `\s` matches that a single latin1 byte can actually
+ * be — tab through carriage return, space, and the non-breaking space. The
+ * wider unicode spaces `\s` also covers need more than one byte to spell and so
+ * cannot appear here.
+ */
+function isPdfSpace(byte: number): boolean {
+  return (byte >= 0x09 && byte <= 0x0d) || byte === 0x20 || byte === 0xa0;
+}
+
+/** `[^sA-Za-z]` — an `s` is a letter, so the class is exactly "not a letter". */
+function isAsciiLetter(byte: number): boolean {
+  return (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a);
+}
+
+/**
+ * Page objects in the first `PAGE_SCAN_WINDOW` bytes, counted straight off the
+ * buffer and abandoned once `PAGE_SCAN_STOP_AT` have been found.
+ *
+ * What it looks for is what the regex it replaces looked for: the literal
+ * `/Type`, any run of whitespace, the literal `/Page`, and then one byte that
+ * is not a letter — which is what keeps `/Type /Pages`, the page *tree*, from
+ * being counted as a page, and what makes a `/Type /Page` with nothing after it
+ * no match at all.
+ *
+ * Returns the count and whether the scan reached the end of the file, because
+ * the two together are what decide whether a count may be reported. Allocates
+ * nothing: `subarray` is a view, and `indexOf` searches bytes.
+ */
+function scanPageObjects(buffer: Buffer): { found: number; exhaustive: boolean } {
+  const horizon = Math.min(buffer.byteLength, PAGE_SCAN_WINDOW);
+  // Bounds `indexOf` to the window without copying — a match may only *start*
+  // inside it, while the bytes confirming that match are read from the file.
+  const window = buffer.subarray(0, horizon);
+
+  let found = 0;
+  let from = 0;
+
+  while (found < PAGE_SCAN_STOP_AT) {
+    const at = window.indexOf(TYPE_MARKER, from);
+    if (at === -1) break;
+
+    // Resume past this `/Type` whether or not it turns out to be a page, so a
+    // near-miss cannot put the loop back where it started. `/Type` cannot
+    // overlap itself, so skipping its whole length finds the same next
+    // occurrence the regex found by advancing one byte at a time.
+    from = at + TYPE_MARKER.length;
+
+    let cursor = from;
+    while (cursor < buffer.byteLength && isPdfSpace(buffer[cursor]!)) cursor += 1;
+
+    // `compare` throws rather than returning false when the range runs off the
+    // end, and `%%EOF` only has to appear in the last 4 KB — so a file may well
+    // end in a `/Type` with no room left to spell `/Page` after it.
+    if (cursor + PAGE_MARKER.length > buffer.byteLength) continue;
+
+    if (
+      buffer.compare(PAGE_MARKER, 0, PAGE_MARKER.length, cursor, cursor + PAGE_MARKER.length) !== 0
+    ) {
+      continue;
+    }
+
+    const after = cursor + PAGE_MARKER.length;
+    // One byte has to exist and it has to not be a letter. A page object cut off
+    // by the end of the file is not something to count.
+    if (after >= buffer.byteLength || isAsciiLetter(buffer[after]!)) continue;
+
+    found += 1;
+    // That byte is part of the match and the regex consumed it, so the next
+    // search starts past it. It matters where two page objects are written with
+    // nothing between them: `/Type/Page/Type/Page` is one match, not two,
+    // because the first swallowed the slash the second needed. An artifact of
+    // how the old scan was spelled rather than anything about PDFs — but it is
+    // the behaviour that shipped, and a page count is not the place to quietly
+    // change an answer.
+    from = after + 1;
+  }
+
+  return { found, exhaustive: horizon === buffer.byteLength };
+}
 
 /**
  * Reads what the upload can be asked without an extractor: does it open, and
@@ -272,8 +382,19 @@ const PDF_MAGIC = '%PDF-';
  * objects inside compressed object streams, where this finds none — and finding
  * none is reported as `undefined`, never as zero. A wrong "you only sent one
  * page" told to someone who sent twelve is worse than not checking.
+ *
+ * `countPages` exists because the count has exactly one reader. Only
+ * `passportCompleteness` asks for it; the resume and Aadhaar normalisers take
+ * no inspection at all, so scanning their uploads was work whose result was
+ * thrown away — and a CV is the commonest PDF the bot is sent. Callers that
+ * will not read the number should say so and skip the scan. It defaults on, so
+ * asking for less is deliberate and asking for everything is free.
  */
-export function inspectUpload(buffer: Buffer, mimeType: string): UploadInspection {
+export function inspectUpload(
+  buffer: Buffer,
+  mimeType: string,
+  options: { countPages?: boolean } = {},
+): UploadInspection {
   if (!buffer.byteLength) return { readable: false, problem: 'the file was empty' };
 
   const head = buffer.subarray(0, 5).toString('latin1');
@@ -296,9 +417,21 @@ export function inspectUpload(buffer: Buffer, mimeType: string): UploadInspectio
     return { readable: false, problem: 'the PDF is incomplete and will not open' };
   }
 
-  const pageObjects = (buffer.toString('latin1').match(/\/Type\s*\/Page[^sA-Za-z]/g) ?? []).length;
+  if (options.countPages === false) return { readable: true };
 
-  return { readable: true, ...(pageObjects > 0 ? { pages: pageObjects } : {}) };
+  const { found, exhaustive } = scanPageObjects(buffer);
+
+  // Three ways this ends, and only one of them is a number worth reporting.
+  //
+  //   found the lot        the count stands, whatever it is
+  //   stopped early        `PAGE_SCAN_STOP_AT` reached, which already answers
+  //                        the only question asked of it
+  //   ran out of window    fewer than that, and more file left to read — so the
+  //                        honest answer is that we do not know, exactly as for
+  //                        a PDF whose pages are hidden in object streams
+  const countable = exhaustive || found >= PAGE_SCAN_STOP_AT;
+
+  return { readable: true, ...(countable && found > 0 ? { pages: found } : {}) };
 }
 
 /**
@@ -822,7 +955,11 @@ export async function runOcr(params: {
   // Asked of the bytes before anything is sent anywhere. A file that will not
   // open cannot be extracted, and discovering that here costs milliseconds
   // instead of the full 120-second extraction timeout.
-  const inspection = inspectUpload(params.buffer, params.mimeType);
+  // Only the passport normaliser reads the page count (`passportCompleteness`),
+  // so only a passport pays for the scan.
+  const inspection = inspectUpload(params.buffer, params.mimeType, {
+    countPages: params.extractor === 'passport',
+  });
 
   if (!inspection.readable) {
     const problem = inspection.problem ?? 'the file could not be opened';
@@ -840,7 +977,9 @@ export async function runOcr(params: {
   const form = new FormData();
   form.append(
     route.field,
-    new Blob([new Uint8Array(params.buffer)], { type: params.mimeType }),
+    // A `Buffer` is already a `Uint8Array`, and `Blob` copies its parts either
+    // way — so wrapping it in another one only bought a second copy of the file.
+    new Blob([params.buffer], { type: params.mimeType }),
     params.filename,
   );
 

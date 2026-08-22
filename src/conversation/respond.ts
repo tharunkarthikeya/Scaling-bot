@@ -47,7 +47,7 @@ import { faqContext, violatesGuardrails } from './faq.js';
 import { LANGUAGE_NAMES, type Language } from './language.js';
 import { TUNABLES } from './rules.js';
 
-const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+import { callModel, modelClient } from './model.js';
 
 export type RespondOutcome =
   /** Send this, then re-send the open question underneath it. */
@@ -200,7 +200,8 @@ export async function respondInContext(params: {
     : '';
 
   try {
-    const response = await client.messages.create({
+    const response = await callModel('respond-in-context', () =>
+      modelClient().messages.create({
       model: config.CLAUDE_MODEL,
       max_tokens: TUNABLES.maxAnswerTokens,
       system: [
@@ -221,7 +222,8 @@ export async function respondInContext(params: {
             `They replied:\n${message}`,
         },
       ],
-    });
+      }),
+    );
 
     return readReply(response, 'respond');
   } catch (err) {
@@ -276,7 +278,8 @@ export async function explainWrongDocument(params: {
   languageOther?: string;
 }): Promise<RespondOutcome> {
   try {
-    const response = await client.messages.create({
+    const response = await callModel('wrong-document', () =>
+      modelClient().messages.create({
       model: config.CLAUDE_MODEL,
       max_tokens: TUNABLES.maxAnswerTokens,
       system: [{ type: 'text', text: WRONG_DOCUMENT_PROMPT, cache_control: { type: 'ephemeral' } }],
@@ -293,7 +296,8 @@ export async function explainWrongDocument(params: {
               : 'What the file is could not be established.'),
         },
       ],
-    });
+      }),
+    );
 
     return readReply(response, 'wrong document');
   } catch (err) {

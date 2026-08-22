@@ -30,8 +30,8 @@
 
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { downloadMedia } from '../whatsapp/client.js';
-import { readFile, saveFile } from '../storage/index.js';
+import { MediaTooLargeError, downloadMedia } from '../whatsapp/client.js';
+import { saveFile } from '../storage/index.js';
 import {
   findIngestion,
   idempotencyKeyFor,
@@ -89,6 +89,18 @@ export async function captureAttachment(params: {
   // got further than its status suggested.
   if (row.storageKey) return row;
 
+  // Done with, and not because it succeeded. `review` means retries are over
+  // and a person has to look at it, so fetching again is work whose result is
+  // already known — and for a file refused on its size it is the same refusal,
+  // paid for again. The row goes back exactly as it stands.
+  if (row.status === 'review') {
+    logger.debug(
+      { waId: params.waId, wamid: params.wamid, failureKind: row.failureKind },
+      'attachment already in the review queue; not fetched again',
+    );
+    return row;
+  }
+
   try {
     const media = await downloadMedia(params.mediaId, params.filename);
 
@@ -127,57 +139,23 @@ export async function captureAttachment(params: {
     };
   } catch (err) {
     const attempts = (row.attempts ?? 0) + 1;
+
+    // A file over `MEDIA_MAX_BYTES` is over it on every attempt. Recorded as
+    // terminal so the row stops here rather than costing four more fetches, and
+    // so the conversation can tell the candidate what is actually wrong — "send
+    // it again" is advice that cannot work on a file that is simply too big.
+    const tooLarge = err instanceof MediaTooLargeError;
+
     const status = await recordIngestionFailure({
       key,
       error: err instanceof Error ? err.message : String(err),
       attempts,
       maxAttempts: config.INGESTION_MAX_ATTEMPTS,
       retryAfterMs: retryAfterMsFrom(err),
+      ...(tooLarge ? { terminal: 'too_large' as const } : {}),
     });
 
-    return { ...row, status, attempts };
-  }
-}
-
-/**
- * The original bytes for a row, from storage where they are there and from Meta
- * where they are not.
- *
- * The fallback exists for attachments that arrived before the capture step did,
- * and for the window where a capture failed but the media id is still good. It
- * is a fallback and not the path: if it runs, the ledger row says why.
- */
-export async function sourceBytesFor(
-  row: IngestionRow,
-): Promise<{ buffer: Buffer; mimeType: string } | undefined> {
-  if (row.storageKey) {
-    try {
-      return {
-        buffer: await readFile(row.storageKey),
-        mimeType: row.mimeType ?? 'application/octet-stream',
-      };
-    } catch (err) {
-      // The row says the bytes are there and they are not. Worth shouting
-      // about: it means the storage volume is not the one that was written to,
-      // which on Dokploy means STORAGE_PATH is a container path again.
-      logger.error(
-        { err, storageKey: row.storageKey, waId: row.waId },
-        'ingestion row names a source object that cannot be read',
-      );
-    }
-  }
-
-  if (row.provider !== 'whatsapp') return undefined;
-
-  try {
-    const media = await downloadMedia(row.attachmentId, row.originalFilename);
-    return { buffer: media.buffer, mimeType: media.mimeType };
-  } catch (err) {
-    logger.error(
-      { err, waId: row.waId, attachmentId: row.attachmentId },
-      'source bytes unavailable from storage and from the provider',
-    );
-    return undefined;
+    return { ...row, status, attempts, ...(tooLarge ? { failureKind: 'too_large' as const } : {}) };
   }
 }
 

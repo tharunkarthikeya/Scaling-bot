@@ -38,7 +38,7 @@ import { logger } from '../logger.js';
 import { LANGUAGE_NAMES, type Language } from './language.js';
 import { TUNABLES } from './rules.js';
 
-const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+import { callModel, modelClient } from './model.js';
 
 export interface FaqEntry {
   id: string;
@@ -342,7 +342,8 @@ export async function answerFromFaq(params: {
       : (params.languageOther?.trim().slice(0, 40) || 'English');
 
   try {
-    const response = await client.messages.create({
+    const response = await callModel('faq', () =>
+      modelClient().messages.create({
       model: config.CLAUDE_MODEL,
       max_tokens: TUNABLES.maxAnswerTokens,
       system: [
@@ -360,7 +361,8 @@ export async function answerFromFaq(params: {
           content: `Candidate's language: ${language}\n\nCandidate asked:\n${question}`,
         },
       ],
-    });
+      }),
+    );
 
     const call = response.content.find(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'answer',

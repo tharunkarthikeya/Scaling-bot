@@ -20,8 +20,16 @@ import { CORE_LANGUAGES } from './language.js';
 import type { FlowStep } from './flow.js';
 import { INTERPRETER_PROMPT, TUNABLES } from './rules.js';
 
-const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+import { callModel, ModelUnavailableError, modelClient } from './model.js';
 
+/**
+ * What came back from reading one message.
+ *
+ * `unavailable` is not a reading. It means the model could not be asked at all —
+ * throttled, timed out, unreachable — and it exists so that failure cannot be
+ * mistaken for the candidate having written something unreadable. `unclear` is
+ * counted against them and two of those fetch a person; this must never be.
+ */
 export type Interpretation =
   | { kind: 'matched'; ids: string[]; raw: string }
   | { kind: 'value'; value: string; raw: string }
@@ -31,7 +39,9 @@ export type Interpretation =
   | { kind: 'unrelated'; raw: string }
   /** About the question we asked, but not an answer to it. See `respond.ts`. */
   | { kind: 'related'; raw: string }
-  | { kind: 'unclear'; raw: string };
+  | { kind: 'unclear'; raw: string }
+  /** The model could not be reached. Nobody's fault but ours — never counted. */
+  | { kind: 'unavailable'; raw: string };
 
 export interface InterpretParams {
   step: FlowStep;
@@ -403,7 +413,8 @@ export async function interpret(params: InterpretParams): Promise<Interpretation
   if (!raw) return { kind: 'unclear', raw };
 
   try {
-    const response = await client.messages.create({
+    const response = await callModel('interpret', () =>
+      modelClient().messages.create({
       model: config.CLAUDE_MODEL,
       max_tokens: TUNABLES.maxInterpretTokens,
       system: [
@@ -418,7 +429,8 @@ export async function interpret(params: InterpretParams): Promise<Interpretation
           content: `${describeQuestion(params.step, params.choices)}\n\nCandidate's reply:\n${raw}`,
         },
       ],
-    });
+      }),
+    );
 
     const call = response.content.find(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'interpret',
@@ -489,6 +501,11 @@ export async function interpret(params: InterpretParams): Promise<Interpretation
         return { kind: 'unclear', raw };
     }
   } catch (err) {
+    // Throttled, timed out, or unreachable. The candidate wrote something
+    // perfectly readable and we never got as far as reading it, so this is
+    // reported as its own outcome rather than as a reply we could not use.
+    if (err instanceof ModelUnavailableError) return { kind: 'unavailable', raw };
+
     logger.error({ err, step: params.step.id }, 'interpretation failed');
     return { kind: 'unclear', raw };
   }

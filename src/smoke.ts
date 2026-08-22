@@ -15,7 +15,27 @@ import crypto from 'node:crypto';
 import { config } from './config.js';
 import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
-import { chunkText } from './whatsapp/client.js';
+import {
+  MediaTooLargeError,
+  chunkText,
+  downloadMedia,
+  outboundBudgets,
+  readCappedBody,
+  setMediaBaseUrlForTests,
+} from './whatsapp/client.js';
+import { isTerminalFailure } from './ingestion/ledger.js';
+import { render } from './conversation/copy.js';
+import { RateLimiter } from './whatsapp/rateLimiter.js';
+import http from 'node:http';
+import Anthropic from '@anthropic-ai/sdk';
+import {
+  callModel,
+  MODEL_REQUEST_OPTIONS,
+  ModelUnavailableError,
+  modelStats,
+  resetModelStatsForTests,
+  setModelClientForTests,
+} from './conversation/model.js';
 import { attributeInboundDocument, initialSlots, requirementFor } from './conversation/checklist.js';
 import { assertOcrRoutingIsSafe, DOCUMENTS, NEVER_OCR } from './conversation/rules.js';
 import {
@@ -30,6 +50,7 @@ import {
   TRADE_CHOICES,
 } from './conversation/flow.js';
 import { validateCopy } from './conversation/validate.js';
+import { InProcessQueue } from './queue/index.js';
 import {
   describeQuestion,
   detectGlobalCommand,
@@ -1389,6 +1410,119 @@ await check('an image is passed through without a page verdict', () => {
   const result = inspectUpload(Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg');
   assert.equal(result.readable, true);
   assert.equal(result.pages, undefined);
+});
+
+await check('a one-page PDF still reports one page, which is what §14 re-asks on', () => {
+  assert.equal(inspectUpload(pdf('/Type /Page '), 'application/pdf').pages, 1);
+});
+
+await check('the scan stops at the second page marker rather than counting them all', () => {
+  // Five page objects, and the answer is 2. The count saturates because
+  // `passportMinPdfPages` is the only thing it is ever compared against, so a
+  // third match cannot change a verdict — it can only cost the loop that found
+  // it. A 5 here would mean the scan had read the whole file to no purpose.
+  assert.equal(inspectUpload(pdf('/Type /Page  '.repeat(5)), 'application/pdf').pages, 2);
+});
+
+await check('a marker-dense PDF is answered from its first two markers', () => {
+  // The shape that used to hurt: an uncompressed file that is almost entirely
+  // page markers. The old scan built a latin1 copy of the whole thing and then
+  // an array holding every match — hundreds of thousands of strings. This one
+  // reads far enough to find two.
+  const dense = Buffer.concat([
+    Buffer.from('%PDF-1.4 ', 'latin1'),
+    Buffer.alloc(4 * 1024 * 1024).fill(Buffer.from('/Type /Page ', 'latin1')),
+    Buffer.from(' %%EOF', 'latin1'),
+  ]);
+  const result = inspectUpload(dense, 'application/pdf');
+  assert.equal(result.readable, true);
+  assert.equal(result.pages, 2);
+});
+
+await check('a large PDF is answered without reading past its first two markers', () => {
+  const large = Buffer.concat([
+    Buffer.from('%PDF-1.4 /Type /Page  /Type /Page  ', 'latin1'),
+    Buffer.alloc(12 * 1024 * 1024, 'x'),
+    Buffer.from(' %%EOF', 'latin1'),
+  ]);
+  const result = inspectUpload(large, 'application/pdf');
+  assert.equal(result.readable, true);
+  assert.equal(result.pages, 2);
+});
+
+await check('page objects past the scan window report no opinion rather than a guess', () => {
+  // Nine megabytes of filler before the first marker. The scan gives up at
+  // eight and says so — `undefined`, the same answer given for a PDF whose
+  // pages are hidden in compressed object streams. Reporting the zero it
+  // actually saw would tell a candidate who sent twelve pages that they sent
+  // none.
+  const beyond = Buffer.concat([
+    Buffer.from('%PDF-1.4 ', 'latin1'),
+    Buffer.alloc(9 * 1024 * 1024, 'x'),
+    Buffer.from(' /Type /Page  /Type /Page  %%EOF', 'latin1'),
+  ]);
+  const result = inspectUpload(beyond, 'application/pdf');
+  assert.equal(result.readable, true);
+  assert.equal(result.pages, undefined);
+});
+
+await check('a single page inside the window of an oversized PDF is not reported', () => {
+  // One marker found and eight megabytes read without a second: the file is
+  // longer than the window, so "only one page" is a claim the scan cannot make,
+  // and §14 would re-ask on it.
+  const oversized = Buffer.concat([
+    Buffer.from('%PDF-1.4 /Type /Page  ', 'latin1'),
+    Buffer.alloc(9 * 1024 * 1024, 'x'),
+    Buffer.from(' %%EOF', 'latin1'),
+  ]);
+  assert.equal(inspectUpload(oversized, 'application/pdf').pages, undefined);
+});
+
+await check('a caller that will not read the count does not pay for the scan', () => {
+  // What `runOcr` passes for the resume and Aadhaar extractors: neither
+  // normaliser takes an inspection, so counting their pages was work thrown
+  // away — and a CV is the commonest PDF the bot is sent.
+  const result = inspectUpload(pdf('/Type /Page  /Type /Page '), 'application/pdf', {
+    countPages: false,
+  });
+  assert.equal(result.readable, true);
+  assert.equal(result.pages, undefined);
+});
+
+await check('a PDF whose last bytes are a bare /Type is inspected, not failed', () => {
+  // `%%EOF` only has to fall in the final 4 KB, so a file may genuinely end on a
+  // `/Type` with no room to spell `/Page` after it. Reading off the end of the
+  // buffer there throws, and a throw here becomes a failed extraction and a
+  // review task for a file that is fine.
+  const result = inspectUpload(Buffer.from('%PDF-1.4 %%EOF /Type', 'latin1'), 'application/pdf');
+  assert.equal(result.readable, true);
+  assert.equal(result.pages, undefined);
+});
+
+await check('/Type /Pages is still the page tree and still not a page', () => {
+  // The distinction the regex drew with `[^sA-Za-z]`, which the byte scan has to
+  // keep: a letter after `/Page` means some other key, not a page object.
+  const result = inspectUpload(pdf('/Type /Pages  /Type /PageLabels '), 'application/pdf');
+  assert.equal(result.pages, undefined);
+});
+
+await check('a line break between /Type and /Page is still one page object', () => {
+  // The regex allowed any run of whitespace between the two and real writers do
+  // emit a break there. Matching only on a single space would undercount them.
+  const gap = String.fromCharCode(10, 9);
+  const result = inspectUpload(pdf(`/Type${gap}/Page  /Type   /Page `), 'application/pdf');
+  assert.equal(result.pages, 2);
+});
+
+await check('two page objects written with nothing between them still count as one', () => {
+  // The one place the old scan's spelling showed through. Its `[^sA-Za-z]`
+  // consumed the byte after `/Page`, so in `/Type/Page/Type/Page` the first
+  // match swallowed the slash the second needed and the pair counted once. An
+  // artifact rather than anything about PDF syntax, and nothing a real writer
+  // emits — but it is the answer that shipped, and this pins the byte scan to
+  // it so the rewrite stays a rewrite and not a change of verdict.
+  const result = inspectUpload(pdf('/Type/Page/Type/Page]'), 'application/pdf');
+  assert.equal(result.pages, 1);
 });
 
 /* ------------------------------------------------------------------ */
@@ -2839,6 +2973,882 @@ await check('the CRM can name a country it added, and refuses to name a region',
   const gulf = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'gcc' } });
   assert.equal(toCrmPayload(gulf, '111').profile.destination_country, undefined);
   resetTaxonomy();
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nthe in-process queue runs jobs in parallel, safely');
+
+/**
+ * These drive `InProcessQueue` directly rather than the exported singleton,
+ * which is built from the environment at import time. Handlers are supplied by
+ * the test, so nothing here touches Mongo, Meta, Anthropic or Veris.
+ *
+ * The bug being pinned: this queue used to hold one promise chain for the whole
+ * process, so every job of every type ran one after another and the
+ * `concurrency` argument passed at registration was silently discarded — the
+ * old `register` took two parameters, and TypeScript lets that satisfy a
+ * three-parameter signature without complaint.
+ */
+const nap = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** An inbound payload for a given candidate. Only `waId` steers the scheduler. */
+const job = (waId: string, wamid = 'w') => ({ waId, wamid });
+
+await check('jobs for different candidates run at the same time', () => {
+  const q = new InProcessQueue();
+  let running = 0;
+  let peak = 0;
+
+  q.register(
+    'inbound_message',
+    async () => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await nap(20);
+      running -= 1;
+    },
+    4,
+  );
+
+  const enqueued = Array.from({ length: 12 }, (_, i) =>
+    q.enqueue('inbound_message', job(`91900000${i.toString().padStart(4, '0')}`)),
+  );
+
+  return Promise.all(enqueued)
+    .then(() => q.close())
+    .then(() => {
+      // The old implementation pinned this at 1. Exactly 4 proves both halves:
+      // the bound is reached, and it is never exceeded.
+      assert.equal(peak, 4, `expected 4 concurrent jobs, saw ${peak}`);
+      assert.equal(running, 0, 'a slot was leaked');
+    });
+});
+
+await check('concurrency is bounded — never more slots than configured', async () => {
+  const q = new InProcessQueue();
+  let running = 0;
+  let breached = false;
+
+  q.register(
+    'inbound_message',
+    async () => {
+      running += 1;
+      if (running > 2) breached = true;
+      await nap(5);
+      running -= 1;
+    },
+    2,
+  );
+
+  for (let i = 0; i < 20; i++) await q.enqueue('inbound_message', job(`9190000${i}`));
+  await q.close();
+
+  assert.equal(breached, false, 'the pool oversubscribed its own limit');
+});
+
+await check('two messages from one candidate never overlap, and stay in order', async () => {
+  // The guarantee that matters most. Two turns for one person running at once
+  // means both read the same checklist and both ask for the same document.
+  const q = new InProcessQueue();
+  let inFlight = 0;
+  let overlapped = false;
+  const order: string[] = [];
+
+  q.register(
+    'inbound_message',
+    async (payload) => {
+      inFlight += 1;
+      if (inFlight > 1) overlapped = true;
+      order.push(payload.wamid);
+      await nap(10);
+      inFlight -= 1;
+    },
+    4,
+  );
+
+  for (let i = 0; i < 5; i++) await q.enqueue('inbound_message', job('919000000001', `w${i}`));
+  await q.close();
+
+  assert.equal(overlapped, false, 'two turns for one candidate ran concurrently');
+  assert.deepEqual(order, ['w0', 'w1', 'w2', 'w3', 'w4'], 'a candidate\'s turns were reordered');
+});
+
+await check('a busy candidate does not hold a worker slot hostage', async () => {
+  // A job whose candidate is busy is skipped, not awaited. Blocking the worker
+  // on the key would let one talkative candidate occupy every slot.
+  const q = new InProcessQueue();
+  const finished: string[] = [];
+
+  q.register(
+    'inbound_message',
+    async (payload) => {
+      await nap(payload.waId === '919000000001' ? 12 : 4);
+      finished.push(payload.waId);
+    },
+    2,
+  );
+
+  // Four turns for one candidate, which can only run one at a time, and two
+  // other people who should not have to wait for any of them.
+  for (let i = 0; i < 4; i++) await q.enqueue('inbound_message', job('919000000001', `a${i}`));
+  await q.enqueue('inbound_message', job('919000000002'));
+  await q.enqueue('inbound_message', job('919000000003'));
+  await q.close();
+
+  const others = finished.filter((waId) => waId !== '919000000001');
+  assert.equal(others.length, 2, 'the unrelated candidates did not run');
+  assert.ok(
+    finished.indexOf('919000000002') < finished.lastIndexOf('919000000001'),
+    'an unrelated candidate waited for the busy one to finish entirely',
+  );
+});
+
+await check('a slow extraction does not block unrelated candidates (§14)', async () => {
+  // The stall this whole change exists to remove: one 120-second Veris call at
+  // the head of a single global chain used to stop every conversation.
+  const q = new InProcessQueue();
+  const finished: string[] = [];
+
+  q.register(
+    'ocr',
+    async (payload) => {
+      await nap(60);
+      finished.push(`ocr:${payload.waId}`);
+    },
+    2,
+  );
+  q.register(
+    'inbound_message',
+    async (payload) => {
+      await nap(2);
+      finished.push(`msg:${payload.waId}`);
+    },
+    4,
+  );
+
+  await q.enqueue('ocr', { waId: '919000000001', docType: 'passport', uploadId: 'u1' });
+  await q.enqueue('ocr', { waId: '919000000002', docType: 'aadhaar', uploadId: 'u2' });
+  for (let i = 3; i <= 6; i++) await q.enqueue('inbound_message', job(`91900000000${i}`));
+
+  await q.close();
+
+  const lastMessage = finished.findLastIndex((entry) => entry.startsWith('msg:'));
+  const firstOcr = finished.findIndex((entry) => entry.startsWith('ocr:'));
+  assert.equal(finished.filter((e) => e.startsWith('msg:')).length, 4);
+  assert.ok(lastMessage < firstOcr, 'conversations queued behind a document extraction');
+});
+
+await check('a saturated pool cannot starve another job type', async () => {
+  // Separate pool per job name. An extraction backlog is an extraction problem.
+  const q = new InProcessQueue();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let inboundDone = 0;
+
+  q.register('ocr', async () => held, 2);
+  q.register(
+    'inbound_message',
+    async () => {
+      inboundDone += 1;
+    },
+    4,
+  );
+
+  // Four extractions against two slots: the pool is jammed and stays jammed.
+  for (let i = 1; i <= 4; i++) {
+    await q.enqueue('ocr', { waId: `9190000000${i}`, docType: 'passport', uploadId: `u${i}` });
+  }
+  for (let i = 5; i <= 7; i++) await q.enqueue('inbound_message', job(`9190000000${i}`));
+
+  await nap(30);
+  assert.equal(inboundDone, 3, 'conversations were blocked by a jammed extraction pool');
+
+  release();
+  await q.close();
+});
+
+await check('a handler that throws frees its slot instead of wedging the pool', async () => {
+  const q = new InProcessQueue();
+  let completed = 0;
+
+  q.register(
+    'inbound_message',
+    async (payload) => {
+      if (payload.wamid === 'boom') throw new Error('handler exploded');
+      completed += 1;
+    },
+    2,
+  );
+
+  await q.enqueue('inbound_message', job('919000000001', 'boom'));
+  for (let i = 2; i <= 4; i++) await q.enqueue('inbound_message', job(`91900000000${i}`));
+  await q.close();
+
+  assert.equal(completed, 3, 'a throwing job took the pool down with it');
+});
+
+await check('close() waits for everything queued, not just what is running', async () => {
+  const q = new InProcessQueue();
+  let ran = 0;
+
+  q.register(
+    'inbound_message',
+    async () => {
+      await nap(5);
+      ran += 1;
+    },
+    3,
+  );
+
+  for (let i = 0; i < 9; i++) await q.enqueue('inbound_message', job(`9190000${i}`));
+  await q.close();
+
+  assert.equal(ran, 9, 'shutdown dropped queued jobs');
+});
+
+await check('a job with no handler is dropped, not thrown', async () => {
+  const q = new InProcessQueue();
+  await q.enqueue('inbound_message', job('919000000001'));
+  await q.close();
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\noutbound budgets — replies, receipts and media are separate');
+
+await check('the three budgets are distinct buckets, not one shared one', () => {
+  // The bug: a single limiter covered replies, read receipts and media fetches,
+  // so roughly half of a 20/sec messaging allowance went on acknowledging
+  // messages rather than answering them.
+  const { replies, receipts, media } = outboundBudgets;
+  assert.notEqual(replies, receipts, 'receipts share the reply bucket');
+  assert.notEqual(replies, media, 'media fetches share the reply bucket');
+  assert.notEqual(receipts, media, 'receipts and media share a bucket');
+});
+
+await check('read receipts cannot spend reply capacity', () => {
+  // Asserted against the real wiring rather than a copy of it, so this fails if
+  // someone points `markAsRead` back at the reply budget.
+  const { replies, receipts } = outboundBudgets;
+
+  const replyCapacity = replies.available;
+  assert.ok(replyCapacity > 0, 'the reply budget started empty; test cannot prove anything');
+
+  // Exhaust receipts completely. The bound is a guard against a refill race,
+  // not an expected iteration count.
+  let drained = 0;
+  while (drained < 1000 && receipts.tryAcquire()) drained += 1;
+  assert.ok(drained > 0, 'the receipt budget had no capacity to drain');
+  assert.equal(receipts.tryAcquire(), false, 'the receipt budget refused to run out');
+
+  // Replies are untouched by that.
+  assert.ok(
+    replies.available >= replyCapacity,
+    `draining ${drained} receipts cost reply capacity (${replyCapacity} -> ${replies.available})`,
+  );
+  assert.equal(replies.tryAcquire(), true, 'a reply could not be sent after receipts ran dry');
+});
+
+await check('a drained receipt budget recovers on its own', () => {
+  // Receipts are dropped, not queued — so the budget has to come back by itself
+  // or blue ticks stop for good after the first burst.
+  const limiter = new RateLimiter(20);
+  let drained = 0;
+  while (drained < 1000 && limiter.tryAcquire()) drained += 1;
+  assert.equal(limiter.tryAcquire(), false);
+
+  return nap(150).then(() => {
+    assert.equal(limiter.tryAcquire(), true, 'the budget never refilled');
+  });
+});
+
+await check('candidate replies are still rate limited', async () => {
+  // Separating the budgets must not turn into removing the limit. Twenty sends
+  // through a 10/sec bucket: ten immediately, the rest paced at ten a second.
+  const limiter = new RateLimiter(10);
+
+  const started = Date.now();
+  for (let i = 0; i < 20; i++) await limiter.acquire();
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed >= 700, `20 sends at 10/sec finished in ${elapsed}ms — not throttled`);
+});
+
+await check('concurrent sends are paced, not oversubscribed', async () => {
+  // Fifteen turns finishing at once is the normal shape of load now that the
+  // queue runs jobs in parallel. Every one must be sent, and the rate must hold.
+  const limiter = new RateLimiter(5);
+  let granted = 0;
+
+  const started = Date.now();
+  await Promise.all(
+    Array.from({ length: 15 }, async () => {
+      await limiter.acquire();
+      granted += 1;
+    }),
+  );
+  const elapsed = Date.now() - started;
+
+  assert.equal(granted, 15, 'a concurrent send was dropped');
+  // Five are free; the remaining ten arrive at five a second.
+  assert.ok(elapsed >= 1400, `15 concurrent sends at 5/sec finished in ${elapsed}ms`);
+});
+
+await check('a burst can never exceed the configured ceiling', () => {
+  const limiter = new RateLimiter(8);
+  let granted = 0;
+  while (granted <= 100 && limiter.tryAcquire()) granted += 1;
+  assert.equal(granted, 8, `a burst granted ${granted} tokens against a ceiling of 8`);
+});
+
+await check('tryAcquire reports honestly and never waits', () => {
+  const limiter = new RateLimiter(3);
+  assert.equal(limiter.available, 3);
+
+  const started = Date.now();
+  assert.equal(limiter.tryAcquire(), true);
+  assert.equal(limiter.tryAcquire(), true);
+  assert.equal(limiter.tryAcquire(), true);
+  assert.equal(limiter.tryAcquire(), false, 'handed out a token it did not have');
+  assert.equal(limiter.available, 0);
+
+  // The point of tryAcquire: a refusal costs nothing and blocks nobody.
+  assert.ok(Date.now() - started < 50, 'tryAcquire blocked');
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nanthropic resilience — throttling is ours to absorb, not the candidate\'s');
+
+/**
+ * These run the real SDK, with the real retry settings, against a stub server on
+ * localhost. Nothing here needs a network, a key, or a live model.
+ *
+ * Driving the transport rather than mocking it is deliberate: the retry, the
+ * backoff and the `Retry-After` handling all live inside the SDK, so a test that
+ * stubbed `messages.create` would be testing an imitation of the thing that
+ * actually has to work.
+ */
+interface Stub {
+  url: string;
+  requests: () => number;
+  close: () => Promise<void>;
+}
+
+/** Serves the given responses in order, repeating the last one forever. */
+async function modelStub(
+  plan: Array<{ status: number; headers?: Record<string, string>; body?: unknown }>,
+): Promise<Stub> {
+  let served = 0;
+
+  const server = http.createServer((req, res) => {
+    const step = plan[Math.min(served, plan.length - 1)]!;
+    served += 1;
+
+    // Drain the request body so the socket closes cleanly.
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(step.status, { 'content-type': 'application/json', ...(step.headers ?? {}) });
+      res.end(
+        JSON.stringify(
+          step.body ?? {
+            type: 'error',
+            error: { type: 'rate_limit_error', message: 'stubbed' },
+          },
+        ),
+      );
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+
+  return {
+    url: `http://127.0.0.1:${port}`,
+    requests: () => served,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+/** A well-formed successful completion, as the SDK expects to parse it. */
+const OK_BODY = {
+  id: 'msg_test',
+  type: 'message',
+  role: 'assistant',
+  model: 'stub',
+  content: [{ type: 'text', text: 'ok' }],
+  stop_reason: 'end_turn',
+  stop_sequence: null,
+  usage: { input_tokens: 1, output_tokens: 1 },
+};
+
+async function withStub<T>(
+  plan: Parameters<typeof modelStub>[0],
+  run: (client: Anthropic, stub: Stub) => Promise<T>,
+): Promise<T> {
+  const stub = await modelStub(plan);
+  const client = new Anthropic({
+    apiKey: 'test-key',
+    baseURL: stub.url,
+    ...MODEL_REQUEST_OPTIONS,
+  });
+  const restore = setModelClientForTests(client);
+  try {
+    return await run(client, stub);
+  } finally {
+    restore();
+    await stub.close();
+  }
+}
+
+const ask = (client: Anthropic) =>
+  client.messages.create({
+    model: 'stub',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hello' }],
+  });
+
+await check('a successful request goes through untouched', async () => {
+  resetModelStatsForTests();
+  await withStub([{ status: 200, body: OK_BODY }], async (client, stub) => {
+    const response = await callModel('test', () => ask(client));
+    assert.equal(response.content[0]?.type, 'text');
+    assert.equal(stub.requests(), 1, 'a healthy request was retried');
+  });
+  assert.equal(modelStats().transient, 0);
+});
+
+await check('a 429 followed by success is retried and succeeds', async () => {
+  resetModelStatsForTests();
+  await withStub(
+    [{ status: 429 }, { status: 200, body: OK_BODY }],
+    async (client, stub) => {
+      const response = await callModel('test', () => ask(client));
+      assert.equal(response.content[0]?.type, 'text');
+      assert.equal(stub.requests(), 2, 'the 429 was not retried');
+    },
+  );
+  // The candidate never learns any of this happened.
+  assert.equal(modelStats().transient, 0, 'a recovered 429 was reported as unavailable');
+});
+
+await check('Retry-After is respected rather than backed off past', async () => {
+  resetModelStatsForTests();
+  const started = Date.now();
+  await withStub(
+    [{ status: 429, headers: { 'retry-after': '1' } }, { status: 200, body: OK_BODY }],
+    async (client, stub) => {
+      await callModel('test', () => ask(client));
+      assert.equal(stub.requests(), 2);
+    },
+  );
+  const elapsed = Date.now() - started;
+  // The SDK's own backoff for a first retry is ~0.5s; obeying the header means
+  // waiting the full second it asked for.
+  assert.ok(elapsed >= 900, `waited ${elapsed}ms for a Retry-After of 1s`);
+});
+
+await check('repeated 429s stop at the retry limit and report unavailable', async () => {
+  resetModelStatsForTests();
+  await withStub([{ status: 429 }], async (client, stub) => {
+    await assert.rejects(
+      () => callModel('test', () => ask(client)),
+      (err: unknown) => err instanceof ModelUnavailableError && err.status === 429,
+      'exhausted throttling did not surface as ModelUnavailableError',
+    );
+
+    // One attempt plus MODEL_MAX_RETRIES. Bounded, and bounded by config.
+    const expected = MODEL_REQUEST_OPTIONS.maxRetries + 1;
+    assert.equal(
+      stub.requests(),
+      expected,
+      `made ${stub.requests()} attempts against a limit of ${expected}`,
+    );
+  });
+  assert.equal(modelStats().transient, 1);
+});
+
+await check('there is no infinite retry — attempts are bounded by config', async () => {
+  resetModelStatsForTests();
+  await withStub([{ status: 503 }], async (client, stub) => {
+    await assert.rejects(() => callModel('test', () => ask(client)));
+    assert.ok(
+      stub.requests() <= MODEL_REQUEST_OPTIONS.maxRetries + 1,
+      `a 5xx produced ${stub.requests()} attempts`,
+    );
+  });
+});
+
+await check('a non-retryable error is not retried and is not called throttling', async () => {
+  // A 400 is a malformed request — our bug. Retrying produces the same 400
+  // forever, and dressing it up as "busy, try again" hides a real defect.
+  resetModelStatsForTests();
+  await withStub(
+    [
+      {
+        status: 400,
+        body: { type: 'error', error: { type: 'invalid_request_error', message: 'bad' } },
+      },
+    ],
+    async (client, stub) => {
+      await assert.rejects(
+        () => callModel('test', () => ask(client)),
+        (err: unknown) => !(err instanceof ModelUnavailableError),
+        'a 400 was reported as the model being unavailable',
+      );
+      assert.equal(stub.requests(), 1, 'a 400 was retried');
+    },
+  );
+  assert.equal(modelStats().failed, 1);
+  assert.equal(modelStats().transient, 0);
+});
+
+await check('concurrent calls are bounded by the gate and all complete', async () => {
+  resetModelStatsForTests();
+  await withStub([{ status: 200, body: OK_BODY }], async (client) => {
+    let peak = 0;
+    const observed: number[] = [];
+
+    const calls = Array.from({ length: 20 }, () =>
+      callModel('test', async () => {
+        peak = Math.max(peak, modelStats().inFlight);
+        observed.push(modelStats().inFlight);
+        return ask(client);
+      }),
+    );
+
+    const results = await Promise.all(calls);
+    assert.equal(results.length, 20, 'a concurrent call was lost');
+    assert.ok(
+      peak <= modelStats().concurrency,
+      `${peak} calls were in flight against a ceiling of ${modelStats().concurrency}`,
+    );
+    assert.ok(observed.length === 20);
+  });
+
+  // The gate hands every slot back, so nothing leaks between bursts.
+  assert.equal(modelStats().inFlight, 0, 'the gate leaked a slot');
+  assert.equal(modelStats().waiting, 0);
+});
+
+await check('throttling is never mistaken for an unreadable reply', async () => {
+  // The whole point. `unclear` is counted against the candidate and two of them
+  // fetch a member of staff; `unavailable` is counted against nobody. A test
+  // that let these collapse into one another would let the false handoff back.
+  resetModelStatsForTests();
+  await withStub([{ status: 429 }], async (client) => {
+    const step = stepById('full_name')!;
+    const outcome = await interpret({
+      step,
+      choices: acceptedChoices(step, candidate()),
+      text: 'Ravi Kumar',
+    });
+
+    assert.equal(outcome.kind, 'unavailable', `throttling surfaced as "${outcome.kind}"`);
+    assert.notEqual(outcome.kind, 'unclear', 'a throttle would have counted against the candidate');
+    assert.equal(outcome.raw, 'Ravi Kumar', 'the candidate\'s own words were lost');
+  });
+});
+
+await check('candidate state is untouched when the model is unavailable', async () => {
+  // Nothing may be recorded from a turn that was never interpreted: no answer,
+  // no step advance, no unclear count. The step stays exactly as it was.
+  resetModelStatsForTests();
+  const before = candidate({ profile: { lookingForOverseasJob: true }, unclearCount: 0 });
+  const snapshot = JSON.stringify(before);
+
+  await withStub([{ status: 429 }], async (client) => {
+    const step = stepById('full_name')!;
+    const outcome = await interpret({
+      step,
+      choices: acceptedChoices(step, before),
+      text: 'Ravi Kumar',
+    });
+    assert.equal(outcome.kind, 'unavailable');
+  });
+
+  assert.equal(JSON.stringify(before), snapshot, 'an unavailable turn mutated the candidate');
+  assert.equal(before.unclearCount, 0, 'a throttle was counted against the candidate');
+  assert.equal(stepById('full_name')!.satisfied(before), false, 'the step was marked answered');
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nmedia size limit');
+
+const LIMIT = config.MEDIA_MAX_BYTES;
+
+/**
+ * Both hops of a media download, on one local server.
+ *
+ * `GET /:id` answers as Meta's metadata endpoint and points at `/file` on the
+ * same server, so the whole of `downloadMedia` runs — the real fetch, the real
+ * headers, a real chunked body — against something whose every answer this test
+ * chose. `fileRequests` is what proves a refusal happened before the download
+ * rather than after it.
+ */
+interface MediaStub {
+  url: string;
+  fileRequests: () => number;
+  bytesSent: () => number;
+  close: () => Promise<void>;
+}
+
+async function mediaStub(plan: {
+  fileSize?: number | 'omit';
+  contentLength?: number | 'omit';
+  body: number;
+  chunk?: number;
+}): Promise<MediaStub> {
+  let fileRequests = 0;
+  let bytesSent = 0;
+
+  const server = http.createServer(async (req, res) => {
+    req.resume();
+
+    if (!req.url!.startsWith('/file')) {
+      const port = (server.address() as { port: number }).port;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          messaging_product: 'whatsapp',
+          url: `http://127.0.0.1:${port}/file`,
+          mime_type: 'application/pdf',
+          ...(plan.fileSize === 'omit' ? {} : { file_size: plan.fileSize ?? plan.body }),
+        }),
+      );
+      return;
+    }
+
+    fileRequests += 1;
+
+    const headers: Record<string, string> = { 'content-type': 'application/pdf' };
+    if (plan.contentLength !== 'omit') {
+      headers['content-length'] = String(plan.contentLength ?? plan.body);
+    }
+    res.writeHead(200, headers);
+
+    // Written in chunks so the reader gets more than one turn, which is what
+    // lets the byte counter stop a transfer part-way through it.
+    const size = plan.chunk ?? 64 * 1024;
+    const chunk = Buffer.alloc(size, 0x41);
+    let left = plan.body;
+
+    while (left > 0) {
+      const piece = chunk.subarray(0, Math.min(size, left));
+      left -= piece.byteLength;
+      bytesSent += piece.byteLength;
+      if (!res.write(piece)) {
+        // Stop feeding a socket nobody is reading; if the client walked away
+        // this is where it becomes visible.
+        const drained = await new Promise<boolean>((resolve) => {
+          const onDrain = () => {
+            res.off('close', onClose);
+            resolve(true);
+          };
+          const onClose = () => {
+            res.off('drain', onDrain);
+            resolve(false);
+          };
+          res.once('drain', onDrain);
+          res.once('close', onClose);
+        });
+        if (!drained) return;
+      }
+    }
+    res.end();
+  });
+
+  // A client that abandons a response mid-body makes the server emit ECONNRESET.
+  // That is the abort working, not a failure.
+  server.on('clientError', () => undefined);
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+
+  return {
+    url: `http://127.0.0.1:${port}`,
+    fileRequests: () => fileRequests,
+    bytesSent: () => bytesSent,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+async function withMediaStub<T>(
+  plan: Parameters<typeof mediaStub>[0],
+  run: (stub: MediaStub) => Promise<T>,
+): Promise<T> {
+  const stub = await mediaStub(plan);
+  const restore = setMediaBaseUrlForTests(stub.url);
+  try {
+    return await run(stub);
+  } finally {
+    restore();
+    await stub.close();
+  }
+}
+
+/** A response built by hand, so the headers and the body can disagree. */
+function responseOf(
+  chunks: Uint8Array[],
+  headers: Record<string, string>,
+  hooks: { onPull?: () => void; onCancel?: () => void } = {},
+): Response {
+  let i = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      hooks.onPull?.();
+      if (i < chunks.length) controller.enqueue(chunks[i++]!);
+      else controller.close();
+    },
+    cancel() {
+      hooks.onCancel?.();
+    },
+  });
+  return new Response(stream, { headers });
+}
+
+await check('exactly the limit is accepted', async () => {
+  await withMediaStub({ body: LIMIT }, async (stub) => {
+    const media = await downloadMedia('MEDIA_EXACT');
+    assert.equal(media.byteSize, LIMIT);
+    assert.equal(media.buffer.byteLength, 10 * 1024 * 1024);
+    assert.equal(stub.fileRequests(), 1);
+  });
+});
+
+await check('one byte over the limit is refused', async () => {
+  await withMediaStub({ body: LIMIT + 1, fileSize: 'omit', contentLength: 'omit' }, async () => {
+    await assert.rejects(() => downloadMedia('MEDIA_OVER'), MediaTooLargeError);
+  });
+});
+
+await check('a declared file_size over the limit is refused before the file is requested', async () => {
+  // L1. The whole point of the layer: the metadata request is paid for and the
+  // document is not. `fileRequests` is zero or the layer did not work.
+  await withMediaStub({ body: 1024, fileSize: LIMIT + 1 }, async (stub) => {
+    await assert.rejects(() => downloadMedia('MEDIA_DECLARED'), MediaTooLargeError);
+    assert.equal(stub.fileRequests(), 0);
+    assert.equal(stub.bytesSent(), 0);
+  });
+});
+
+await check('a Content-Length over the limit is refused before the body is read', async () => {
+  // L2, proved on the stream rather than on a counter. `getReader()` locks a
+  // ReadableStream and nothing else does, so a body still unlocked after the
+  // refusal is a body that was never opened — which a chunk counter could not
+  // show, because a ReadableStream pulls its first chunk to fill its queue as
+  // soon as it is constructed, long before this function sees it.
+  const res = responseOf([new Uint8Array(8)], { 'content-length': String(LIMIT + 1) });
+
+  await assert.rejects(() => readCappedBody(res, LIMIT, 'test'), MediaTooLargeError);
+  assert.equal(res.body!.locked, false, 'the body was opened despite an oversized Content-Length');
+  assert.equal(res.bodyUsed, false);
+});
+
+await check('a missing Content-Length is still bounded by the byte counter', async () => {
+  // Chunked, so there is no header to check and L3 is the only thing standing
+  // between this process and the whole file.
+  await withMediaStub(
+    { body: LIMIT + 512 * 1024, fileSize: 'omit', contentLength: 'omit' },
+    async (stub) => {
+      await assert.rejects(() => downloadMedia('MEDIA_CHUNKED'), MediaTooLargeError);
+      assert.equal(stub.fileRequests(), 1);
+    },
+  );
+});
+
+await check('a Content-Length that understates the body does not get past the counter', async () => {
+  // The case the first two layers cannot cover: everything the far end said was
+  // within the limit, and then it sent more. Only counting catches this.
+  const chunk = new Uint8Array(1024 * 1024);
+  const chunks = Array.from({ length: 12 }, () => chunk);
+  const res = responseOf(chunks, { 'content-length': '64' });
+
+  await assert.rejects(() => readCappedBody(res, LIMIT, 'test'), MediaTooLargeError);
+});
+
+await check('exceeding the limit aborts the transfer rather than draining it', async () => {
+  let aborted = 0;
+  let cancelled = 0;
+  let pulls = 0;
+
+  const chunk = new Uint8Array(1024 * 1024);
+  // Far more than the limit, so a reader that did not stop would keep going.
+  const chunks = Array.from({ length: 40 }, () => chunk);
+  const res = responseOf(chunks, {}, {
+    onPull: () => {
+      pulls += 1;
+    },
+    onCancel: () => {
+      cancelled += 1;
+    },
+  });
+
+  await assert.rejects(
+    () => readCappedBody(res, LIMIT, 'test', () => {
+      aborted += 1;
+    }),
+    MediaTooLargeError,
+  );
+
+  assert.equal(aborted, 1, 'the abort callback did not fire');
+  assert.equal(cancelled, 1, 'the stream was not cancelled');
+  // Eleven pulls to pass ten megabytes, and then it stopped. Never forty.
+  assert.ok(pulls <= 12, `read ${pulls} chunks past the limit`);
+});
+
+await check('an oversized file is terminal, not retried', async () => {
+  // One attempt out of five, and it is over anyway: nothing about the file
+  // changes between now and the fifth try.
+  assert.equal(
+    isTerminalFailure({ attempts: 1, maxAttempts: 5, terminal: 'too_large' }),
+    true,
+  );
+  // The same attempt count without the terminal reason is still retryable, so
+  // the flag is what decided it and not the counter.
+  assert.equal(isTerminalFailure({ attempts: 1, maxAttempts: 5 }), false);
+  assert.equal(isTerminalFailure({ attempts: 5, maxAttempts: 5 }), true);
+
+  // And the error carries the marker the ingestion layer branches on.
+  const err = new MediaTooLargeError('media X', LIMIT, LIMIT + 1);
+  assert.equal(err.permanent, true);
+  assert.equal(err.status, 413);
+});
+
+await check('an ordinary file downloads unharmed', async () => {
+  await withMediaStub({ body: 64 * 1024 }, async (stub) => {
+    const media = await downloadMedia('MEDIA_OK');
+    assert.equal(media.byteSize, 64 * 1024);
+    assert.equal(media.mimeType, 'application/pdf');
+    // The bytes are the bytes, not a truncation that happened to be the right
+    // length.
+    assert.ok(media.buffer.every((b) => b === 0x41));
+    assert.equal(stub.fileRequests(), 1);
+  });
+});
+
+await check('the too-large message exists in all five languages and carries the limit', () => {
+  for (const lang of ['en', 'ta', 'hi', 'te', 'ml'] as const) {
+    const text = copy.FILE_TOO_LARGE[lang];
+    assert.ok(text && text.trim().length > 0, `${lang} is missing`);
+    assert.ok(text.includes('{{limit}}'), `${lang} does not name the limit`);
+  }
+  // Distinct from the generic failure, because the advice is different: one
+  // asks for the file again, the other asks for a smaller one.
+  assert.notEqual(copy.FILE_TOO_LARGE.en, copy.FILE_FAILED.en);
+  // Rendered, it says ten.
+  assert.match(
+    render(copy.FILE_TOO_LARGE.en, {
+      limit: String(Math.floor(config.MEDIA_MAX_BYTES / (1024 * 1024))),
+    }),
+    /10 MB/,
+  );
+  // And it passes the length checks the deploy runs.
+  validateCopy();
 });
 
 /* ------------------------------------------------------------------ */

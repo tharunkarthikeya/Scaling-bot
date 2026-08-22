@@ -21,6 +21,7 @@
  */
 
 import type { ObjectId } from 'mongodb';
+import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
   addUpload,
@@ -72,6 +73,7 @@ import { attributeInboundDocument, initialSlots, withMissingSlots } from './chec
 import { extractFromCv, normaliseDate, profileFromIdentityDocument } from './cv.js';
 import { captureAttachment, ingestionForMessage } from '../ingestion/whatsapp.js';
 import { detectGlobalCommand, interpret } from './interpret.js';
+import { ModelUnavailableError } from './model.js';
 import { answerFromFaq } from './faq.js';
 import { explainWrongDocument, respondInContext } from './respond.js';
 import {
@@ -388,11 +390,28 @@ async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
   if (!occupation) return;
   if (profile.tradeQuestionsFor === occupation) return;
 
-  const questions = await questionsForOccupation({
-    occupation,
-    language: candidate.language,
-    languageOther: candidate.languageOther,
-  });
+  let questions;
+  try {
+    questions = await questionsForOccupation({
+      occupation,
+      language: candidate.language,
+      languageOther: candidate.languageOther,
+    });
+  } catch (err) {
+    // The model was unreachable. Writing what comes next would store an empty
+    // list *and* the occupation it was computed for, and the pair of them is
+    // what stops this ever running again — so a two-second outage would record
+    // "this candidate has no trade questions" for good. Leave it unset; the
+    // next turn asks again.
+    if (err instanceof ModelUnavailableError) {
+      logger.warn(
+        { waId: candidate.waId, occupation },
+        'trade questions deferred: the model was unavailable, nothing recorded',
+      );
+      return;
+    }
+    throw err;
+  }
 
   await recordsFor(candidate.enquiry).updateOne(
     { _id: candidate._id },
@@ -955,6 +974,12 @@ interface Ingested {
   docType?: string;
   /** Set when the file could not be fetched from Meta. */
   failed?: boolean;
+  /**
+   * Set when the reason was its size, which changes what the candidate is told.
+   * "Send it once more" is right for a download that dropped and wrong for a
+   * file over `MEDIA_MAX_BYTES` — resending produces the identical refusal.
+   */
+  tooLarge?: boolean;
 }
 
 /**
@@ -1005,10 +1030,10 @@ async function ingestDocument(candidate: CandidateDoc, msg: MessageDoc): Promise
 
   if (!row.storageKey || !row.sha256) {
     logger.error(
-      { mediaId: msg.mediaId, waId: candidate.waId, error: row.lastError },
+      { mediaId: msg.mediaId, waId: candidate.waId, error: row.lastError, kind: row.failureKind },
       'media unavailable; the ingestion row is retained for the reconciler',
     );
-    return { failed: true };
+    return { failed: true, tooLarge: row.failureKind === 'too_large' };
   }
 
   const stored = {
@@ -1069,6 +1094,25 @@ async function ingestDocument(candidate: CandidateDoc, msg: MessageDoc): Promise
 
   logger.info({ waId: candidate.waId, docType, storageKey: stored.storageKey }, 'document ingested');
   return { docType };
+}
+
+/**
+ * Which apology a failed upload earns.
+ *
+ * Two failures, two different things to say. A download that dropped is worth
+ * asking about again; a file over the limit is not, and telling someone to
+ * resend it sends them round the same refusal with no more information than
+ * they had the first time.
+ */
+function fileFailureCopy(ingested: Ingested): {
+  text: Localised;
+  vars?: Record<string, string | undefined>;
+} {
+  if (!ingested.tooLarge) return { text: copy.FILE_FAILED };
+  return {
+    text: copy.FILE_TOO_LARGE,
+    vars: { limit: String(Math.floor(config.MEDIA_MAX_BYTES / (1024 * 1024))) },
+  };
 }
 
 /**
@@ -2081,7 +2125,8 @@ export async function handleInboundMessage(payload: {
 
   if (candidate.stage === 'REGISTRATION_COMPLETED' && !candidate.currentStep) {
     if (ingested.failed) {
-      await tell(candidate, copy.FILE_FAILED);
+      const failure = fileFailureCopy(ingested);
+      await tell(candidate, failure.text, failure.vars);
       return;
     }
     if (ingested.docType) {
@@ -2095,7 +2140,8 @@ export async function handleInboundMessage(payload: {
   /* ---- a file arrived ---- */
 
   if (ingested.failed) {
-    await tell(candidate, copy.FILE_FAILED);
+    const failure = fileFailureCopy(ingested);
+    await tell(candidate, failure.text, failure.vars);
     return;
   }
   if (ingested.docType) {
@@ -2208,6 +2254,15 @@ export async function handleInboundMessage(payload: {
     }
     if (interpretation.kind === 'staff') {
       await handOffToStaff(candidate, interpretation.reason);
+      return;
+    }
+
+    // The model could not be reached. Put the menu back and say why, rather
+    // than telling them their tap was unusable.
+    if (interpretation.kind === 'unavailable') {
+      const shape = await renderChoices(menu.prompt, options, candidate);
+      const lead = (await renderMessage(copy.BUSY_TRY_AGAIN, candidate)).body;
+      await reply(candidate, { ...shape, body: `${lead}\n\n${shape.body}` }, current);
       return;
     }
 
@@ -2328,6 +2383,14 @@ export async function handleInboundMessage(payload: {
   switch (interpretation.kind) {
     case 'staff':
       await handOffToStaff(candidate, interpretation.reason);
+      return;
+
+    case 'unavailable':
+      // Not an answer, and explicitly not a reply we could not read. Nothing is
+      // recorded, `unclearCount` is untouched, and the same question goes back —
+      // so a throttled minute costs the candidate one repeated message rather
+      // than their place in the queue and a handover to staff.
+      await reply(candidate, await renderRetry(step, candidate, copy.BUSY_TRY_AGAIN), step.id);
       return;
 
     case 'command':

@@ -47,7 +47,7 @@ import { TUNABLES } from './rules.js';
 
 export type { GeneratedQuestion };
 
-const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+import { callModel, ModelUnavailableError, modelClient } from './model.js';
 
 /** Most questions any candidate is asked about their trade. */
 export const MAX_GENERATED_QUESTIONS = 4;
@@ -333,7 +333,8 @@ export async function questionsForOccupation(params: {
       : (params.languageOther?.trim().slice(0, 40) || 'English');
 
   try {
-    const response = await client.messages.create({
+    const response = await callModel('trade-questions', () =>
+      modelClient().messages.create({
       model: config.CLAUDE_MODEL,
       max_tokens: TUNABLES.maxQuestionTokens,
       system: [{ type: 'text', text: QUESTION_PROMPT, cache_control: { type: 'ephemeral' } }],
@@ -345,7 +346,8 @@ export async function questionsForOccupation(params: {
           content: `Candidate's language: ${language}\n\nTheir job, in their words:\n${occupation}`,
         },
       ],
-    });
+      }),
+    );
 
     const call = response.content.find(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'questions',
@@ -374,6 +376,13 @@ export async function questionsForOccupation(params: {
     );
     return questions;
   } catch (err) {
+    // Deliberately not swallowed. An empty list from here is *stored*, along
+    // with the occupation it was computed for, and the stored pair is what stops
+    // this running again — so returning [] because Anthropic was busy for two
+    // seconds would record "this candidate has no trade questions" permanently.
+    // The caller catches this and writes nothing, leaving the next turn to try.
+    if (err instanceof ModelUnavailableError) throw err;
+
     logger.error({ err, occupation }, 'could not write trade questions');
     return [];
   }

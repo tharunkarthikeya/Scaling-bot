@@ -123,6 +123,16 @@ export interface IngestionRow {
   /** Submission attempts, not extraction retries inside a single attempt. */
   attempts: number;
   lastError?: string;
+  /**
+   * Why this row will not be tried again, where the reason was not "we ran out
+   * of goes". Set on a failure that retrying cannot fix — today that is a file
+   * over `MEDIA_MAX_BYTES`, which will be exactly as large next time.
+   *
+   * Read by the conversation, which owes the candidate a different sentence for
+   * a file that was too big than for one that did not arrive, and by whoever
+   * opens the review queue and would otherwise see five identical timeouts.
+   */
+  failureKind?: 'too_large';
 
   receivedAt: Date;
   submittedAt?: Date;
@@ -249,6 +259,25 @@ export function backoffMs(attempts: number, baseDelayMs = 2_000, capMs = 5 * 60_
  * on disk and the row still names it, which is the whole point of discarding
  * neither on failure.
  */
+/**
+ * Whether a failure ends the row or schedules another attempt.
+ *
+ * Two ways to stop. The ordinary one is running out of goes. The other is a
+ * failure whose cause cannot change between attempts — a file larger than
+ * `MEDIA_MAX_BYTES` is the same size on the fifth try, and four more downloads
+ * of it buy nothing but four more downloads of it.
+ *
+ * Separated from the write so it can be checked without a database, which is
+ * the only way the "an oversized file is never retried" promise gets a test.
+ */
+export function isTerminalFailure(params: {
+  attempts: number;
+  maxAttempts: number;
+  terminal?: 'too_large';
+}): boolean {
+  return !!params.terminal || params.attempts >= params.maxAttempts;
+}
+
 export async function recordIngestionFailure(params: {
   key: IngestionKey;
   error: string;
@@ -256,12 +285,20 @@ export async function recordIngestionFailure(params: {
   maxAttempts: number;
   retryAfterMs?: number;
   baseDelayMs?: number;
+  /**
+   * A failure that retrying cannot fix, whatever the attempt count says. Goes
+   * straight to `review` with no `nextAttemptAt`, because scheduling four more
+   * downloads of a file we have already refused on its size is four more
+   * downloads of a file we are going to refuse on its size.
+   */
+  terminal?: 'too_large';
 }): Promise<IngestionStatus> {
-  const { key, error, attempts, maxAttempts } = params;
-  const exhausted = attempts >= maxAttempts;
+  const { key, error, attempts, maxAttempts, terminal } = params;
+  const exhausted = isTerminalFailure({ attempts, maxAttempts, terminal });
 
   const status: IngestionStatus = exhausted ? 'review' : 'failed';
   const patch: Partial<IngestionRow> = { status, attempts, lastError: error.slice(0, 1_000) };
+  if (terminal) patch.failureKind = terminal;
 
   if (exhausted) {
     patch.completedAt = new Date();
@@ -274,8 +311,12 @@ export async function recordIngestionFailure(params: {
   await updateIngestion(key, patch);
 
   logger[exhausted ? 'error' : 'warn'](
-    { ...key, attempts, error, status },
-    exhausted ? 'attachment moved to the review queue' : 'attachment ingestion failed; will retry',
+    { ...key, attempts, error, status, ...(terminal ? { failureKind: terminal } : {}) },
+    terminal
+      ? 'attachment will not be retried; moved to the review queue'
+      : exhausted
+        ? 'attachment moved to the review queue'
+        : 'attachment ingestion failed; will retry',
   );
 
   return status;

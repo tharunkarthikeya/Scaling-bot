@@ -16,6 +16,7 @@
     "start": "node dist/index.js",
     "smoke": "tsx src/smoke.ts",
     "harness": "tsx src/harness.ts",
+    "bench:inspect": "node --expose-gc --import tsx src/bench-inspect.ts",
     "doctor": "tsx src/doctor.ts",
     "verify:endpoint": "tsx src/verify-endpoint.ts",
     "verify:crm": "tsx src/verify-crm.ts",

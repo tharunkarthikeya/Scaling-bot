@@ -31,6 +31,57 @@ const schema = z.object({
   // Model is read from env so it can be changed without touching code.
   CLAUDE_MODEL: z.string().default('claude-opus-5'),
 
+  /* ---------------------------------------------------------------- */
+  /* Model resilience (see `conversation/model.ts`)                     */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Retries after the first attempt, so 2 means three tries in all.
+   *
+   * The SDK does the retrying — exponential backoff with jitter, honouring
+   * `retry-after-ms` and `retry-after`, for 408, 409, 429 and 5xx. This states
+   * the number rather than inheriting it, because a retry budget that nobody
+   * declared is one nobody reasons about.
+   *
+   * Raising it does not buy much. If three attempts spread over a second and a
+   * half all come back throttled, the problem is the rate we are asking at, not
+   * the number of times we ask.
+   */
+  MODEL_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
+
+  /**
+   * Per-request ceiling, retries included. A candidate is waiting at the other
+   * end of this, and a reply that arrives after they have given up is not a
+   * reply.
+   */
+  MODEL_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+
+  /**
+   * Model calls allowed in flight at once.
+   *
+   * A bound on *our* fan-out, not a claim about Anthropic's limits, which are
+   * an account fact this code has no business guessing. Matched to
+   * `QUEUE_CONCURRENCY_INBOUND` because that is what actually generates the
+   * calls: a turn makes at most one interpretation and at most one reply, in
+   * sequence, so eight workers cannot exceed eight in flight by much.
+   *
+   * The reason to have a ceiling at all is that the response to a rate limit is
+   * retries, and retries from every worker at once are what turn a busy minute
+   * into a sustained one.
+   */
+  MODEL_MAX_CONCURRENCY: z.coerce.number().int().positive().default(8),
+
+  /**
+   * Calls allowed to queue for a slot before we stop accepting them.
+   *
+   * Waiting is bounded on purpose. An unbounded queue holds a promise, a
+   * payload and a worker for every turn that ever backed up, and it converts a
+   * throttled minute into an out-of-memory hour. Past this, a call is refused
+   * immediately and the candidate is asked to send their message again — which
+   * is a worse answer than a real one and a much better answer than silence.
+   */
+  MODEL_MAX_QUEUED: z.coerce.number().int().min(0).default(32),
+
   VERIS_OCR_BASE_URL: z.string().min(1),
   VERIS_OCR_API_KEY: z.string().min(1),
   VERIS_OCR_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
@@ -51,7 +102,124 @@ const schema = z.object({
   // in shadow mode against real traffic you still want the real download.
   MOCK_WHATSAPP_MEDIA: bool.default('false'),
 
+  /**
+   * Candidate replies per second — and nothing else.
+   *
+   * This is Meta's messaging throughput for the number, so the value is theirs
+   * and not ours to raise. What changed is what spends it: read receipts and
+   * media downloads used to draw on this same budget, which meant roughly half
+   * of a 20/sec allowance went on acknowledging messages rather than answering
+   * them. They have their own budgets below.
+   *
+   * One token per message Meta receives, so a reply long enough to be split by
+   * `chunkText` spends one per chunk — because that is what Meta counts.
+   */
   OUTBOUND_RATE_PER_SECOND: z.coerce.number().int().positive().default(20),
+
+  /**
+   * Read receipts per second.
+   *
+   * Separate from replies because they are a different operation on Meta's
+   * side and must never compete with an answer a candidate is waiting for.
+   * Bounded rather than unlimited: still a Graph call, still someone else's
+   * capacity.
+   *
+   * Dropped rather than queued when the budget is empty — see `markAsRead`. A
+   * blue tick that arrives late is worth less than the memory it costs to
+   * remember it.
+   */
+  READ_RECEIPT_RATE_PER_SECOND: z.coerce.number().int().positive().default(20),
+
+  /**
+   * Inbound media fetches per second.
+   *
+   * Two Graph requests per document — resolve the id, then fetch the bytes —
+   * and neither is a message, so neither belongs in the messaging budget. This
+   * one runs inside the webhook before the acknowledgement, so its own bucket
+   * also keeps document traffic from adding reply-queue latency to every ACK.
+   *
+   * Lower than the others on purpose: documents arrive far less often than
+   * messages, and each one holds a buffer in memory while it is read.
+   */
+  MEDIA_DOWNLOAD_RATE_PER_SECOND: z.coerce.number().int().positive().default(10),
+
+  /**
+   * The largest inbound file this bot will hold, in bytes. Ten megabytes.
+   *
+   * Meta's own ceiling for a document is 100 MB, and accepting that here would
+   * be a promise this machine cannot keep. One instance, four cores, sixteen
+   * gigabytes: each document in flight costs roughly twice its own size before
+   * OCR has read a word of it — the buffer the download produced, and the copy
+   * the multipart body makes of it — and three extractions may be in flight at
+   * once. The SHA-256 taken on the way in is a further ~1 ms per megabyte,
+   * synchronous, inside the webhook and ahead of the acknowledgement.
+   *
+   * Ten megabytes is well past what the documents this bot asks for actually
+   * weigh. A passport booklet photographed page by page, a CV, an Aadhaar card,
+   * a trade certificate: these are hundreds of kilobytes, a few megabytes for a
+   * generous scan. A file above ten is a camera setting, not a document, and
+   * the candidate is better served by being told so than by a silent OOM.
+   *
+   * Enforced in three places, because the first two are only claims — see
+   * `downloadMedia`. Raise it in the Dokploy Environment tab if a real document
+   * is ever refused; there is no code change behind it.
+   */
+  MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+
+  /* ---------------------------------------------------------------- */
+  /* Queue concurrency                                                 */
+  /*                                                                   */
+  /* THIS IS WHERE WORKER CONCURRENCY IS TUNED. Set these in the        */
+  /* Dokploy Environment tab; no code change and no redeploy of the     */
+  /* image is needed to change them, only a restart.                    */
+  /*                                                                   */
+  /* One pool per job name, each with its own bound — so a saturated    */
+  /* extraction queue cannot starve inbound conversation. The totals    */
+  /* matter more than any single value: the defaults below allow at     */
+  /* most 13 jobs in flight at once.                                    */
+  /*                                                                   */
+  /* Almost all of this work is I/O — a model call, a Mongo round trip, */
+  /* a Graph request — so these are not core counts and should not be   */
+  /* set from `nproc`. What actually bounds them is the slowest thing   */
+  /* downstream, and today that is the outbound rate limiter.           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Candidate turns handled in parallel.
+   *
+   * Default 8. A turn takes roughly 0.6s on average — about a second when it
+   * reaches the model, near-instant when the reply is a button tap the
+   * interpreter resolves locally — so eight slots offer something like 13
+   * turns a second. That is deliberately close to, and not far beyond, what
+   * the outbound limiter can currently drain: concurrency past the point
+   * where replies can actually be sent does not buy throughput, it just moves
+   * the queue somewhere less visible.
+   *
+   * Raise this once the outbound path is widened, and raise it to a number
+   * measured under load rather than a number that sounds bigger.
+   */
+  QUEUE_CONCURRENCY_INBOUND: z.coerce.number().int().positive().default(8),
+
+  /**
+   * Document extractions in parallel.
+   *
+   * Deliberately the smallest of the three. Each one holds the file in memory,
+   * spends up to `VERIS_OCR_TIMEOUT_MS` waiting on a third party, and inspects
+   * the bytes on the way in — work that blocks the event loop for as long as it
+   * takes. Three keeps documents moving without turning a slow vendor into a
+   * stalled server, and the real ceiling is Veris' own concurrency limit, which
+   * is theirs to state and not ours to assume.
+   */
+  QUEUE_CONCURRENCY_OCR: z.coerce.number().int().positive().default(3),
+
+  /**
+   * CRM submissions in parallel.
+   *
+   * Two is enough. These fire once per completed registration, they are
+   * idempotent by key, and anything that fails is picked up by the reconcile
+   * sweep — so depth here costs nothing and speed buys nothing.
+   */
+  QUEUE_CONCURRENCY_CRM_SYNC: z.coerce.number().int().positive().default(2),
 
   /* ---------------------------------------------------------------- */
   /* Ingestion (see `automation-integration.md` and `ingestion/`)       */

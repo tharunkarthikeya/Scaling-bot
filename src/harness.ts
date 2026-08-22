@@ -267,8 +267,38 @@ const TYPED: Record<string, string> = {
  * Returns undefined when there is nothing sensible to send, which ends the run
  * rather than looping on a question the driver does not understand.
  */
+/**
+ * Waits out an extraction the bot is currently running.
+ *
+ * The driver answers the instant a reply lands, which a real candidate does not
+ * do. Left alone it re-sends the same document while the extractor is still
+ * reading the previous copy — each upload supersedes the last, every verdict is
+ * discarded as stale, and the run never leaves the document question.
+ *
+ * This is a property of the rig, not of the bot. The engine is right to let the
+ * newest upload win (`uploadStillCurrent`) and right to keep answering messages
+ * while a document is being read. It only became visible when the queue gained
+ * real concurrency: extractions used to hold the single global execution slot,
+ * so nothing else could run until one finished, and the race had no window to
+ * open in.
+ */
+async function waitForExtraction(
+  waId: string,
+  docType: string,
+  timeoutMs = 150_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const record =
+      (await candidates().findOne({ waId })) ?? (await b2bEnquiries().findOne({ waId }));
+    if (record?.documents?.[docType]?.status !== 'ocr_queued') return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 async function answerCurrentQuestion(
   waId = WA_ID,
+  depth = 0,
 ): Promise<Record<string, unknown> | undefined> {
   const candidate =
     (await candidates().findOne({ waId })) ?? (await b2bEnquiries().findOne({ waId }));
@@ -285,7 +315,16 @@ async function answerCurrentQuestion(
   const step = stepById(stepId);
   if (!step) return undefined;
 
-  if (step.document) return documentMessage(`${step.document}.pdf`, step.document, waId);
+  if (step.document) {
+    // Already sent, and being read right now. Sending a second copy would
+    // supersede the one the extractor is working on and throw away its verdict.
+    // Wait for it, then look again — the question has usually moved on by then.
+    if (candidate.documents?.[step.document]?.status === 'ocr_queued' && depth < 4) {
+      await waitForExtraction(waId, step.document);
+      return answerCurrentQuestion(waId, depth + 1);
+    }
+    return documentMessage(`${step.document}.pdf`, step.document, waId);
+  }
 
   if (step.input === 'choice' || step.input === 'multi_choice') {
     const options = acceptedChoices(step, candidate).filter(

@@ -248,6 +248,26 @@ export const PASSPORT_EXPIRING_SOON: Localised = {
   ml: 'നന്ദി. നിങ്ങൾ അയച്ച പാസ്‌പോർട്ടിന്റെ കാലാവധി {{expiry}} ന് തീരും, അത് വളരെ അടുത്താണ്. നിങ്ങൾക്ക് ഇവിടെ തുടരാം — യാത്രയ്ക്ക് മുൻപ് പുതുക്കേണ്ടതുണ്ടോ എന്ന് ഞങ്ങളുടെ ടീം അറിയിക്കും.',
 };
 
+/**
+ * Said when the model could not be reached at all.
+ *
+ * Deliberately not `UNCLEAR`. That line tells the candidate their message could
+ * not be used as an answer, which in this case is a lie: the message was fine
+ * and never got read. Blaming a candidate for our own capacity is the kind of
+ * small dishonesty that teaches people the bot does not work.
+ *
+ * It asks for the same message again rather than offering staff, because the
+ * next attempt will almost always succeed — and it is never counted towards the
+ * handoff, so a run of these cannot quietly push someone out of the flow.
+ */
+export const BUSY_TRY_AGAIN: Localised = {
+  en: 'Sorry — I am very busy at the moment and did not catch that. Could you send it once more?',
+  ta: 'மன்னிக்கவும் — இப்போது கொஞ்சம் அதிக வேலை, அதைப் புரிந்துகொள்ள முடியவில்லை. மீண்டும் ஒருமுறை அனுப்ப முடியுமா?',
+  hi: 'माफ़ कीजिए — अभी थोड़ा व्यस्त हूँ और वह समझ नहीं पाया। क्या आप इसे एक बार फिर भेज सकते हैं?',
+  te: 'క్షమించండి — ఇప్పుడు కొంచెం బిజీగా ఉన్నాను, అది అందుకోలేకపోయాను. మరొక్కసారి పంపగలరా?',
+  ml: 'ക്ഷമിക്കണം — ഇപ്പോൾ അൽപ്പം തിരക്കിലാണ്, അത് കിട്ടിയില്ല. ഒന്നുകൂടി അയക്കാമോ?',
+};
+
 export const DOCUMENT_RECEIVED: Localised = {
   en: 'Received ✅',
   ta: 'கிடைத்தது ✅',
@@ -359,6 +379,26 @@ export const FILE_FAILED: Localised = {
   hi: 'माफ़ कीजिए, वह फ़ाइल नहीं पहुँची। क्या आप इसे एक बार और भेज सकते हैं?',
   te: 'సారీ, ఆ ఫైల్ రాలేదు. దయచేసి మళ్ళీ ఒకసారి పంపగలరా?',
   ml: 'ക്ഷമിക്കണം, ആ ഫയൽ കിട്ടിയില്ല. ഒന്നുകൂടി അയക്കാമോ?',
+};
+
+/**
+ * Said when a file is refused on its size, and never confused with FILE_FAILED.
+ *
+ * The two are different problems and want opposite advice. "Send it once more"
+ * is right for a download that dropped and useless for a file that is simply
+ * too big — resending it produces the identical refusal, and the candidate is
+ * left doing it again with no idea why. So this says what is wrong, gives the
+ * number, and names the two things that actually shrink a document: photograph
+ * the pages instead of scanning them, or send them a few at a time.
+ *
+ * `{{limit}}` is filled with the limit in whole megabytes.
+ */
+export const FILE_TOO_LARGE: Localised = {
+  en: 'That file is too large — we can accept up to {{limit}} MB. Please send a smaller version: photos of each page usually work well, or send the pages a few at a time.',
+  ta: 'அந்தக் கோப்பு மிகப் பெரியது — {{limit}} MB வரை மட்டுமே ஏற்க முடியும். சிறிய அளவில் அனுப்பவும்: ஒவ்வொரு பக்கத்தையும் புகைப்படமாக எடுத்து அனுப்பலாம், அல்லது பக்கங்களைச் சில சிலவாக அனுப்பலாம்.',
+  hi: 'वह फ़ाइल बहुत बड़ी है — हम {{limit}} MB तक ही ले सकते हैं। कृपया छोटी फ़ाइल भेजें: हर पेज की फ़ोटो आमतौर पर ठीक रहती है, या पेज थोड़े-थोड़े करके भेजें।',
+  te: 'ఆ ఫైల్ చాలా పెద్దది — మేము {{limit}} MB వరకు మాత్రమే తీసుకోగలం. దయచేసి చిన్న ఫైల్ పంపండి: ప్రతి పేజీ ఫోటో సాధారణంగా సరిపోతుంది, లేదా పేజీలను కొన్ని కొన్నిగా పంపండి.',
+  ml: 'ആ ഫയൽ വളരെ വലുതാണ് — {{limit}} MB വരെ മാത്രമേ സ്വീകരിക്കാൻ കഴിയൂ. ദയവായി ചെറിയ ഫയൽ അയക്കുക: ഓരോ പേജിന്റെയും ഫോട്ടോ സാധാരണയായി മതിയാകും, അല്ലെങ്കിൽ പേജുകൾ കുറച്ചു വീതം അയക്കുക.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
