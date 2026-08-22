@@ -1056,6 +1056,9 @@ async function ingestDocument(candidate: CandidateDoc, msg: MessageDoc): Promise
     docType,
     upload: {
       mediaId: msg.mediaId,
+      // The message it arrived on. Carried so the OCR job can build its
+      // idempotency key and find the ingestion row without a scan.
+      wamid,
       storageKey: stored.storageKey,
       mimeType: media.mimeType,
       byteSize: stored.byteSize,

@@ -26,6 +26,7 @@
  */
 
 import type { Collection, ObjectId } from 'mongodb';
+import { config } from '../config.js';
 import { getDb } from '../db/client.js';
 import { logger } from '../logger.js';
 
@@ -320,6 +321,53 @@ export async function recordIngestionFailure(params: {
   );
 
   return status;
+}
+
+/**
+ * Mirrors an extraction's progress onto the attachment's ledger row.
+ *
+ * Operational, not authoritative. The row that owns the truth about one
+ * extraction is the upload — `documents.<section>.uploads[].ocr` — because one
+ * attachment can produce two extractions and this row can only describe one of
+ * them: `filePassportFoundInCv` files the same `mediaId` again under the
+ * passport slot, and both share this row's key. What the ledger is for is the
+ * thing the spec asks of it: a place an operator can see unfinished work, and
+ * something to alert on by age.
+ *
+ * Best-effort by design. A ledger write that fails must never fail an
+ * extraction that otherwise succeeded, so nothing here throws.
+ */
+export async function recordOcrJob(params: {
+  wamid: string;
+  mediaId: string;
+  status: IngestionStatus;
+  ocrMode?: IngestionRow['ocrMode'];
+  jobId?: string;
+  attempts?: number;
+  nextAttemptAt?: Date;
+  error?: string;
+}): Promise<void> {
+  try {
+    const key: IngestionKey = {
+      provider: 'whatsapp',
+      account: config.WHATSAPP_PHONE_NUMBER_ID,
+      messageId: params.wamid,
+      attachmentId: params.mediaId,
+    };
+
+    const patch: Partial<IngestionRow> = { status: params.status };
+    if (params.ocrMode) patch.ocrMode = params.ocrMode;
+    if (params.jobId) patch.jobId = params.jobId;
+    if (params.attempts !== undefined) patch.attempts = params.attempts;
+    if (params.nextAttemptAt) patch.nextAttemptAt = params.nextAttemptAt;
+    if (params.error) patch.lastError = params.error.slice(0, 1_000);
+    if (params.status === 'submitting' && !params.jobId) patch.submittedAt = new Date();
+    if (params.status === 'succeeded' || params.status === 'review') patch.completedAt = new Date();
+
+    await updateIngestion(key, patch);
+  } catch (err) {
+    logger.warn({ err, wamid: params.wamid }, 'could not mirror ocr progress to the ledger');
+  }
 }
 
 /**

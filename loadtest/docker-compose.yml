@@ -1,0 +1,36 @@
+# MongoDB for the load test, and nothing else.
+#
+# Port 27018, not 27017 — so a rig misconfiguration cannot land on a local
+# development mongod, and so this can run alongside one. The rig refuses any
+# LOADTEST_MONGODB_URI whose host is not loopback, which is the check that makes
+# reaching the production database impossible rather than unlikely.
+#
+# No volume. The database is meant to be thrown away between runs, and the rig
+# drops it on startup anyway.
+#
+#   docker compose -f loadtest/docker-compose.yml up -d
+#   docker compose -f loadtest/docker-compose.yml down -v
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: adira-loadtest-mongo
+    # Loopback only. Not reachable from anywhere but this machine.
+    ports:
+      - "127.0.0.1:27018:27017"
+    command:
+      - --wiredTigerCacheSizeGB
+      - "2"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          # The application is the thing under test. Mongo is capped so it
+          # cannot quietly become the bottleneck being measured, and so the
+          # 4-core budget is not spent on the database.
+          cpus: "1.5"
+          memory: 3G

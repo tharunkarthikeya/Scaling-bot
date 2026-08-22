@@ -1,0 +1,4857 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Veris OCR",
+    "description": "Passport MRZ extraction API by RecursAI Technologies.",
+    "contact": {
+      "name": "RecursAI Technologies",
+      "url": "https://recursai.in/"
+    },
+    "license": {
+      "name": "Proprietary"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/health": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Health",
+        "operationId": "health_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health V1 Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/passport/extract": {
+      "post": {
+        "tags": [
+          "passport"
+        ],
+        "summary": "Extract MRZ from a passport image or PDF (scans all pages)",
+        "operationId": "extract_passport_v1_passport_extract_post",
+        "parameters": [
+          {
+            "name": "content-type",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Content-Type"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_extract_passport_v1_passport_extract_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/aadhaar/extract": {
+      "post": {
+        "tags": [
+          "aadhaar"
+        ],
+        "summary": "Extract structured fields from an Aadhaar card image or PDF",
+        "description": "OCR one or both Aadhaar sides under the dedicated Aadhaar permission.",
+        "operationId": "extract_aadhaar_v1_aadhaar_extract_post",
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_extract_aadhaar_v1_aadhaar_extract_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AadhaarExtractResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/document/extract": {
+      "post": {
+        "tags": [
+          "document"
+        ],
+        "summary": "Extract text from any image, PDF, or DOCX",
+        "operationId": "extract_document_v1_document_extract_post",
+        "parameters": [
+          {
+            "name": "content-type",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Content-Type"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_extract_document_v1_document_extract_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentExtractResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/resume/extract": {
+      "post": {
+        "tags": [
+          "resume"
+        ],
+        "summary": "Extract structured fields from a resume / CV (image, PDF, or DOCX)",
+        "operationId": "extract_resume_endpoint_v1_resume_extract_post",
+        "parameters": [
+          {
+            "name": "content-type",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Content-Type"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_extract_resume_endpoint_v1_resume_extract_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumeExtractResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Queue a passport, Aadhaar, document, or resume extraction",
+        "operationId": "submit_job_v1_jobs_post",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_submit_job_v1_jobs_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAccepted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/stats": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get current queued/in-flight job counts",
+        "operationId": "job_stats_v1_jobs_stats_get",
+        "parameters": [
+          {
+            "name": "X-Admin-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobQueueStats"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/stats/me": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get this client account or API key's live OCR queue counts",
+        "operationId": "my_job_stats_v1_jobs_stats_me_get",
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientJobQueueStats"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/failed": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "List retained failed OCR jobs for this API key",
+        "operationId": "list_failed_jobs_v1_jobs_failed_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailedJobList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/retry": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Retry a retained failed OCR job",
+        "operationId": "retry_failed_job_v1_jobs__job_id__retry_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAccepted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get queued OCR job status and result",
+        "operationId": "get_job_v1_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/history": {
+      "get": {
+        "tags": [
+          "history"
+        ],
+        "summary": "List this key's extraction history",
+        "operationId": "list_history_v1_history_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by passport|document|resume|aadhaar",
+              "title": "Mode"
+            },
+            "description": "Filter by passport|document|resume|aadhaar"
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "history"
+        ],
+        "summary": "Clear all of this key's history",
+        "operationId": "clear_history_v1_history_delete",
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/history/{item_id}": {
+      "get": {
+        "tags": [
+          "history"
+        ],
+        "summary": "Get one history record",
+        "operationId": "get_history_v1_history__item_id__get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "history"
+        ],
+        "summary": "Delete one record",
+        "operationId": "delete_history_v1_history__item_id__delete",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/keys": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Create a new API key (and customer if needed)",
+        "operationId": "create_key_v1_admin_keys_post",
+        "parameters": [
+          {
+            "name": "X-Admin-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminCreateKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminCreatedKey"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List all API keys (prefixes only — plaintext is never stored)",
+        "operationId": "list_keys_v1_admin_keys_get",
+        "parameters": [
+          {
+            "name": "include_revoked",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Revoked"
+            }
+          },
+          {
+            "name": "X-Admin-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminKeyList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/keys/{key_id}/revoke": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke an API key (busts redis cache so the change is effective immediately)",
+        "operationId": "revoke_key_v1_admin_keys__key_id__revoke_post",
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key Id"
+            }
+          },
+          {
+            "name": "X-Admin-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminRevokeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/client/login": {
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Validate a client email and dashboard password",
+        "operationId": "login_client_v1_client_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSession"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/client/me": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Get the current client profile",
+        "operationId": "get_current_client_v1_client_me_get",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientProfile"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/client/change-password": {
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Change the current client's dashboard password",
+        "operationId": "change_client_password_v1_client_change_password_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientPasswordChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientPasswordChangeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/client/history": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "List OCR history for the current client account",
+        "operationId": "list_client_history_v1_client_history_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by passport|document|resume|aadhaar",
+              "title": "Mode"
+            },
+            "description": "Filter by passport|document|resume|aadhaar"
+          },
+          {
+            "name": "api_key_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by an assigned API key id",
+              "title": "Api Key Id"
+            },
+            "description": "Filter by an assigned API key id"
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientHistoryList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/client/history/{item_id}": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Get one OCR history record for the current client account",
+        "operationId": "get_client_history_v1_client_history__item_id__get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientHistoryDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AadhaarData": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "aadhaar_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aadhaar Number",
+            "description": "Unmasked 12-digit Aadhaar number, grouped as `XXXX XXXX XXXX`."
+          },
+          "masked_aadhaar_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Masked Aadhaar Number",
+            "description": "Masked number such as `XXXX XXXX 1234`, when that is all the card shows."
+          },
+          "aadhaar_number_valid": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aadhaar Number Valid",
+            "description": "Verhoeff checksum result for an unmasked Aadhaar number."
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "year_of_birth": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100,
+                "minimum": 1900
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year Of Birth"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "male",
+                  "female",
+                  "transgender"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gender"
+          },
+          "mobile_number": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\+91[6-9]\\d{9}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mobile Number",
+            "description": "Indian mobile number in E.164 format, when printed on the document."
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "care_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Care Of",
+            "description": "Relationship/name printed as C/O, S/O, D/O, or W/O."
+          },
+          "pincode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[1-9]\\d{5}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pincode"
+          },
+          "vid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vid",
+            "description": "16-digit Virtual ID, grouped in blocks of four."
+          },
+          "enrollment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enrollment Id"
+          },
+          "document_side": {
+            "type": "string",
+            "enum": [
+              "front",
+              "back",
+              "both",
+              "unknown"
+            ],
+            "title": "Document Side",
+            "default": "unknown"
+          }
+        },
+        "type": "object",
+        "title": "AadhaarData",
+        "description": "Structured values printed on the front and back of an Aadhaar card."
+      },
+      "AadhaarExtractResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "aadhaar": {
+            "$ref": "#/components/schemas/AadhaarData"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PageResult"
+            },
+            "type": "array",
+            "title": "Pages"
+          },
+          "page_count": {
+            "type": "integer",
+            "minimum": 1,
+            "title": "Page Count"
+          },
+          "document_type": {
+            "type": "string",
+            "const": "aadhaar",
+            "title": "Document Type",
+            "default": "aadhaar"
+          },
+          "languages_used": {
+            "type": "string",
+            "title": "Languages Used"
+          },
+          "total_processing_time_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Total Processing Time Ms"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "aadhaar",
+          "pages",
+          "page_count",
+          "languages_used",
+          "total_processing_time_ms"
+        ],
+        "title": "AadhaarExtractResponse"
+      },
+      "AdminCreateKeyRequest": {
+        "properties": {
+          "customer_email": {
+            "type": "string",
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "Customer Email"
+          },
+          "customer_name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Customer Name"
+          },
+          "customer_company": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Company"
+          },
+          "customer_password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 8
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Password",
+            "description": "Password the customer uses to log into the dashboard."
+          },
+          "key_name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Key Name",
+            "default": "default"
+          },
+          "is_test": {
+            "type": "boolean",
+            "title": "Is Test",
+            "default": false
+          },
+          "rate_limit_per_minute": {
+            "type": "integer",
+            "maximum": 10000,
+            "minimum": 1,
+            "title": "Rate Limit Per Minute",
+            "default": 60
+          },
+          "allowed_ocr_modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "passport",
+                "document",
+                "resume",
+                "aadhaar"
+              ]
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Allowed Ocr Modes",
+            "description": "OCR products this key may invoke."
+          }
+        },
+        "type": "object",
+        "required": [
+          "customer_email",
+          "customer_name"
+        ],
+        "title": "AdminCreateKeyRequest"
+      },
+      "AdminCreatedKey": {
+        "properties": {
+          "api_key_id": {
+            "type": "string",
+            "title": "Api Key Id"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "customer_email": {
+            "type": "string",
+            "title": "Customer Email"
+          },
+          "customer_reused": {
+            "type": "boolean",
+            "title": "Customer Reused",
+            "description": "True if the customer already existed and was reused."
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "description": "Plaintext API key — shown ONCE at creation, never again."
+          },
+          "dashboard_password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dashboard Password",
+            "description": "Dashboard password when it was generated or reset by this request."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "is_test": {
+            "type": "boolean",
+            "title": "Is Test"
+          },
+          "rate_limit_per_minute": {
+            "type": "integer",
+            "title": "Rate Limit Per Minute"
+          },
+          "allowed_ocr_modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "passport",
+                "document",
+                "resume",
+                "aadhaar"
+              ]
+            },
+            "type": "array",
+            "title": "Allowed Ocr Modes"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "api_key_id",
+          "customer_id",
+          "customer_email",
+          "customer_reused",
+          "key_prefix",
+          "key",
+          "name",
+          "is_test",
+          "rate_limit_per_minute",
+          "allowed_ocr_modes",
+          "created_at"
+        ],
+        "title": "AdminCreatedKey"
+      },
+      "AdminKeyList": {
+        "properties": {
+          "keys": {
+            "items": {
+              "$ref": "#/components/schemas/AdminKeySummary"
+            },
+            "type": "array",
+            "title": "Keys"
+          }
+        },
+        "type": "object",
+        "required": [
+          "keys"
+        ],
+        "title": "AdminKeyList"
+      },
+      "AdminKeySummary": {
+        "properties": {
+          "api_key_id": {
+            "type": "string",
+            "title": "Api Key Id"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "customer_email": {
+            "type": "string",
+            "title": "Customer Email"
+          },
+          "customer_name": {
+            "type": "string",
+            "title": "Customer Name"
+          },
+          "customer_company": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Company"
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "is_test": {
+            "type": "boolean",
+            "title": "Is Test"
+          },
+          "rate_limit_per_minute": {
+            "type": "integer",
+            "title": "Rate Limit Per Minute"
+          },
+          "allowed_ocr_modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "passport",
+                "document",
+                "resume",
+                "aadhaar"
+              ]
+            },
+            "type": "array",
+            "title": "Allowed Ocr Modes"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "api_key_id",
+          "customer_id",
+          "customer_email",
+          "customer_name",
+          "customer_company",
+          "key_prefix",
+          "name",
+          "is_test",
+          "rate_limit_per_minute",
+          "allowed_ocr_modes",
+          "created_at",
+          "last_used_at",
+          "revoked_at"
+        ],
+        "title": "AdminKeySummary"
+      },
+      "AdminRevokeResponse": {
+        "properties": {
+          "api_key_id": {
+            "type": "string",
+            "title": "Api Key Id"
+          },
+          "revoked_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Revoked At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "api_key_id",
+          "revoked_at"
+        ],
+        "title": "AdminRevokeResponse"
+      },
+      "BBox": {
+        "properties": {
+          "x": {
+            "type": "integer",
+            "title": "X"
+          },
+          "y": {
+            "type": "integer",
+            "title": "Y"
+          },
+          "w": {
+            "type": "integer",
+            "title": "W"
+          },
+          "h": {
+            "type": "integer",
+            "title": "H"
+          }
+        },
+        "type": "object",
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "title": "BBox"
+      },
+      "Body_extract_aadhaar_v1_aadhaar_extract_post": {
+        "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image",
+            "description": "Aadhaar front/back image (JPEG/PNG/WEBP) or PDF"
+          }
+        },
+        "type": "object",
+        "title": "Body_extract_aadhaar_v1_aadhaar_extract_post"
+      },
+      "Body_extract_document_v1_document_extract_post": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File",
+            "description": "Image, PDF, or DOCX"
+          },
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lang",
+            "description": "Tesseract lang(s), e.g. 'eng' or 'eng+fra'"
+          }
+        },
+        "type": "object",
+        "title": "Body_extract_document_v1_document_extract_post"
+      },
+      "Body_extract_passport_v1_passport_extract_post": {
+        "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image",
+            "description": "Passport image (JPEG/PNG/WEBP) or PDF"
+          }
+        },
+        "type": "object",
+        "title": "Body_extract_passport_v1_passport_extract_post"
+      },
+      "Body_extract_resume_endpoint_v1_resume_extract_post": {
+        "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image",
+            "description": "Resume image (JPEG/PNG/WEBP), PDF, or DOCX"
+          }
+        },
+        "type": "object",
+        "title": "Body_extract_resume_endpoint_v1_resume_extract_post"
+      },
+      "Body_submit_job_v1_jobs_post": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "passport",
+              "document",
+              "resume",
+              "aadhaar"
+            ],
+            "title": "Mode"
+          },
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "description": "JPEG/PNG/WEBP/PDF/DOCX upload"
+          },
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lang"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "file"
+        ],
+        "title": "Body_submit_job_v1_jobs_post"
+      },
+      "CheckDigits": {
+        "properties": {
+          "passport_number": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passport Number"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "expiry_date": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiry Date"
+          },
+          "personal_number": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Number"
+          },
+          "composite": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Composite"
+          }
+        },
+        "type": "object",
+        "title": "CheckDigits",
+        "description": "Per-field check digit validity."
+      },
+      "ClientHistoryDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "processing_time_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Time Ms"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "api_key_id": {
+            "type": "string",
+            "title": "Api Key Id"
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "key_name": {
+            "type": "string",
+            "title": "Key Name"
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "mode",
+          "filename",
+          "summary",
+          "status",
+          "request_id",
+          "processing_time_ms",
+          "created_at",
+          "api_key_id",
+          "key_prefix",
+          "key_name",
+          "result"
+        ],
+        "title": "ClientHistoryDetail"
+      },
+      "ClientHistoryItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "processing_time_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Time Ms"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "api_key_id": {
+            "type": "string",
+            "title": "Api Key Id"
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "key_name": {
+            "type": "string",
+            "title": "Key Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "mode",
+          "filename",
+          "summary",
+          "status",
+          "request_id",
+          "processing_time_ms",
+          "created_at",
+          "api_key_id",
+          "key_prefix",
+          "key_name"
+        ],
+        "title": "ClientHistoryItem"
+      },
+      "ClientHistoryList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ClientHistoryItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "ClientHistoryList"
+      },
+      "ClientJobQueueStats": {
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Queued",
+            "default": 0
+          },
+          "running": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Running",
+            "default": 0
+          },
+          "delayed": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Delayed",
+            "default": 0
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Total",
+            "default": 0
+          },
+          "oldest_active_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Active Seconds"
+          },
+          "by_mode": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JobModeQueueStats"
+            },
+            "propertyNames": {
+              "enum": [
+                "passport",
+                "document",
+                "resume",
+                "aadhaar"
+              ]
+            },
+            "type": "object",
+            "title": "By Mode"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "by_mode",
+          "updated_at"
+        ],
+        "title": "ClientJobQueueStats",
+        "description": "Active queue counts scoped to the authenticated key or client account."
+      },
+      "ClientKeySummary": {
+        "properties": {
+          "api_key_id": {
+            "type": "string",
+            "title": "Api Key Id"
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "key_name": {
+            "type": "string",
+            "title": "Key Name"
+          },
+          "is_test": {
+            "type": "boolean",
+            "title": "Is Test"
+          },
+          "rate_limit_per_minute": {
+            "type": "integer",
+            "title": "Rate Limit Per Minute"
+          },
+          "allowed_ocr_modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "passport",
+                "document",
+                "resume",
+                "aadhaar"
+              ]
+            },
+            "type": "array",
+            "title": "Allowed Ocr Modes"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "total_requests": {
+            "type": "integer",
+            "title": "Total Requests",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "api_key_id",
+          "key_prefix",
+          "key_name",
+          "is_test",
+          "rate_limit_per_minute",
+          "allowed_ocr_modes",
+          "created_at",
+          "last_used_at",
+          "revoked_at"
+        ],
+        "title": "ClientKeySummary"
+      },
+      "ClientLoginRequest": {
+        "properties": {
+          "customer_email": {
+            "type": "string",
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "Customer Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "customer_email",
+          "password"
+        ],
+        "title": "ClientLoginRequest"
+      },
+      "ClientPasswordChangeRequest": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Current Password"
+          },
+          "new_password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "New Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "title": "ClientPasswordChangeRequest"
+      },
+      "ClientPasswordChangeResponse": {
+        "properties": {
+          "changed": {
+            "type": "boolean",
+            "title": "Changed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "changed"
+        ],
+        "title": "ClientPasswordChangeResponse"
+      },
+      "ClientProfile": {
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "customer_email": {
+            "type": "string",
+            "title": "Customer Email"
+          },
+          "customer_name": {
+            "type": "string",
+            "title": "Customer Name"
+          },
+          "customer_company": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Company"
+          },
+          "keys": {
+            "items": {
+              "$ref": "#/components/schemas/ClientKeySummary"
+            },
+            "type": "array",
+            "title": "Keys"
+          }
+        },
+        "type": "object",
+        "required": [
+          "customer_id",
+          "customer_email",
+          "customer_name",
+          "customer_company",
+          "keys"
+        ],
+        "title": "ClientProfile"
+      },
+      "ClientSession": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "customer_email": {
+            "type": "string",
+            "title": "Customer Email"
+          },
+          "customer_name": {
+            "type": "string",
+            "title": "Customer Name"
+          },
+          "customer_company": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Company"
+          },
+          "keys": {
+            "items": {
+              "$ref": "#/components/schemas/ClientKeySummary"
+            },
+            "type": "array",
+            "title": "Keys"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "customer_id",
+          "customer_email",
+          "customer_name",
+          "customer_company",
+          "keys"
+        ],
+        "title": "ClientSession"
+      },
+      "Contact": {
+        "properties": {
+          "emails": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Emails"
+          },
+          "phones": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Phones"
+          },
+          "linkedin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linkedin"
+          },
+          "github": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github"
+          },
+          "social": {
+            "items": {
+              "$ref": "#/components/schemas/SocialLink"
+            },
+            "type": "array",
+            "title": "Social"
+          },
+          "websites": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Websites",
+            "description": "Personal websites — URLs not classified into linkedin/github/social."
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address",
+            "description": "Mailing / correspondence address as a single string, preserving comma separators. Filled by the LLM fallback when present; the heuristic parser does not attempt this."
+          },
+          "whatsapp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whatsapp",
+            "description": "WhatsApp contact number when the CV prints it as a separate field (\"WhatsApp: +91…\", \"WhatsApp Number\"). Common on Indian / Gulf-application CVs where it is distinct from the primary phone."
+          }
+        },
+        "type": "object",
+        "title": "Contact"
+      },
+      "DocumentExtractResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PageResult"
+            },
+            "type": "array",
+            "title": "Pages"
+          },
+          "page_count": {
+            "type": "integer",
+            "title": "Page Count"
+          },
+          "document_type": {
+            "type": "string",
+            "title": "Document Type",
+            "description": "`image`, `pdf`, or `docx`"
+          },
+          "languages_used": {
+            "type": "string",
+            "title": "Languages Used"
+          },
+          "total_processing_time_ms": {
+            "type": "integer",
+            "title": "Total Processing Time Ms"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "key_fields": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractedField"
+            },
+            "type": "array",
+            "title": "Key Fields"
+          },
+          "ipa_details": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IpaDetails"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "pages",
+          "page_count",
+          "document_type",
+          "languages_used",
+          "total_processing_time_ms"
+        ],
+        "title": "DocumentExtractResponse"
+      },
+      "EducationEntry": {
+        "properties": {
+          "degree": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degree"
+          },
+          "institution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Institution"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          }
+        },
+        "type": "object",
+        "title": "EducationEntry"
+      },
+      "ExperienceEntry": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "company": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location",
+            "description": "Work location as printed on the CV (e.g. 'Chennai, India', 'Dubai, UAE', 'Riyadh, Saudi Arabia'). Used to split total experience into Indian vs Overseas buckets."
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country",
+            "description": "Country of the work location, normalized to a single token (e.g. 'India', 'UAE', 'Saudi Arabia', 'USA'). When the CV only shows a city, the LLM infers the country. Drives the is_overseas flag."
+          },
+          "is_overseas": {
+            "type": "boolean",
+            "title": "Is Overseas",
+            "description": "True when the job is outside India. Derived from country: country == 'India' (or matches an Indian state/city) → False; any other country → True. Unknown country defaults to False (counted as Indian).",
+            "default": false
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start",
+            "description": "\"YYYY-MM\" or \"YYYY\""
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End",
+            "description": "\"YYYY-MM\", \"YYYY\", or \"Present\""
+          },
+          "duration_months": {
+            "type": "integer",
+            "title": "Duration Months",
+            "default": 0
+          },
+          "duration_human": {
+            "type": "string",
+            "title": "Duration Human",
+            "description": "Human-formatted duration, e.g. \"1 year 6 months\", \"3 years 0 months\", \"8 months\". Recomputed by the orchestrator after the LLM returns — never trust an LLM-supplied value here.",
+            "default": "0 months"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ExperienceEntry"
+      },
+      "ExtractResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "mrz": {
+            "$ref": "#/components/schemas/MRZData"
+          },
+          "mrz_source": {
+            "type": "string",
+            "enum": [
+              "mrz",
+              "visual"
+            ],
+            "title": "Mrz Source",
+            "description": "Where the values in `mrz` came from. `mrz` = ICAO MRZ band parsed with check-digit validation. `visual` = recovered from the visible bio fields when the MRZ band could not be detected (typical on phone-camera scans with glare or cropped edges). Visual data has no checksums, so `all_check_digits_valid` is always false and `confidence` reflects the fraction of expected fields recovered.",
+            "default": "mrz"
+          },
+          "raw_mrz": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Mrz",
+            "description": "The raw multi-line MRZ string as detected on the document. Always null when `mrz_source` is `visual`."
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Confidence"
+          },
+          "processing_time_ms": {
+            "type": "integer",
+            "title": "Processing Time Ms"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractedField"
+            },
+            "type": "array",
+            "title": "Fields",
+            "description": "Structured fields extracted from the visible (non-MRZ) printed text on every uploaded page — covers bio-page details and back-page entries like Father's Name, Mother's Name, Spouse, Address, Place of Issue, File Number, Old Passport Number."
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PageResult"
+            },
+            "type": "array",
+            "title": "Pages",
+            "description": "Per-page OCR output for every page that was scanned — raw text, lines, words with bounding boxes, and confidence. Useful to verify the back side of a passport actually got OCR'd, and to fall back to raw text when a label isn't covered by `fields`."
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "mrz",
+          "confidence",
+          "processing_time_ms"
+        ],
+        "title": "ExtractResponse"
+      },
+      "ExtractedField": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category",
+            "description": "Grouping bucket — e.g. Personal, Family, Document, Employment, Salary, Other. The set is open-ended; new buckets can be added by extending the per-endpoint label dictionary."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "title": "Page"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "label-right, label-prefix, label-below, label-substring, regex"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Confidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "value",
+          "category",
+          "page",
+          "source",
+          "confidence"
+        ],
+        "title": "ExtractedField"
+      },
+      "FailedJobList": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/JobResponse"
+            },
+            "type": "array",
+            "title": "Jobs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "title": "FailedJobList"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HistoryDeleteResponse": {
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "title": "Deleted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "title": "HistoryDeleteResponse"
+      },
+      "HistoryDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "passport",
+              "document",
+              "resume",
+              "aadhaar"
+            ],
+            "title": "Mode"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "processing_time_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Time Ms"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "mode",
+          "status",
+          "created_at",
+          "result"
+        ],
+        "title": "HistoryDetail",
+        "description": "A history record including the full parsed result JSON."
+      },
+      "HistoryItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "passport",
+              "document",
+              "resume",
+              "aadhaar"
+            ],
+            "title": "Mode"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "processing_time_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Time Ms"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "mode",
+          "status",
+          "created_at"
+        ],
+        "title": "HistoryItem",
+        "description": "A single history record without the (potentially large) result body."
+      },
+      "HistoryList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "HistoryList"
+      },
+      "IpaDetails": {
+        "properties": {
+          "application_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application No"
+          },
+          "date_of_application": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Application"
+          },
+          "letter_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Letter Date"
+          },
+          "ipa_valid_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ipa Valid Until"
+          },
+          "period_granted_months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Granted Months"
+          },
+          "pass_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pass Type"
+          },
+          "copy_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Copy Type",
+            "description": "employer | pass_holder | declaration"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "fin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fin"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "nationality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nationality"
+          },
+          "sex": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sex"
+          },
+          "travel_document_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Document Number"
+          },
+          "travel_document_expiry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Document Expiry"
+          },
+          "employer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employer"
+          },
+          "occupation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occupation"
+          },
+          "csn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Csn"
+          },
+          "monthly_levy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Levy"
+          },
+          "medical_required": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medical Required"
+          },
+          "basic_monthly_salary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Basic Monthly Salary"
+          },
+          "fixed_monthly_allowance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Monthly Allowance"
+          },
+          "fixed_monthly_salary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Monthly Salary"
+          },
+          "employer_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employer Address"
+          },
+          "work_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Address"
+          },
+          "residential_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Residential Address"
+          },
+          "awarding_institution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Awarding Institution"
+          },
+          "qualification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification"
+          },
+          "country_region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country Region"
+          },
+          "faculty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Faculty"
+          },
+          "mode_of_study": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode Of Study"
+          },
+          "period_of_study": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Of Study"
+          }
+        },
+        "type": "object",
+        "title": "IpaDetails",
+        "description": "Structured fields from a Singapore MOM IPA letter (Employer's Copy or\nPass Holder's Copy, incl. the Declaration Form pages).\n\nEvery field is optional: a given copy prints only a subset (e.g. CSN and\nMonthly Levy appear on the Employer's Copy; the residential address only on\nthe Employer's Copy; Work Address only on the Pass Holder's Copy). Absent\nfields are ``None``. Values are returned as printed (no date/number\nnormalization) — ``period_granted_months`` is the only coerced field."
+      },
+      "JobAccepted": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "passport",
+              "document",
+              "resume",
+              "aadhaar"
+            ],
+            "title": "Mode"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "duplicate": {
+            "type": "boolean",
+            "title": "Duplicate",
+            "default": false
+          },
+          "status_url": {
+            "type": "string",
+            "title": "Status Url"
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Submitted At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "mode",
+          "status",
+          "status_url",
+          "submitted_at"
+        ],
+        "title": "JobAccepted"
+      },
+      "JobError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "JobError"
+      },
+      "JobModeQueueStats": {
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Queued",
+            "default": 0
+          },
+          "running": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Running",
+            "default": 0
+          },
+          "delayed": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Delayed",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "JobModeQueueStats"
+      },
+      "JobQueueStats": {
+        "properties": {
+          "cpu": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Cpu"
+          },
+          "resume": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Resume"
+          },
+          "queued": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Queued",
+            "default": 0
+          },
+          "running": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Running",
+            "default": 0
+          },
+          "delayed": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Delayed",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Failed",
+            "default": 0
+          },
+          "oldest_active_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Active Seconds"
+          },
+          "cpu_worker_slots": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Cpu Worker Slots",
+            "default": 0
+          },
+          "resume_worker_slots": {
+            "type": "integer",
+            "minimum": 0,
+            "title": "Resume Worker Slots",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "cpu",
+          "resume"
+        ],
+        "title": "JobQueueStats"
+      },
+      "JobResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "passport",
+              "document",
+              "resume",
+              "aadhaar"
+            ],
+            "title": "Mode"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "max_attempts": {
+            "type": "integer",
+            "title": "Max Attempts"
+          },
+          "replay_count": {
+            "type": "integer",
+            "title": "Replay Count",
+            "default": 0
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Submitted At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "mode",
+          "filename",
+          "status",
+          "attempts",
+          "max_attempts",
+          "submitted_at"
+        ],
+        "title": "JobResponse"
+      },
+      "LineResult": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Confidence"
+          },
+          "bbox": {
+            "$ref": "#/components/schemas/BBox"
+          },
+          "words": {
+            "items": {
+              "$ref": "#/components/schemas/WordBox"
+            },
+            "type": "array",
+            "title": "Words"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "confidence",
+          "bbox"
+        ],
+        "title": "LineResult"
+      },
+      "MRZData": {
+        "properties": {
+          "document_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "P",
+                  "ID",
+                  "V",
+                  "OTHER"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Type"
+          },
+          "issuing_country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuing Country"
+          },
+          "surname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surname"
+          },
+          "given_names": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Given Names"
+          },
+          "passport_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passport Number"
+          },
+          "nationality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nationality"
+          },
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth"
+          },
+          "sex": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sex"
+          },
+          "expiry_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiry Date"
+          },
+          "date_of_issue": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Issue"
+          },
+          "personal_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Number"
+          },
+          "all_check_digits_valid": {
+            "type": "boolean",
+            "title": "All Check Digits Valid",
+            "default": false
+          },
+          "individual_check_digits": {
+            "$ref": "#/components/schemas/CheckDigits"
+          }
+        },
+        "type": "object",
+        "title": "MRZData"
+      },
+      "PageResult": {
+        "properties": {
+          "page_number": {
+            "type": "integer",
+            "minimum": 1,
+            "title": "Page Number"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "html": {
+            "type": "string",
+            "title": "Html",
+            "default": ""
+          },
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "width": {
+            "type": "integer",
+            "title": "Width"
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height"
+          },
+          "average_confidence": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Average Confidence"
+          },
+          "processing_time_ms": {
+            "type": "integer",
+            "title": "Processing Time Ms"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/LineResult"
+            },
+            "type": "array",
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "page_number",
+          "text",
+          "language",
+          "width",
+          "height",
+          "average_confidence",
+          "processing_time_ms"
+        ],
+        "title": "PageResult"
+      },
+      "PassportDetails": {
+        "properties": {
+          "passport_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passport Number"
+          },
+          "date_of_issue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Issue",
+            "description": "Date of issue as printed (e.g. \"11/11/2013\")."
+          },
+          "date_of_expiry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Expiry",
+            "description": "Date of expiry as printed (e.g. \"10/11/2023\")."
+          },
+          "place_of_issue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Issue"
+          }
+        },
+        "type": "object",
+        "title": "PassportDetails",
+        "description": "Passport / travel-document fields when listed on the CV.\n\nCommon on CVs for migrant workers (Gulf, SE Asia) where the passport\nis part of the application package. All optional."
+      },
+      "PersonalInfo": {
+        "properties": {
+          "date_of_birth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Of Birth",
+            "description": "Date of birth as printed on the CV (e.g. \"10/12/1992\", \"15 Jan 1990\"). Kept as a string so the original format survives — different templates use different conventions."
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gender",
+            "description": "Gender as printed (\"Male\", \"Female\", \"Other\", or as written)."
+          },
+          "father_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Father Name"
+          },
+          "mother_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mother Name"
+          },
+          "place_of_birth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Birth"
+          },
+          "nationality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nationality"
+          },
+          "religion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Religion"
+          },
+          "marital_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marital Status",
+            "description": "Marital status as printed (\"Married\", \"Single\", \"Divorced\", ...)."
+          },
+          "languages_known": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Languages Known",
+            "description": "Languages the candidate speaks/reads/writes, as listed on the CV. Order preserved. Free-text rather than ISO codes so the original phrasing survives (e.g. 'English', 'Tamil', 'Malayalam', 'Arabic')."
+          }
+        },
+        "type": "object",
+        "title": "PersonalInfo",
+        "description": "Biographical fields commonly printed on Indian-style form CVs.\n\nAll optional — most resumes outside that template won't have any of\nthese populated, and the response will carry an empty PersonalInfo\nblock in that case. UI callers should hide the section when every\nfield is None / empty."
+      },
+      "Project": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "Project"
+      },
+      "ResumeExtractResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "contact": {
+            "$ref": "#/components/schemas/Contact"
+          },
+          "personal_info": {
+            "$ref": "#/components/schemas/PersonalInfo"
+          },
+          "passport_details": {
+            "$ref": "#/components/schemas/PassportDetails"
+          },
+          "designation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Designation",
+            "description": "Current / most recent job title (e.g. 'Senior Software Engineer'). Derived from the latest experience entry — null when the CV carries no employment history."
+          },
+          "industry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Industry",
+            "description": "Primary industry sector the candidate has worked in (e.g. 'Information Technology', 'Construction', 'Oil & Gas', 'Healthcare'). Inferred by the LLM from companies and job descriptions; null when the CV doesn't make this evident."
+          },
+          "highest_qualification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Highest Qualification",
+            "description": "Highest academic qualification (e.g. 'Bachelor of Engineering', 'MBA', 'Master of Computer Application'). Picked by ranking the education entries; null when no education is listed."
+          },
+          "experience": {
+            "items": {
+              "$ref": "#/components/schemas/ExperienceEntry"
+            },
+            "type": "array",
+            "title": "Experience"
+          },
+          "total_experience_months": {
+            "type": "integer",
+            "title": "Total Experience Months",
+            "default": 0
+          },
+          "total_experience_years": {
+            "type": "number",
+            "title": "Total Experience Years",
+            "default": 0
+          },
+          "total_experience_human": {
+            "type": "string",
+            "title": "Total Experience Human",
+            "default": "0 months"
+          },
+          "indian_experience_months": {
+            "type": "integer",
+            "title": "Indian Experience Months",
+            "description": "Sum of experience months for jobs located in India.",
+            "default": 0
+          },
+          "indian_experience_years": {
+            "type": "number",
+            "title": "Indian Experience Years",
+            "default": 0
+          },
+          "indian_experience_human": {
+            "type": "string",
+            "title": "Indian Experience Human",
+            "default": "0 months"
+          },
+          "overseas_experience_months": {
+            "type": "integer",
+            "title": "Overseas Experience Months",
+            "description": "Sum of experience months for jobs located outside India.",
+            "default": 0
+          },
+          "overseas_experience_years": {
+            "type": "number",
+            "title": "Overseas Experience Years",
+            "default": 0
+          },
+          "overseas_experience_human": {
+            "type": "string",
+            "title": "Overseas Experience Human",
+            "default": "0 months"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Skills"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/Project"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "education": {
+            "items": {
+              "$ref": "#/components/schemas/EducationEntry"
+            },
+            "type": "array",
+            "title": "Education"
+          },
+          "achievements": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Achievements",
+            "description": "Awards, honours, scholarships, competition results, academic ranks, and other accomplishments stated on the resume."
+          },
+          "certifications": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Certifications",
+            "description": "Certifications, licences, diplomas, completed workshops, and training credentials stated on the resume."
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "processing_time_ms": {
+            "type": "integer",
+            "title": "Processing Time Ms"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PageResult"
+            },
+            "type": "array",
+            "title": "Pages",
+            "description": "Page text transcribed directly by the vision LLM. Resume mode does not run an OCR engine, so lines is empty and average_confidence is 0.0 rather than a fabricated OCR score."
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "processing_time_ms"
+        ],
+        "title": "ResumeExtractResponse"
+      },
+      "SocialLink": {
+        "properties": {
+          "platform": {
+            "type": "string",
+            "title": "Platform",
+            "description": "twitter, gitlab, stackoverflow, medium, etc."
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "url"
+        ],
+        "title": "SocialLink"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WordBox": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Confidence"
+          },
+          "bbox": {
+            "$ref": "#/components/schemas/BBox"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "confidence",
+          "bbox"
+        ],
+        "title": "WordBox"
+      }
+    }
+  }
+}

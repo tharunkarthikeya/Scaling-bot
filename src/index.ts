@@ -6,7 +6,7 @@ import { ensureStorageRoot } from './storage/index.js';
 import { queue, withCandidateLock } from './queue/index.js';
 import { endIdleSessions, handleInboundMessage, sendReminders } from './conversation/engine.js';
 import { validateCopy } from './conversation/validate.js';
-import { processOcrJob } from './ocr/veris.js';
+import { processOcrJob, sweepRunningExtractions } from './ocr/veris.js';
 import { reconcileCrmSync, syncCandidateToCrm } from './crm/sync.js';
 import { TAXONOMY_REFRESH_MS, refreshTaxonomy } from './crm/taxonomy.js';
 import { buildServer } from './server.js';
@@ -86,6 +86,17 @@ async function main(): Promise<void> {
   // see — a job lost to a restart, a registration completed while the CRM was
   // unconfigured. Nothing is ever dropped for being old: an undelivered
   // candidate stays undelivered until they are delivered.
+  // Extractions that are with Veris rather than with us.
+  //
+  // Only does anything when VERIS_OCR_ASYNC is on. It is what moves a submitted
+  // job along: nothing else polls, and a gated upload is released by the OCR
+  // path alone, so without this sweep an async extraction would leave the
+  // candidate waiting on a reply that never comes.
+  const ocrSweep = setInterval(() => {
+    void sweepRunningExtractions().catch((err) => logger.error({ err }, 'ocr sweep failed'));
+  }, config.OCR_SWEEP_INTERVAL_MS);
+  ocrSweep.unref();
+
   const crmSweep = setInterval(() => {
     void reconcileCrmSync().catch((err) => logger.error({ err }, 'crm sync sweep failed'));
   }, config.INGESTION_RECONCILE_INTERVAL_MS);
@@ -125,6 +136,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'shutting down');
     clearInterval(reminderSweep);
     clearInterval(sessionSweep);
+    clearInterval(ocrSweep);
     clearInterval(crmSweep);
     clearInterval(taxonomySweep);
     try {

@@ -605,6 +605,39 @@ export interface UploadOcr {
   confidence?: number | null;
   needsReview?: boolean;
   reviewReasons?: string[];
+  /* ---------------------------------------------------------------- */
+  /* Async Jobs API state (VERIS_OCR_ASYNC). Absent on rows written by  */
+  /* the synchronous path, which is what makes the flag reversible.     */
+  /* ---------------------------------------------------------------- */
+
+  /** Veris job id, from `JobAccepted.job_id`. */
+  jobId?: string;
+  /** `JobAccepted.status_url` — stored rather than rebuilt, as the service issues it. */
+  statusUrl?: string;
+  submittedAt?: Date;
+  /** Veris' own attempt counters, mirrored so the sweep can see them. */
+  attempts?: number;
+  maxAttempts?: number;
+  /** Earliest the sweep may act on this upload again. */
+  nextPollAt?: Date;
+  /**
+   * Held by the sweep tick currently working this upload.
+   *
+   * The compare-and-set on this field is what stops two ticks polling one job,
+   * which would otherwise resume the conversation twice — two acknowledgements,
+   * or two re-asks for the same document.
+   */
+  claimedAt?: Date;
+  /**
+   * What `inspectUpload` made of the bytes, captured at submission.
+   *
+   * Persisted because submit and terminal are now separate invocations and
+   * `passportCompleteness` reads this at the terminal end. Without it §14's
+   * page-count check silently stops working — the file is long gone from memory
+   * by the time the job comes back.
+   */
+  inspection?: { readable: boolean; pages?: number; problem?: string };
+
   /** Document-completeness verdict (§14). Separate from extraction confidence. */
   completeness?: {
     complete: boolean;
@@ -633,6 +666,15 @@ export interface DocumentUpload {
   sha256: string;
   originalFilename?: string;
   caption?: string;
+  /**
+   * The message the file arrived on.
+   *
+   * Carried so the OCR job can build its idempotency key and find the ingestion
+   * row without a scan — the ledger is keyed on the wamid and the upload had no
+   * way to name it. Optional because rows written before this existed do not
+   * have one, and §22 keeps those rows.
+   */
+  wamid?: string;
   /** Set when a later upload replaced this one. Old versions are kept (§22). */
   supersededAt?: Date;
   ocr?: UploadOcr;
@@ -1158,6 +1200,131 @@ export async function addUpload(params: {
   return uploadId;
 }
 
+/* ------------------------------------------------------------------ */
+/* Async extraction sweep support                                      */
+/* ------------------------------------------------------------------ */
+
+/** One upload the OCR sweep may have work to do on. */
+export interface DueExtraction {
+  waId: string;
+  docType: string;
+  uploadId: ObjectId;
+  ocr: UploadOcr;
+}
+
+/**
+ * Uploads whose extraction is unfinished and due.
+ *
+ * Scans both document collections, one query per section, because an upload
+ * lives inside `<section>.uploads[]` and there is no collection of uploads to
+ * query directly. `nextPollAt` is what keeps this cheap: a job that is not due
+ * is filtered in the database rather than fetched and discarded.
+ *
+ * A stale claim is treated as no claim. A process that dies mid-poll would
+ * otherwise leave an upload claimed forever, and the whole point of the sweep
+ * is that nothing gets stranded.
+ */
+export async function dueExtractions(params: {
+  now?: Date;
+  staleClaimMs: number;
+  limit?: number;
+}): Promise<DueExtraction[]> {
+  const now = params.now ?? new Date();
+  const claimCutoff = new Date(now.getTime() - params.staleClaimMs);
+  const out: DueExtraction[] = [];
+
+  for (const docType of DOCUMENTS.map((d) => d.id)) {
+    const section = sectionFor(docType);
+    const store = documentStoreFor(docType);
+
+    const rows = await store
+      .find(
+        {
+          [`${section}.uploads`]: {
+              $elemMatch: {
+              'ocr.status': { $in: ['queued', 'running'] },
+            },
+          },
+        },
+        { projection: { waId: 1, [section]: 1 } },
+      )
+      .limit(params.limit ?? 200)
+      .toArray();
+
+    for (const row of rows) {
+      const uploads = (row as unknown as Record<string, { uploads?: DocumentUpload[] }>)[section]
+        ?.uploads;
+      for (const upload of uploads ?? []) {
+        const ocr = upload.ocr;
+        // Superseded uploads are still driven to a terminal state. Their verdict
+        // is discarded — `uploadStillCurrent` sees to that — but abandoning them
+        // mid-flight would leave rows reading `running` forever, which is the
+        // stuck-job condition an operator is meant to be able to alert on.
+        if (!ocr) continue;
+        if (ocr.status !== 'queued' && ocr.status !== 'running') continue;
+        if (ocr.nextPollAt && ocr.nextPollAt > now) continue;
+        if (ocr.claimedAt && ocr.claimedAt > claimCutoff) continue;
+        out.push({ waId: row.waId, docType, uploadId: upload.uploadId, ocr });
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Takes exclusive ownership of one extraction, or reports that someone else has it.
+ *
+ * The compare-and-set is the whole mechanism: the filter matches only while the
+ * upload is unclaimed or its claim has gone stale, so two sweep ticks racing on
+ * the same upload produce exactly one `modifiedCount === 1`. Without it the
+ * terminal path could run twice and the candidate would be answered twice.
+ */
+export async function claimExtraction(params: {
+  waId: string;
+  docType: string;
+  uploadId: ObjectId;
+  staleClaimMs: number;
+  now?: Date;
+}): Promise<boolean> {
+  const now = params.now ?? new Date();
+  const claimCutoff = new Date(now.getTime() - params.staleClaimMs);
+  const section = sectionFor(params.docType);
+
+  const res = await documentStoreFor(params.docType).updateOne(
+    {
+      waId: params.waId,
+      [`${section}.uploads`]: {
+        $elemMatch: {
+          uploadId: params.uploadId,
+          'ocr.status': { $in: ['queued', 'running'] },
+          // `null` matches both a missing field and an explicit null, which a
+          // row written before the `$unset` fix above will carry.
+          $or: [{ 'ocr.claimedAt': null }, { 'ocr.claimedAt': { $lte: claimCutoff } }],
+        },
+      },
+    },
+    { $set: { [`${section}.uploads.$[u].ocr.claimedAt`]: now } },
+    { arrayFilters: [{ 'u.uploadId': params.uploadId }] },
+  );
+
+  return res.modifiedCount === 1;
+}
+
+/** Gives the claim back, so the next tick may pick the upload up immediately. */
+export async function releaseExtraction(
+  waId: string,
+  docType: string,
+  uploadId: ObjectId,
+): Promise<void> {
+  const section = sectionFor(docType);
+  await documentStoreFor(docType).updateOne(
+    { waId, [`${section}.uploads.0`]: { $exists: true } },
+    { $unset: { [`${section}.uploads.$[u].ocr.claimedAt`]: '' } },
+    { arrayFilters: [{ 'u.uploadId': uploadId }] },
+  );
+}
+
 /** One upload, by the id the OCR job carries. */
 export async function findUpload(
   waId: string,
@@ -1186,13 +1353,22 @@ export async function updateUpload(
   const section = sectionFor(docType);
   const now = new Date();
   const set: Record<string, unknown> = { updatedAt: now, [`${section}.uploads.$[u].updatedAt`]: now };
+  const unset: Record<string, ''> = {};
+
   for (const [key, value] of Object.entries(patch)) {
-    set[`${section}.uploads.$[u].${key}`] = value;
+    const path = `${section}.uploads.$[u].${key}`;
+    // `undefined` means remove, not store null. The driver serialises an
+    // undefined value as null, and a null is not absent: `{$exists: false}`
+    // stops matching, and a range comparison against a Date never matches a
+    // null. Clearing `ocr.claimedAt` this way left every extraction permanently
+    // unclaimable and the sweep silently stopped polling anything.
+    if (value === undefined) unset[path] = '';
+    else set[path] = value;
   }
 
   await documentStoreFor(docType).updateOne(
     { waId, [`${section}.uploads.0`]: { $exists: true } },
-    { $set: set },
+    Object.keys(unset).length ? { $set: set, $unset: unset } : { $set: set },
     { arrayFilters: [{ 'u.uploadId': uploadId }] },
   );
 }

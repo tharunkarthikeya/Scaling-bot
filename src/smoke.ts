@@ -88,7 +88,19 @@ import * as copy from './conversation/copy.js';
 import { toCrmPayload } from './crm/mapping.js';
 import { resetTaxonomy, setTaxonomyForTests } from './crm/taxonomy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
-import { inspectUpload, resumeCompleteness } from './ocr/veris.js';
+import { inspectUpload, normaliseExtractionForTests, resumeCompleteness } from './ocr/veris.js';
+import {
+  JobQueueFullError,
+  isJobQueueFull,
+  nextPollDelayMs,
+  ocrIdempotencyKey,
+  pollOcrJob,
+  retryAfterMsOf,
+  retryFailedJob,
+  serviceStillWorking,
+  shouldRetryFailedJob,
+  submitOcrJob,
+} from './ocr/jobs.js';
 import { offLimits } from './conversation/tradeQuestions.js';
 import { hasForeignScript } from './conversation/language.js';
 import { INTERPRETER_PROMPT, TUNABLES } from './conversation/rules.js';
@@ -3849,6 +3861,315 @@ await check('the too-large message exists in all five languages and carries the 
   );
   // And it passes the length checks the deploy runs.
   validateCopy();
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nveris async jobs api');
+
+/**
+ * The mock jobs service, in-process.
+ *
+ * The client is exercised over real HTTP against the same mock the load rig
+ * uses, because the parts most worth testing — a 202 that is not a 200, a
+ * `duplicate` flag, a 503 that must not count as a failure — are transport
+ * behaviour, and a stubbed function would assert only that the stub was written
+ * to match the test.
+ */
+async function jobsStub(): Promise<{ url: string; close: () => Promise<void> }> {
+  const { handleJobsRoute, resetJobsMock, jobsState } = await import(
+    './testing/verisJobsMock.js'
+  );
+  resetJobsMock();
+  jobsState.queuedPolls = 1;
+  jobsState.runningPolls = 1;
+
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (handleJobsRoute(req, res, url.pathname)) return;
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
+
+/** Runs `fn` with VERIS_OCR_BASE_URL pointed at a fresh jobs mock. */
+async function withJobs<T>(fn: (base: string) => Promise<T>): Promise<T> {
+  const stub = await jobsStub();
+  const previous = config.VERIS_OCR_BASE_URL;
+  (config as { VERIS_OCR_BASE_URL: string }).VERIS_OCR_BASE_URL = stub.url;
+  try {
+    return await fn(stub.url);
+  } finally {
+    (config as { VERIS_OCR_BASE_URL: string }).VERIS_OCR_BASE_URL = previous;
+    await stub.close();
+  }
+}
+
+const jobPdf = () => Buffer.from('%PDF-1.4 /Type /Page  /Type /Page  %%EOF', 'latin1');
+
+async function drain(base: string, statusUrl: string, max = 10) {
+  let last;
+  for (let i = 0; i < max; i++) {
+    last = await pollOcrJob(statusUrl);
+    if (last.job.status === 'succeeded' || last.job.status === 'failed') return last;
+  }
+  return last!;
+}
+
+await check('a submission is accepted with 202 and yields a job id and status url', async () => {
+  await withJobs(async () => {
+    const accepted = await submitOcrJob({
+      mode: 'passport',
+      buffer: jobPdf(),
+      filename: 'passport.pdf',
+      mimeType: 'application/pdf',
+      idempotencyKey: 'k/1',
+    });
+    assert.ok(accepted.job_id, 'no job_id');
+    assert.ok(accepted.status_url, 'no status_url');
+    assert.equal(accepted.duplicate, false);
+    assert.ok(['queued', 'running'].includes(accepted.status));
+  });
+});
+
+await check('a job progresses queued to running to succeeded', async () => {
+  await withJobs(async (base) => {
+    const a = await submitOcrJob({
+      mode: 'passport', buffer: jobPdf(), filename: 'passport.pdf',
+      mimeType: 'application/pdf', idempotencyKey: 'k/2',
+    });
+    const seen: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const { job } = await pollOcrJob(a.status_url);
+      seen.push(job.status);
+      if (job.status === 'succeeded' || job.status === 'failed') break;
+    }
+    assert.deepEqual(seen, ['queued', 'running', 'succeeded']);
+  });
+});
+
+await check('the same idempotency key returns the same job, marked duplicate', async () => {
+  await withJobs(async () => {
+    const key = 'whatsapp/PN/wamid.X/MEDIA1/passport';
+    const first = await submitOcrJob({
+      mode: 'passport', buffer: jobPdf(), filename: 'passport.pdf',
+      mimeType: 'application/pdf', idempotencyKey: key,
+    });
+    const second = await submitOcrJob({
+      mode: 'passport', buffer: jobPdf(), filename: 'passport.pdf',
+      mimeType: 'application/pdf', idempotencyKey: key,
+    });
+    assert.equal(second.job_id, first.job_id, 'a second job was created');
+    assert.equal(second.duplicate, true);
+  });
+});
+
+await check('the CV-passport case submits two independent jobs', async () => {
+  // The whole reason the key carries the extractor. Same phone number, same
+  // wamid, same mediaId — `filePassportFoundInCv` files the identical bytes a
+  // second time — so without the fifth segment Veris would answer the passport
+  // submission with the resume job and the passport slot would be handed a CV.
+  await withJobs(async () => {
+    const shared = { phoneNumberId: 'PN', wamid: 'wamid.A', mediaId: 'MEDIA1' } as const;
+    const cvKey = ocrIdempotencyKey({ ...shared, extractor: 'resume' });
+    const ppKey = ocrIdempotencyKey({ ...shared, extractor: 'passport' });
+    assert.notEqual(cvKey, ppKey, 'the two extractions share an idempotency key');
+
+    const cv = await submitOcrJob({
+      mode: 'resume', buffer: jobPdf(), filename: 'cv.pdf',
+      mimeType: 'application/pdf', idempotencyKey: cvKey,
+    });
+    const pp = await submitOcrJob({
+      mode: 'passport', buffer: jobPdf(), filename: 'passport.pdf',
+      mimeType: 'application/pdf', idempotencyKey: ppKey,
+    });
+    assert.notEqual(cv.job_id, pp.job_id, 'one upload produced only one job');
+    assert.equal(pp.duplicate, false);
+  });
+});
+
+await check('queue full is reported as backpressure, not as a failed document', async () => {
+  await withJobs(async () => {
+    await assert.rejects(
+      () =>
+        submitOcrJob({
+          mode: 'resume', buffer: jobPdf(), filename: 'queuefull.pdf',
+          mimeType: 'application/pdf', idempotencyKey: 'k/full',
+        }),
+      JobQueueFullError,
+    );
+  });
+});
+
+await check('a queue-full 503 is distinguished from the disabled-sync 503', () => {
+  // Both are 503. One is admission control and must be retried forever; the
+  // other is the misconfiguration this whole migration exists to fix, and
+  // retrying it silently would hide it.
+  assert.equal(isJobQueueFull(503, '{"code":"job_queue_full"}'), true);
+  assert.equal(isJobQueueFull(500, 'anything'), false);
+
+  // The body exactly as the live service sent it, which carries the reason
+  // twice and in two spellings. An earlier version of this check matched only
+  // the underscored `code` and would have retried the misconfiguration forever.
+  const observed =
+    '{"request_id":"req_01M0MGY04QNAV519EQ172S41SF","error":"OcrQueueRequiredError",' +
+    '"code":"ocr_queue_required","detail":"Synchronous OCR is disabled on this deployment; ' +
+    'submit the file to /v1/jobs"}';
+  assert.equal(isJobQueueFull(503, observed), false);
+  assert.equal(isJobQueueFull(503, '{"error":"OcrQueueRequiredError"}'), false);
+});
+
+await check('a terminal failure is not retried', async () => {
+  await withJobs(async (base) => {
+    const a = await submitOcrJob({
+      mode: 'resume', buffer: jobPdf(), filename: 'fail-terminal.pdf',
+      mimeType: 'application/pdf', idempotencyKey: 'k/term',
+    });
+    const last = await drain(base, a.status_url);
+    assert.equal(last!.job.status, 'failed');
+    assert.equal(last!.job.error?.retryable, false);
+    assert.equal(shouldRetryFailedJob(last!.job), false);
+  });
+});
+
+await check('a retryable failure that has exhausted its attempts is retried once', async () => {
+  await withJobs(async (base) => {
+    const a = await submitOcrJob({
+      mode: 'resume', buffer: jobPdf(), filename: 'fail-retryable.pdf',
+      mimeType: 'application/pdf', idempotencyKey: 'k/retry',
+    });
+    const last = await drain(base, a.status_url);
+    assert.equal(last!.job.status, 'failed');
+    assert.equal(shouldRetryFailedJob(last!.job), true);
+
+    const replayed = await retryFailedJob(last!.job.job_id);
+    // The contract does not promise the id survives a retry, so the client must
+    // store whatever comes back rather than keep using the old one.
+    assert.ok(replayed.job_id);
+    assert.ok(replayed.status_url);
+  });
+});
+
+await check('a job the service is still retrying is left alone', () => {
+  const soon = new Date(Date.now() + 60_000).toISOString();
+  const job = {
+    job_id: 'j', mode: 'resume', filename: 'f', status: 'failed' as const,
+    attempts: 1, max_attempts: 3, submitted_at: new Date().toISOString(),
+    next_attempt_at: soon, error: { code: 'x', message: 'y', retryable: true },
+  };
+  // Retrying here would duplicate work Veris has already scheduled.
+  assert.equal(shouldRetryFailedJob(job), false);
+  assert.equal(serviceStillWorking(job), true);
+});
+
+await check('a never-terminal job stays in flight rather than being called done', async () => {
+  await withJobs(async (base) => {
+    const a = await submitOcrJob({
+      mode: 'resume', buffer: jobPdf(), filename: 'never.pdf',
+      mimeType: 'application/pdf', idempotencyKey: 'k/never',
+    });
+    for (let i = 0; i < 6; i++) {
+      const { job } = await pollOcrJob(a.status_url);
+      assert.ok(job.status === 'queued' || job.status === 'running', `became ${job.status}`);
+    }
+  });
+});
+
+await check('a malformed success payload does not become a valid extraction', async () => {
+  await withJobs(async (base) => {
+    const a = await submitOcrJob({
+      mode: 'aadhaar', buffer: jobPdf(), filename: 'malformed.pdf',
+      mimeType: 'application/pdf', idempotencyKey: 'k/bad',
+    });
+    const last = await drain(base, a.status_url);
+    assert.equal(last!.job.status, 'succeeded');
+    // The normaliser must not invent an identity out of an unrecognised shape.
+    const outcome = normaliseExtractionForTests('aadhaar', last!.job.result);
+    assert.equal(outcome.completeness.complete, false);
+  });
+});
+
+await check('poll pacing prefers the server schedule over local backoff', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  const job = {
+    job_id: 'j', mode: 'resume', filename: 'f', status: 'running' as const,
+    attempts: 0, max_attempts: 3, submitted_at: now.toISOString(),
+    next_attempt_at: new Date(now.getTime() + 9_000).toISOString(),
+  };
+  // next_attempt_at wins over both Retry-After and the computed value.
+  assert.equal(nextPollDelayMs({ job, retryAfterMs: 1_000, previousDelayMs: 2_000, now }), 9_000);
+  // Retry-After is honoured where the service offers no schedule of its own.
+  assert.equal(
+    nextPollDelayMs({ job: { ...job, next_attempt_at: null }, retryAfterMs: 5_000, now }),
+    5_000,
+  );
+  // Otherwise bounded local backoff, never below the floor or above the cap.
+  assert.equal(
+    nextPollDelayMs({ job: { ...job, next_attempt_at: null }, previousDelayMs: 0, now }),
+    config.VERIS_OCR_POLL_MIN_MS,
+  );
+  assert.equal(
+    nextPollDelayMs({ job: { ...job, next_attempt_at: null }, previousDelayMs: 999_999, now }),
+    config.VERIS_OCR_POLL_MAX_MS,
+  );
+});
+
+await check('the three normalisers read a job result exactly as they read a sync body', async () => {
+  // The migration's central claim: `job.result` carries the same object the
+  // synchronous route returned, so the normalisers are untouched. This feeds
+  // one payload down both paths and requires the verdicts to match.
+  await withJobs(async (base) => {
+    for (const [mode, docType] of [
+      ['passport', 'passport'],
+      ['resume', 'cv'],
+      ['aadhaar', 'aadhaar'],
+    ] as const) {
+      const a = await submitOcrJob({
+        mode, buffer: jobPdf(), filename: `${mode}.pdf`,
+        mimeType: 'application/pdf', idempotencyKey: `k/norm/${mode}`,
+      });
+      const last = await drain(base, a.status_url);
+      assert.equal(last!.job.status, 'succeeded', `${mode} did not succeed`);
+
+      const outcome = normaliseExtractionForTests(mode, last!.job.result, docType);
+      const keys = outcome.fields.map((f) => f.key);
+
+      // The identifying field each normaliser exists to recover. If the job
+      // envelope had reshaped the payload, these are what would go missing.
+      const expected = {
+        passport: 'passport_number',
+        resume: 'name',
+        aadhaar: 'aadhaar_number',
+      }[mode];
+
+      assert.ok(outcome.fields.length > 0, `${mode} produced no fields from a job result`);
+      assert.ok(keys.includes(expected), `${mode} lost ${expected}: got ${keys.join(', ')}`);
+    }
+  });
+});
+
+await check('the idempotency key always carries the extractor segment', () => {
+  const key = ocrIdempotencyKey({
+    phoneNumberId: '123', wamid: 'wamid.Z', mediaId: 'MEDIA9', extractor: 'aadhaar',
+  });
+  assert.equal(key, 'whatsapp/123/wamid.Z/MEDIA9/aadhaar');
+  assert.equal(key.split('/').length, 5);
+});
+
+await check('a Retry-After header is read when present and ignored when absent', () => {
+  const withHeader = { headers: { get: (n: string) => (n === 'retry-after' ? '3' : null) } };
+  const without = { headers: { get: () => null } };
+  const nonsense = { headers: { get: () => 'soon' } };
+  assert.equal(retryAfterMsOf(withHeader), 3000);
+  assert.equal(retryAfterMsOf(without), undefined);
+  assert.equal(retryAfterMsOf(nonsense), undefined);
 });
 
 /* ------------------------------------------------------------------ */

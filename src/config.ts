@@ -86,6 +86,64 @@ const schema = z.object({
   VERIS_OCR_API_KEY: z.string().min(1),
   VERIS_OCR_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
 
+  /**
+   * Use the Veris async Jobs API instead of the synchronous extract routes.
+   *
+   * Off by default, and deliberately so: the synchronous path is what has been
+   * in production, and it stays the default until the async path has been through
+   * staging against the real service. Flipping this changes only how an
+   * extraction is fetched — the normalisers, the completeness verdicts and the
+   * conversation behaviour are identical on both sides.
+   *
+   * The deployed service currently answers the synchronous routes with
+   * `503 ocr_queue_required`, so with this off, extraction fails and every
+   * upload becomes a review task. That is the bug this flag exists to fix; it is
+   * off because the fix should be proven before it is trusted, not because the
+   * old path works.
+   */
+  VERIS_OCR_ASYNC: bool.default('false'),
+
+  /**
+   * How long an extraction may remain unfinished before the sweep gives up.
+   *
+   * A backstop, not a schedule. Veris runs its own retries and reports
+   * `attempts`, `max_attempts` and `next_attempt_at`; a job that is still inside
+   * that budget is working, not stuck, and the sweep leaves it alone however
+   * long it has been — see `hasOutlivedItsDeadline`. This bounds the case where
+   * the service stops answering about a job at all, which is the only case where
+   * nothing else will ever release the candidate.
+   */
+  VERIS_OCR_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
+
+  /**
+   * Poll pacing, used only when the server offers no opinion.
+   *
+   * `next_attempt_at` is preferred over both of these, and a `Retry-After`
+   * header over the computed value — the service knows when it will next have
+   * something to say and we do not.
+   */
+  VERIS_OCR_POLL_MIN_MS: z.coerce.number().int().positive().default(2_000),
+  VERIS_OCR_POLL_MAX_MS: z.coerce.number().int().positive().default(15_000),
+
+  /**
+   * How often the extraction sweep looks for work.
+   *
+   * Frequent and cheap: a tick that finds nothing due is one indexed query per
+   * document section. The interval is the lag between a job finishing at Veris
+   * and the candidate hearing about it, so it wants to be well under a second's
+   * worth of patience rather than tuned for throughput.
+   */
+  OCR_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(3_000),
+
+  /**
+   * How long a sweep claim is honoured before another tick may take it.
+   *
+   * Long enough that a slow poll is not stolen mid-flight, short enough that a
+   * process killed while holding a claim does not strand the upload for long.
+   */
+  OCR_CLAIM_STALE_MS: z.coerce.number().int().positive().default(120_000),
+
+
   STORAGE_PATH: z.string().default('./storage'),
 
   // Guards the read-only /api/* endpoints, which expose candidate PII —

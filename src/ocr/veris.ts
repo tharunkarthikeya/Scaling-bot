@@ -3,13 +3,31 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import {
   addUpload,
+  claimExtraction,
   documentsFor,
   documentStoreFor,
+  dueExtractions,
   findUpload,
   flattenUploads,
+  releaseExtraction,
   updateUpload,
+  type DocumentUpload,
+  type DueExtraction,
   type OcrField,
+  type UploadOcr,
 } from '../db/models.js';
+import { recordOcrJob } from '../ingestion/ledger.js';
+import {
+  JobQueueFullError,
+  nextPollDelayMs,
+  ocrIdempotencyKey,
+  pollOcrJob,
+  retryFailedJob,
+  serviceStillWorking,
+  shouldRetryFailedJob,
+  submitOcrJob,
+  type JobResponse,
+} from './jobs.js';
 import { readFile } from '../storage/index.js';
 import { queue, withCandidateLock } from '../queue/index.js';
 import { TUNABLES } from '../conversation/rules.js';
@@ -1006,6 +1024,23 @@ export async function runOcr(params: {
   }
 }
 
+/**
+ * Runs one document-specific normaliser. Tests only.
+ *
+ * Exists so the migration's central claim can be checked directly: that a job
+ * `result` and a synchronous response body are the same object, and the three
+ * normalisers therefore need no changes. Testing that through the whole worker
+ * would prove it only for whatever path the test happened to take.
+ */
+export function normaliseExtractionForTests(
+  extractor: Extractor,
+  payload: unknown,
+  docType?: string,
+  inspection?: UploadInspection,
+): OcrOutcome {
+  return NORMALISERS[extractor](payload, docType, inspection);
+}
+
 /** Liveness probe, used by the harness. */
 export async function ocrHealth(): Promise<{ ok: boolean; detail: string }> {
   try {
@@ -1085,7 +1120,15 @@ async function runIdentityComparison(candidateId: ObjectId, docType: string): Pr
 async function filePassportFoundInCv(
   waId: string,
   candidateId: ObjectId,
-  cv: { storageKey: string; mediaId: string; mimeType: string; byteSize: number; sha256: string },
+  cv: {
+    storageKey: string;
+    mediaId: string;
+    mimeType: string;
+    byteSize: number;
+    sha256: string;
+    /** Carried through so the second extraction can key itself. */
+    wamid?: string;
+  },
   fields: OcrField[],
   payload: unknown,
 ): Promise<void> {
@@ -1105,6 +1148,7 @@ async function filePassportFoundInCv(
       mimeType: cv.mimeType,
       byteSize: cv.byteSize,
       sha256: cv.sha256,
+      ...(cv.wamid ? { wamid: cv.wamid } : {}),
       caption: 'passport pages found inside the CV',
       ocr: { status: 'queued' },
     },
@@ -1155,6 +1199,11 @@ export async function processOcrJob(payload: {
     return;
   }
 
+  if (config.VERIS_OCR_ASYNC) {
+    await submitExtraction({ waId, docType, uploadId, candidateId, extractor, doc });
+    return;
+  }
+
   await updateUpload(waId, docType, uploadId, {
     'ocr.status': 'running',
     'ocr.extractor': extractor,
@@ -1171,142 +1220,645 @@ export async function processOcrJob(payload: {
       docType,
     });
 
-    // Whether anything read off this file is worth keeping.
-    //
-    // A blurred card does not fail cleanly: the extractor returns values, and
-    // they are half right — a digit dropped from an Aadhaar number, a name with
-    // two letters guessed. Storing that is worse than storing nothing, because
-    // nothing is obviously missing and a wrong number looks like a real one. So
-    // an unusable read keeps its verdict and its reasons, which is what a person
-    // needs to see, and none of its values.
-    //
-    // A CV is the exception, and stays as it was: it holds no identifier, and a
-    // partial read still saves the candidate questions (§5). Only a file that is
-    // not a CV at all is discarded there.
-    const keepExtraction =
-      outcome.completeness.complete ||
-      (extractor === 'resume' && outcome.completeness.verdict !== 'wrong_document');
+    await applySuccessfulExtraction({
+      waId,
+      docType,
+      uploadId,
+      candidateId,
+      extractor,
+      doc,
+      outcome,
+      startedAt: doc.ocr?.startedAt,
+    });
+  } catch (err) {
+    logger.error({ err, ...payload }, 'ocr failed');
+    await applyFailedExtraction({
+      waId,
+      docType,
+      uploadId,
+      candidateId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
-    await updateUpload(waId, docType, uploadId, {
-      ocr: {
-        status: 'done',
-        extractor,
-        startedAt: doc.ocr?.startedAt,
-        finishedAt: new Date(),
-        ...(keepExtraction ? { raw: outcome.raw, fields: outcome.fields } : {}),
-        confidence: outcome.confidence,
-        needsReview: outcome.needsReview,
-        reviewReasons: outcome.reviewReasons,
-        completeness: outcome.completeness,
-      },
+/* ------------------------------------------------------------------ */
+/* Terminal handling, shared by both paths                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Everything that happens once an extraction has produced a verdict.
+ *
+ * Lifted out of `processOcrJob` unchanged so the synchronous and asynchronous
+ * paths cannot drift: whichever way the payload was fetched, what is stored,
+ * what is written to the profile and what the candidate is told is the same
+ * code. That is what makes the feature flag a decision about transport rather
+ * than about behaviour.
+ */
+async function applySuccessfulExtraction(params: {
+  waId: string;
+  docType: string;
+  uploadId: ObjectId;
+  candidateId: ObjectId;
+  extractor: Extractor;
+  doc: { storageKey: string; mediaId: string; mimeType: string; byteSize: number; sha256: string; wamid?: string };
+  outcome: OcrOutcome;
+  startedAt?: Date;
+}): Promise<void> {
+  const { waId, docType, uploadId, candidateId, extractor, doc, outcome } = params;
+
+  // Whether anything read off this file is worth keeping.
+  //
+  // A blurred card does not fail cleanly: the extractor returns values, and
+  // they are half right — a digit dropped from an Aadhaar number, a name with
+  // two letters guessed. Storing that is worse than storing nothing, because
+  // nothing is obviously missing and a wrong number looks like a real one. So
+  // an unusable read keeps its verdict and its reasons, which is what a person
+  // needs to see, and none of its values.
+  //
+  // A CV is the exception, and stays as it was: it holds no identifier, and a
+  // partial read still saves the candidate questions (§5). Only a file that is
+  // not a CV at all is discarded there.
+  const keepExtraction =
+    outcome.completeness.complete ||
+    (extractor === 'resume' && outcome.completeness.verdict !== 'wrong_document');
+
+  await updateUpload(waId, docType, uploadId, {
+    'ocr.status': 'done',
+    'ocr.extractor': extractor,
+    'ocr.startedAt': params.startedAt,
+    'ocr.finishedAt': new Date(),
+    ...(keepExtraction ? { 'ocr.raw': outcome.raw, 'ocr.fields': outcome.fields } : {}),
+    'ocr.confidence': outcome.confidence,
+    'ocr.needsReview': outcome.needsReview,
+    'ocr.reviewReasons': outcome.reviewReasons,
+    'ocr.completeness': outcome.completeness,
+    'ocr.claimedAt': undefined,
+  });
+
+  // From here on this job writes profile fields and then asks a question off
+  // the back of them, which is the same thing an inbound turn does — so it
+  // takes the same lock. Without it, a candidate who messages while their CV
+  // is being read has two turns running at once: both compute the next
+  // question from a half-written profile, both send one, and whichever
+  // finishes last overwrites `currentStep`. The visible symptom is questions
+  // arriving out of order and an answer recorded against the wrong one.
+  await withCandidateLock(waId, async () => {
+    // Two photos sent seconds apart both land in the slot the bot last asked
+    // for, the second superseding the first, and both are read. Only the
+    // verdict on the file the slot actually holds may write anything.
+    if (!(await uploadStillCurrent(candidateId, docType, uploadId))) {
+      logger.info(
+        { waId, docType, uploadId: uploadId.toHexString() },
+        'extraction finished for an upload that has since been replaced',
+      );
+      return;
+    }
+
+    await markSlotFromOcr(
+      candidateId,
+      docType,
+      !outcome.completeness.complete
+        ? 'incomplete'
+        : outcome.needsReview
+          ? 'needs_review'
+          : 'ocr_done',
+    );
+
+    // §5 — what the document yields becomes profile fields, so the questions it
+    // answers are never asked. Marked unverified; a person confirms it (§27).
+    const patch =
+      extractor === 'resume'
+        ? extractFromCv(outcome.fields, waId).patch
+        : profileFromIdentityDocument(docType, outcome.fields);
+
+    // Nothing is written from a file that is not the document it was filed
+    // as, and nothing from one that could not be read. Whatever an Aadhaar
+    // card yields under the resume extractor is not this candidate's CV, and
+    // a profile is harder to correct than a slot.
+    if (keepExtraction && Object.keys(patch).length) {
+      await mergeExtractedProfile(
+        candidateId,
+        patch,
+        extractor === 'resume' ? 'cv' : 'document',
+        outcome.confidence,
+      );
+    }
+
+    // A CV can carry a passport behind it. Read as a CV it is one document;
+    // read again as a passport it is two, and §12 stops asking for something
+    // already on file.
+    if (docType === 'cv') {
+      await filePassportFoundInCv(
+        waId,
+        candidateId,
+        {
+          storageKey: doc.storageKey,
+          mediaId: doc.mediaId,
+          mimeType: doc.mimeType,
+          byteSize: doc.byteSize,
+          sha256: doc.sha256,
+          wamid: doc.wamid,
+        },
+        outcome.fields,
+        outcome.raw,
+      );
+    }
+
+    await runIdentityComparison(candidateId, docType);
+
+    // Moves the conversation on: the acknowledgement, or the re-ask (§14).
+    await resumeAfterDocument(candidateId, docType, outcome.completeness, uploadId);
+  });
+
+  logger.info(
+    {
+      waId,
+      docType,
+      uploadId: uploadId.toHexString(),
+      extractor,
+      fields: outcome.fields.length,
+      confidence: outcome.confidence,
+      needsReview: outcome.needsReview,
+      complete: outcome.completeness.complete,
+    },
+    'ocr complete',
+  );
+}
+
+/**
+ * An extraction that will not produce a verdict.
+ *
+ * The file is on disk; what failed is our reading of it. A failed extraction is
+ * a review task, not a reason to make the candidate photograph their passport
+ * again — so the upload is acknowledged and staff pick it up.
+ */
+async function applyFailedExtraction(params: {
+  waId: string;
+  docType: string;
+  uploadId: ObjectId;
+  candidateId: ObjectId;
+  error: string;
+}): Promise<void> {
+  const { waId, docType, uploadId, candidateId } = params;
+
+  await updateUpload(waId, docType, uploadId, {
+    'ocr.status': 'failed',
+    'ocr.finishedAt': new Date(),
+    'ocr.error': params.error,
+    'ocr.needsReview': true,
+    'ocr.claimedAt': undefined,
+  });
+
+  await withCandidateLock(waId, async () => {
+    if (!(await uploadStillCurrent(candidateId, docType, uploadId))) {
+      logger.info(
+        { waId, docType, uploadId: uploadId.toHexString() },
+        'extraction failed for an upload that has since been replaced',
+      );
+      return;
+    }
+    await markSlotFromOcr(candidateId, docType, 'ocr_failed');
+    await resumeAfterDocument(
+      candidateId,
+      docType,
+      { complete: true, verdict: 'ok', problems: ['extraction failed; needs a manual check'] },
+      uploadId,
+    );
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* The async Jobs API path (VERIS_OCR_ASYNC)                           */
+/* ------------------------------------------------------------------ */
+
+/** The verdict on a file that will not open, shared by both paths. */
+function unreadableOutcome(problem: string): OcrOutcome {
+  return {
+    raw: { unreadable: problem },
+    fields: [],
+    confidence: null,
+    needsReview: true,
+    reviewReasons: [problem],
+    completeness: { complete: false, verdict: 'empty', problems: [problem] },
+  };
+}
+
+/** The message the upload arrived on, falling back as `ingestDocument` does. */
+function wamidOf(doc: { wamid?: string; mediaId: string }): string {
+  return doc.wamid ?? doc.mediaId;
+}
+
+/**
+ * Queues one document with Veris and hands the slot back.
+ *
+ * The pool slot is released the moment the job is accepted, which is the whole
+ * point of the migration: an extraction no longer occupies a worker for its
+ * duration, so `QUEUE_CONCURRENCY_OCR` bounds submissions rather than bounding
+ * how many documents can be in flight at once.
+ *
+ * The inspection is written *before* anything else, because the terminal poll
+ * happens in a later invocation with the file long out of memory, and
+ * `passportCompleteness` reads it to decide whether §14's page requirement was
+ * met. Losing it would silently disable that check.
+ */
+async function submitExtraction(params: {
+  waId: string;
+  docType: string;
+  uploadId: ObjectId;
+  candidateId: ObjectId;
+  extractor: Extractor;
+  doc: DocumentUpload;
+}): Promise<void> {
+  const { waId, docType, uploadId, candidateId, extractor, doc } = params;
+  const attempts = (doc.ocr?.attempts ?? 0) + 1;
+
+  const buffer = await readFile(doc.storageKey);
+  const inspection = inspectUpload(buffer, doc.mimeType, {
+    countPages: extractor === 'passport',
+  });
+
+  // A file that will not open cannot be extracted, and discovering that here
+  // costs nothing rather than a job and a poll cycle.
+  if (!inspection.readable) {
+    const problem = inspection.problem ?? 'the file could not be opened';
+    logger.warn({ waId, docType, problem }, 'upload rejected before submission');
+    await applySuccessfulExtraction({
+      waId,
+      docType,
+      uploadId,
+      candidateId,
+      extractor,
+      doc,
+      outcome: unreadableOutcome(problem),
+    });
+    return;
+  }
+
+  const idempotencyKey = ocrIdempotencyKey({
+    phoneNumberId: config.WHATSAPP_PHONE_NUMBER_ID,
+    wamid: wamidOf(doc),
+    mediaId: doc.mediaId,
+    extractor,
+  });
+
+  try {
+    const accepted = await submitOcrJob({
+      mode: extractor,
+      buffer,
+      mimeType: doc.mimeType,
+      filename: doc.originalFilename ?? doc.storageKey.split('/').pop() ?? 'upload',
+      idempotencyKey,
     });
 
-    // From here on this job writes profile fields and then asks a question off
-    // the back of them, which is the same thing an inbound turn does — so it
-    // takes the same lock. Without it, a candidate who messages while their CV
-    // is being read has two turns running at once: both compute the next
-    // question from a half-written profile, both send one, and whichever
-    // finishes last overwrites `currentStep`. The visible symptom is questions
-    // arriving out of order and an answer recorded against the wrong one.
-    //
-    // The lock is taken *here* rather than around the whole job on purpose:
-    // extraction takes up to 120 seconds, and holding it for that long would
-    // freeze the conversation while the file is read.
-    await withCandidateLock(waId, async () => {
-      // Two photos sent seconds apart both land in the slot the bot last asked
-      // for, the second superseding the first, and both are read. Only the
-      // verdict on the file the slot actually holds may write anything.
-      if (!(await uploadStillCurrent(candidateId, docType, uploadId))) {
-        logger.info(payload, 'extraction finished for an upload that has since been replaced');
-        return;
-      }
+    await updateUpload(waId, docType, uploadId, {
+      'ocr.status': 'running',
+      'ocr.extractor': extractor,
+      'ocr.jobId': accepted.job_id,
+      'ocr.statusUrl': accepted.status_url,
+      'ocr.submittedAt': new Date(accepted.submitted_at),
+      'ocr.startedAt': doc.ocr?.startedAt ?? new Date(),
+      'ocr.attempts': attempts,
+      'ocr.inspection': inspection,
+      'ocr.nextPollAt': new Date(Date.now() + config.VERIS_OCR_POLL_MIN_MS),
+      'ocr.claimedAt': undefined,
+    });
 
-      await markSlotFromOcr(
-        candidateId,
-        docType,
-        !outcome.completeness.complete
-          ? 'incomplete'
-          : outcome.needsReview
-            ? 'needs_review'
-            : 'ocr_done',
-      );
-
-      // §5 — what the document yields becomes profile fields, so the questions it
-      // answers are never asked. Marked unverified; a person confirms it (§27).
-      const patch =
-        extractor === 'resume'
-          ? extractFromCv(outcome.fields, waId).patch
-          : profileFromIdentityDocument(docType, outcome.fields);
-
-      // Nothing is written from a file that is not the document it was filed
-      // as, and nothing from one that could not be read. Whatever an Aadhaar
-      // card yields under the resume extractor is not this candidate's CV, and
-      // a profile is harder to correct than a slot.
-      if (keepExtraction && Object.keys(patch).length) {
-        await mergeExtractedProfile(
-          candidateId,
-          patch,
-          extractor === 'resume' ? 'cv' : 'document',
-          outcome.confidence,
-        );
-      }
-
-      // A CV can carry a passport behind it. Read as a CV it is one document;
-      // read again as a passport it is two, and §12 stops asking for something
-      // already on file.
-      if (docType === 'cv') {
-        await filePassportFoundInCv(
-          waId,
-          candidateId,
-          {
-            storageKey: doc.storageKey,
-            mediaId: doc.mediaId,
-            mimeType: doc.mimeType,
-            byteSize: doc.byteSize,
-            sha256: doc.sha256,
-          },
-          outcome.fields,
-          outcome.raw,
-        );
-      }
-
-      await runIdentityComparison(candidateId, docType);
-
-      // Moves the conversation on: the acknowledgement, or the re-ask (§14).
-      await resumeAfterDocument(candidateId, docType, outcome.completeness, uploadId);
+    await recordOcrJob({
+      wamid: wamidOf(doc),
+      mediaId: doc.mediaId,
+      status: 'running',
+      ocrMode: extractor,
+      jobId: accepted.job_id,
+      attempts,
     });
 
     logger.info(
       {
-        ...payload,
-        extractor,
-        fields: outcome.fields.length,
-        confidence: outcome.confidence,
-        needsReview: outcome.needsReview,
-        complete: outcome.completeness.complete,
+        waId,
+        docType,
+        uploadId: uploadId.toHexString(),
+        jobId: accepted.job_id,
+        duplicate: accepted.duplicate === true,
       },
-      'ocr complete',
+      'ocr job submitted',
     );
   } catch (err) {
-    logger.error({ err, ...payload }, 'ocr failed');
+    if (err instanceof JobQueueFullError) {
+      // Admission control, not a document problem. The upload stays queued and
+      // the attempt is deliberately NOT counted — the spec is explicit that
+      // queue-full is backpressure and never document loss, so a busy hour must
+      // not exhaust an upload's attempts and turn it into a review task.
+      const wait = (err as JobQueueFullError).retryAfterMs ?? config.VERIS_OCR_POLL_MAX_MS;
+      await updateUpload(waId, docType, uploadId, {
+        'ocr.status': 'queued',
+        'ocr.nextPollAt': new Date(Date.now() + wait),
+        'ocr.claimedAt': undefined,
+      });
+      await recordOcrJob({
+        wamid: wamidOf(doc),
+        mediaId: doc.mediaId,
+        status: 'submitting',
+        ocrMode: extractor,
+        nextAttemptAt: new Date(Date.now() + wait),
+      });
+      logger.warn({ waId, docType, waitMs: wait }, 'veris queue full; submission deferred');
+      return;
+    }
+
+    // A submission that did not land. Worth another go with the *same*
+    // idempotency key, so a request that actually succeeded before the response
+    // was lost cannot produce a second job.
+    const message = err instanceof Error ? err.message : String(err);
+
+    if (attempts >= config.INGESTION_MAX_ATTEMPTS) {
+      logger.error({ waId, docType, attempts, err }, 'ocr submission exhausted its attempts');
+      await applyFailedExtraction({
+        waId,
+        docType,
+        uploadId,
+        candidateId,
+        error: `submission failed after ${attempts} attempts: ${message}`,
+      });
+      return;
+    }
+
+    const wait = Math.min(
+      config.VERIS_OCR_POLL_MIN_MS * 2 ** (attempts - 1),
+      config.VERIS_OCR_POLL_MAX_MS,
+    );
     await updateUpload(waId, docType, uploadId, {
-      'ocr.status': 'failed',
-      'ocr.finishedAt': new Date(),
-      'ocr.error': err instanceof Error ? err.message : String(err),
-      'ocr.needsReview': true,
+      'ocr.status': 'queued',
+      'ocr.attempts': attempts,
+      'ocr.error': message,
+      'ocr.nextPollAt': new Date(Date.now() + wait),
+      'ocr.claimedAt': undefined,
+    });
+    await recordOcrJob({
+      wamid: wamidOf(doc),
+      mediaId: doc.mediaId,
+      status: 'submitting',
+      ocrMode: extractor,
+      attempts,
+      error: message,
+      nextAttemptAt: new Date(Date.now() + wait),
+    });
+    logger.warn({ waId, docType, attempts, err }, 'ocr submission failed; will try again');
+  }
+}
+
+/**
+ * Asks Veris what became of one job, and acts on the answer.
+ *
+ * Four states and only four. `queued` and `running` reschedule; `succeeded`
+ * normalises and releases the conversation; `failed` goes to the retry question,
+ * which is the one piece of this contract Veris has not confirmed.
+ */
+async function pollExtraction(params: {
+  waId: string;
+  docType: string;
+  uploadId: ObjectId;
+  candidateId: ObjectId;
+  extractor: Extractor;
+  doc: DocumentUpload;
+}): Promise<void> {
+  const { waId, docType, uploadId, candidateId, extractor, doc } = params;
+  const ocr = doc.ocr;
+
+  if (!ocr?.statusUrl) {
+    // Marked running with nowhere to ask. Nothing can recover this but a
+    // resubmission, so it goes back to queued rather than sitting forever.
+    logger.warn({ waId, docType }, 'running extraction has no status url; requeued');
+    await updateUpload(waId, docType, uploadId, {
+      'ocr.status': 'queued',
+      'ocr.claimedAt': undefined,
+    });
+    return;
+  }
+
+  const { job, retryAfterMs } = await pollOcrJob(ocr.statusUrl);
+
+  const common = { waId, docType, uploadId: uploadId.toHexString(), jobId: job.job_id };
+
+  if (job.status === 'queued' || job.status === 'running') {
+    // Still working. The service's own schedule is preferred over ours.
+    const delay = nextPollDelayMs({ job, retryAfterMs, previousDelayMs: 0 });
+
+    if (hasOutlivedItsDeadline(ocr, job)) {
+      logger.error({ ...common, attempts: job.attempts }, 'ocr job exceeded its deadline');
+      await applyFailedExtraction({
+        waId,
+        docType,
+        uploadId,
+        candidateId,
+        error: 'extraction did not finish within the job deadline',
+      });
+      return;
+    }
+
+    await updateUpload(waId, docType, uploadId, {
+      'ocr.attempts': job.attempts,
+      'ocr.maxAttempts': job.max_attempts,
+      'ocr.nextPollAt': new Date(Date.now() + delay),
+      'ocr.claimedAt': undefined,
+    });
+    logger.debug({ ...common, status: job.status, nextPollMs: delay }, 'ocr job still working');
+    return;
+  }
+
+  if (job.status === 'succeeded') {
+    if (job.result === undefined || job.result === null) {
+      logger.error(common, 'ocr job succeeded with no result payload');
+      await applyFailedExtraction({
+        waId,
+        docType,
+        uploadId,
+        candidateId,
+        error: 'extraction succeeded but returned no result',
+      });
+      return;
+    }
+
+    let outcome: OcrOutcome;
+    try {
+      // The same normalisers the synchronous path uses, on the same payload
+      // shape. `result` carries exactly what `/v1/{mode}/extract` returned.
+      outcome = NORMALISERS[extractor](job.result, docType, ocr.inspection);
+    } catch (err) {
+      logger.error({ ...common, err }, 'ocr result could not be normalised');
+      await applyFailedExtraction({
+        waId,
+        docType,
+        uploadId,
+        candidateId,
+        error: `extraction result was malformed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+
+    await recordOcrJob({
+      wamid: wamidOf(doc),
+      mediaId: doc.mediaId,
+      status: 'succeeded',
+      ocrMode: extractor,
+      jobId: job.job_id,
+      attempts: job.attempts,
     });
 
-    // The file is on disk; what failed is our reading of it. A failed extraction
-    // is a review task, not a reason to make the candidate photograph their
-    // passport again — so the upload is acknowledged and staff pick it up.
-    await withCandidateLock(waId, async () => {
-      await markSlotFromOcr(candidateId, docType, 'ocr_failed');
-      await resumeAfterDocument(
-        candidateId,
-        docType,
-        { complete: true, verdict: 'ok', problems: ['extraction failed; needs a manual check'] },
-        uploadId,
-      );
+    await applySuccessfulExtraction({
+      waId,
+      docType,
+      uploadId,
+      candidateId,
+      extractor,
+      doc,
+      outcome,
+      startedAt: ocr.startedAt,
     });
+    return;
+  }
+
+  /* job.status === 'failed' */
+  if (shouldRetryFailedJob(job)) {
+    try {
+      const accepted = await retryFailedJob(job.job_id);
+      // The retry may issue a different job id, so whatever came back is stored
+      // rather than assuming the old one still applies.
+      await updateUpload(waId, docType, uploadId, {
+        'ocr.jobId': accepted.job_id,
+        'ocr.statusUrl': accepted.status_url,
+        'ocr.status': 'running',
+        'ocr.nextPollAt': new Date(Date.now() + config.VERIS_OCR_POLL_MIN_MS),
+        'ocr.claimedAt': undefined,
+      });
+      await recordOcrJob({
+        wamid: wamidOf(doc),
+        mediaId: doc.mediaId,
+        status: 'running',
+        ocrMode: extractor,
+        jobId: accepted.job_id,
+      });
+      logger.info({ ...common, newJobId: accepted.job_id }, 'ocr job retried');
+      return;
+    } catch (err) {
+      logger.warn({ ...common, err }, 'ocr retry was refused; treating as terminal');
+    }
+  }
+
+  logger.error(
+    { ...common, code: job.error?.code, retryable: job.error?.retryable },
+    'ocr job failed',
+  );
+  await recordOcrJob({
+    wamid: wamidOf(doc),
+    mediaId: doc.mediaId,
+    status: 'review',
+    ocrMode: extractor,
+    jobId: job.job_id,
+    attempts: job.attempts,
+    error: job.error?.code,
+  });
+  await applyFailedExtraction({
+    waId,
+    docType,
+    uploadId,
+    candidateId,
+    error: job.error ? `${job.error.code}: ${job.error.message}` : 'extraction failed',
+  });
+}
+
+/**
+ * Whether an unfinished job has been unfinished for too long.
+ *
+ * Not a plain wall-clock deadline. Veris runs its own retries and says so, and
+ * a job inside that budget with a scheduled next attempt is working rather than
+ * stuck — abandoning it would discard an extraction about to arrive. The
+ * deadline only bites once the service has stopped saying it will try again,
+ * which is the only case where nothing else will ever release the candidate.
+ */
+function hasOutlivedItsDeadline(ocr: UploadOcr, job: JobResponse, now = new Date()): boolean {
+  if (serviceStillWorking(job, now)) return false;
+  const since = ocr.submittedAt ?? ocr.startedAt;
+  if (!since) return false;
+  return now.getTime() - since.getTime() > config.VERIS_OCR_JOB_TIMEOUT_MS;
+}
+
+/**
+ * One pass over every extraction that is not finished.
+ *
+ * Submits what is queued, polls what is running, and acts on what has become
+ * terminal. Each upload is claimed first, so two ticks — or two processes —
+ * cannot both drive the same extraction and answer the candidate twice.
+ *
+ * Work runs at the OCR pool's own concurrency, because that is the number that
+ * was chosen to describe how much extraction traffic this instance should have
+ * in flight, and it means the sweep does not need a second one.
+ */
+export async function sweepRunningExtractions(): Promise<void> {
+  if (!config.VERIS_OCR_ASYNC) return;
+
+  const due = await dueExtractions({ staleClaimMs: config.OCR_CLAIM_STALE_MS });
+  if (!due.length) return;
+
+  const width = Math.max(1, config.QUEUE_CONCURRENCY_OCR);
+
+  for (let i = 0; i < due.length; i += width) {
+    await Promise.all(due.slice(i, i + width).map((item) => driveExtraction(item)));
+  }
+}
+
+/** One claimed extraction, moved along by exactly one worker. */
+async function driveExtraction(item: DueExtraction): Promise<void> {
+  const claimed = await claimExtraction({
+    waId: item.waId,
+    docType: item.docType,
+    uploadId: item.uploadId,
+    staleClaimMs: config.OCR_CLAIM_STALE_MS,
+  });
+  // Someone else has it. Not an error, and the whole point of the claim.
+  if (!claimed) return;
+
+  let released = false;
+
+  try {
+    const doc = await findUpload(item.waId, item.docType, item.uploadId);
+    if (!doc) return;
+
+    const record = await documentsFor(item.waId, item.docType);
+    const candidateId = record?.candidateId;
+    if (!candidateId) {
+      logger.warn({ waId: item.waId, docType: item.docType }, 'extraction for an upload with no candidate');
+      return;
+    }
+
+    const extractor = requirementFor(item.docType)?.ocr;
+    if (!extractor || extractor === 'none') return;
+
+    const shared = {
+      waId: item.waId,
+      docType: item.docType,
+      uploadId: item.uploadId,
+      candidateId,
+      extractor,
+      doc,
+    };
+
+    // Both of these clear the claim themselves when they reach a terminal state
+    // or reschedule, so releasing again below would be wrong.
+    released = true;
+    if (doc.ocr?.status === 'queued') await submitExtraction(shared);
+    else await pollExtraction(shared);
+  } catch (err) {
+    logger.error(
+      { err, waId: item.waId, docType: item.docType, uploadId: item.uploadId.toHexString() },
+      'extraction sweep failed for one upload',
+    );
+    released = false;
+  } finally {
+    // Anything that did not reach a decision gives the claim back, so the next
+    // tick can try rather than waiting for the claim to go stale.
+    if (!released) {
+      await releaseExtraction(item.waId, item.docType, item.uploadId).catch(() => undefined);
+    }
   }
 }

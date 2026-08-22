@@ -41,7 +41,7 @@ const { ensureIndexes, turnsFor, uploadsFor, candidates, b2bEnquiries, b2bDocume
 const { ensureStorageRoot } = await import('./storage/index.js');
 const { queue, withCandidateLock } = await import('./queue/index.js');
 const { handleInboundMessage } = await import('./conversation/engine.js');
-const { processOcrJob } = await import('./ocr/veris.js');
+const { processOcrJob, sweepRunningExtractions } = await import('./ocr/veris.js');
 const { buildServer } = await import('./server.js');
 const { validateCopy } = await import('./conversation/validate.js');
 const { stepById } = await import('./conversation/flow.js');
@@ -120,6 +120,19 @@ await ensureStorageRoot();
 queue.register('inbound_message', (p) => withCandidateLock(p.waId, () => handleInboundMessage(p)), 4);
 queue.register('ocr', processOcrJob, 2);
 await queue.start();
+
+// The extraction sweep, as `index.ts` registers it.
+//
+// Only does anything when VERIS_OCR_ASYNC is on, and without it the async path
+// would submit a job and then wait forever — a gated upload is released by the
+// OCR path alone. Running it here is what lets the harness exercise both sides
+// of the flag rather than only the one that needs no sweep.
+const ocrSweep = setInterval(() => {
+  void sweepRunningExtractions().catch((err) =>
+    console.log(red(`  ocr sweep failed: ${err instanceof Error ? err.message : String(err)}`)),
+  );
+}, config.OCR_SWEEP_INTERVAL_MS);
+ocrSweep.unref();
 
 const app = await buildServer();
 await app.listen({ port: 0, host: '127.0.0.1' });
