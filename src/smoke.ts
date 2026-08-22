@@ -71,7 +71,9 @@ import {
   normaliseDate,
   normaliseEducation,
   normaliseMonthYear,
+  expiryFromPassport,
   parseDaysAway,
+  parseMrzDate,
   parseYears,
   profileFromIdentityDocument,
   splitAddress,
@@ -842,6 +844,121 @@ await check('a passport expiring inside a year is flagged (§12)', () => {
 
   // No date is not the same as "not expiring soon", and must not read as one.
   assert.equal(passportExpiryFlag({}), undefined);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\nMRZ dates (§12, §14)');
+
+await check('an MRZ date is read in both forms the extractor sends', () => {
+  // What the Jobs API actually returns: OpenAPI `MRZData` declares every date
+  // `format: date`. This is the form that used to fall through to undefined.
+  const iso = parseMrzDate('2031-05-11');
+  assert.equal(iso?.toISOString().slice(0, 10), '2031-05-11');
+
+  // The ICAO band form, still read for anything parsed off a raw MRZ.
+  const legacy = parseMrzDate('310511');
+  assert.equal(legacy?.toISOString().slice(0, 10), '2031-05-11');
+
+  // Both forms of the same date must agree, or the two paths disagree about
+  // whether a passport is in date.
+  assert.equal(iso?.getTime(), legacy?.getTime());
+
+  assert.equal(parseMrzDate('  2031-05-11  ')?.getTime(), iso?.getTime());
+});
+
+await check('the two-digit century pivot survives', () => {
+  assert.equal(parseMrzDate('710101')?.getUTCFullYear(), 1971);
+  assert.equal(parseMrzDate('700101')?.getUTCFullYear(), 2070);
+  assert.equal(parseMrzDate('000101')?.getUTCFullYear(), 2000);
+});
+
+await check('a first-of-the-month expiry does not slip back a month', () => {
+  // The date is built in UTC and read back through getUTC* by
+  // `expiryFromPassport`. Built locally, midnight on the 1st in IST is the
+  // previous month in UTC, and a May passport is filed as April.
+  assert.equal(parseMrzDate('310501')?.getUTCMonth(), 4);
+  assert.equal(parseMrzDate('2031-05-01')?.getUTCMonth(), 4);
+
+  const field = (value: string) => [{ key: 'expiry_date', value, confidence: 0.9 }];
+  assert.equal(expiryFromPassport(field('310501')), '05/2031');
+  assert.equal(expiryFromPassport(field('2031-05-01')), '05/2031');
+  assert.equal(expiryFromPassport(field('2031-05-11')), '05/2031');
+});
+
+await check('a malformed MRZ date is no date, not a guess', () => {
+  for (const bad of [
+    '',
+    '   ',
+    '31051',
+    '3105111',
+    '2031-5-11',
+    '2031/05/11',
+    '20310511',
+    'abcdef',
+    '31-05-11',
+  ]) {
+    assert.equal(parseMrzDate(bad), undefined, `${JSON.stringify(bad)} should not parse`);
+  }
+});
+
+await check('an impossible calendar date is rejected, not rolled over', () => {
+  // `Date` turns month 13 into January and 30 February into 2 March. A date
+  // quietly shifted into the wrong month is worse than none at all.
+  for (const bad of ['2031-02-30', '2031-13-01', '2031-00-01', '2031-01-32', '2031-01-00',
+                     '310230', '311301', '310001', '310132', '310500']) {
+    assert.equal(parseMrzDate(bad), undefined, `${bad} should not parse`);
+  }
+
+  // A real leap day still reads.
+  assert.equal(parseMrzDate('2032-02-29')?.getUTCDate(), 29);
+  assert.equal(parseMrzDate('320229')?.getUTCDate(), 29);
+});
+
+await check('an expired ISO passport is reported as expired (§14)', () => {
+  const outcome = normaliseExtractionForTests('passport', {
+    confidence: 0.94,
+    mrz_source: 'mrz',
+    mrz: {
+      passport_number: 'Z1234567',
+      date_of_birth: '1994-03-14',
+      expiry_date: '2020-05-11',
+      all_check_digits_valid: true,
+    },
+    fields: [],
+    pages: [{ page_number: 1, average_confidence: 0.94 }],
+    warnings: [],
+  });
+
+  // This is the bug: the ISO date parsed to undefined, the guard never fired,
+  // and an out-of-date passport was filed as complete.
+  assert.equal(outcome.completeness.complete, false);
+  assert.ok(
+    outcome.completeness.problems.some((p) => /expired/i.test(p)),
+    `expected an expiry problem, got ${JSON.stringify(outcome.completeness.problems)}`,
+  );
+});
+
+await check('a passport still in date raises no expiry problem (§14)', () => {
+  const outcome = normaliseExtractionForTests('passport', {
+    confidence: 0.94,
+    mrz_source: 'mrz',
+    mrz: {
+      passport_number: 'Z1234567',
+      date_of_birth: '1994-03-14',
+      expiry_date: '2031-05-11',
+      all_check_digits_valid: true,
+    },
+    fields: [],
+    pages: [{ page_number: 1, average_confidence: 0.94 }],
+    warnings: [],
+  });
+
+  assert.equal(outcome.completeness.complete, true);
+  assert.equal(
+    outcome.completeness.problems.some((p) => /expired/i.test(p)),
+    false,
+  );
 });
 
 /* ------------------------------------------------------------------ */

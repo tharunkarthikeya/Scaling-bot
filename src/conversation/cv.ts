@@ -670,23 +670,53 @@ export function identityKind(docType: string): string {
   return requirementFor(docType)?.identityAs ?? docType;
 }
 
-/** YYMMDD, as written in the machine-readable zone. */
+/**
+ * An MRZ date, in either form the extractor hands one back.
+ *
+ * The Jobs API returns every `MRZData` date as ISO `YYYY-MM-DD` (the OpenAPI
+ * schema declares them `format: date`); a raw MRZ band carries the ICAO
+ * `YYMMDD` form. Both are read here, because both reach this function.
+ *
+ * The result is always built in UTC: every caller reads it back through
+ * `getUTCMonth()`/`getUTCFullYear()`, and a local-time date read through UTC
+ * getters reports the previous month for a first-of-the-month date anywhere
+ * east of Greenwich.
+ */
 export function parseMrzDate(value: string): Date | undefined {
-  const match = /^(\d{2})(\d{2})(\d{2})$/.exec(value.trim());
-  if (!match) return undefined;
+  const trimmed = value.trim();
 
-  const year = Number(match[1]);
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (iso) return utcDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+
+  const mrz = /^(\d{2})(\d{2})(\d{2})$/.exec(trimmed);
+  if (!mrz) return undefined;
+
+  const year = Number(mrz[1]);
   // A two-digit year on an expiry date is always in the future or recent past.
   const fullYear = year > 70 ? 1900 + year : 2000 + year;
-  const date = new Date(fullYear, Number(match[2]) - 1, Number(match[3]));
-  return Number.isNaN(date.getTime()) ? undefined : date;
+  return utcDate(fullYear, Number(mrz[2]), Number(mrz[3]));
+}
+
+/**
+ * A UTC date that refuses what `Date` would otherwise roll over. Month 13 and
+ * 30 February are misreads of the band, not January and 2 March, and a date
+ * silently shifted into the wrong month is worse than no date at all.
+ */
+function utcDate(year: number, month: number, day: number): Date | undefined {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+    ? date
+    : undefined;
 }
 
 /**
  * The expiry date, as MM/YYYY, from whichever field carried it.
  *
- * The MRZ gives `expiry_date` as YYMMDD; the printed page gives a written date
- * under one of several names. §12 no longer asks the candidate for this — they
+ * The MRZ gives `expiry_date` as an ISO date (or YYMMDD off a raw band); the
+ * printed page gives a written date under one of several names. §12 no longer asks the candidate for this — they
  * send the passport instead — so this is the only thing that fills it.
  */
 export function expiryFromPassport(fields: OcrField[]): string | undefined {

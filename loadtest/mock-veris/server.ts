@@ -82,8 +82,12 @@ const passportPayload = () => ({
     surname: 'KUMARI',
     given_name: 'ASHA',
     nationality: 'IND',
-    date_of_birth: '940314',
-    expiry_date: '310511',
+    // ISO `YYYY-MM-DD`, as the real Jobs API returns MRZ dates (OpenAPI
+    // `MRZData`: `format: date`). The ICAO YYMMDD form here used to hide the
+    // fact that `parseMrzDate` could not read what Veris actually sends.
+    date_of_birth: '1994-03-14',
+    date_of_issue: '2021-05-12',
+    expiry_date: '2031-05-11',
     sex: 'F',
     all_check_digits_valid: true,
   },
