@@ -20,6 +20,7 @@
 
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -410,8 +411,19 @@ depthTimer.unref();
  * `sweepRunningExtractions` returns immediately when the flag is off, so this
  * costs a `LOADTEST_SYNC_OCR=true` run nothing.
  */
+let ocrSweepErrors = 0;
+let lastOcrSweepError = '';
+
 const ocrSweepTimer = setInterval(() => {
-  void sweepRunningExtractions().catch(() => undefined);
+  void sweepRunningExtractions().catch((err) => {
+    // Counted and surfaced, never swallowed. A sweep that throws every tick
+    // leaves extractions in `running` for ever while the queue still looks
+    // healthy — the slot was handed back at submission — so a silent catch
+    // here turns a stalled document path into a clean-looking run.
+    ocrSweepErrors += 1;
+    lastOcrSweepError = err instanceof Error ? err.message : String(err);
+    if (ocrSweepErrors <= 3) console.error('  ocr sweep failed:', lastOcrSweepError);
+  });
 }, config.OCR_SWEEP_INTERVAL_MS);
 ocrSweepTimer.unref();
 
@@ -559,7 +571,12 @@ function snapshot() {
       heapUsed: summarise(heap),
     },
     cpuPercentOfOneCore: summarise(cpu),
-    cores: 4,
+    // Read from the machine, not assumed. This was hardcoded to 4, so on a
+    // 16-core box every run understated the CPU ceiling by a factor of four —
+    // 97% of one core reads as a quarter of capacity against 400 and as a
+    // sixteenth against 1600, and a capacity test is exactly where that
+    // difference changes the conclusion.
+    cores: os.availableParallelism?.() ?? os.cpus().length,
     mongoErrors: mongoErrorCount,
     outboundMessages: outbound.length,
     mongoLatency: pendingMongoLatency,
@@ -754,6 +771,29 @@ const control = http.createServer(async (req, res) => {
       candidates().countDocuments({ stage: 'REGISTRATION_COMPLETED' as never }),
     ]);
     return reply(res, 200, { candidates: candidateCount, registered, mongoErrors: mongoErrorCount });
+  }
+
+  // What the sweep can still see, and what it has fallen over on. An extraction
+  // left in `queued`/`running` is only a problem if it is also *due* — one that
+  // is merely waiting out its poll delay is working as intended, and the two
+  // are indistinguishable from a status count alone.
+  if (url.pathname === '/ocr-stuck') {
+    const { dueExtractions } = await import('../../src/db/models.js');
+    const due = await dueExtractions({ staleClaimMs: config.OCR_CLAIM_STALE_MS });
+    return reply(res, 200, {
+      sweepErrors: ocrSweepErrors,
+      lastSweepError: lastOcrSweepError,
+      dueNow: due.length,
+      due: due.slice(0, 10).map((d) => ({
+        docType: d.docType,
+        status: d.ocr.status,
+        jobId: d.ocr.jobId ?? null,
+        attempts: d.ocr.attempts ?? null,
+        nextPollAt: d.ocr.nextPollAt ?? null,
+        claimedAt: d.ocr.claimedAt ?? null,
+        submittedAt: d.ocr.submittedAt ?? null,
+      })),
+    });
   }
 
   if (url.pathname === '/transcript') {

@@ -27,7 +27,7 @@ const guard = installFetchGuard({ onOutbound: () => undefined });
 
 const { config } = await import('../../src/config.js');
 const jobs = await import('../../src/ocr/jobs.js');
-const { SAMPLE_PASSPORT_PDF } = await import('../../src/testing/fixtures.js');
+const { REALISTIC_PASSPORT_PDF } = await import('../../src/testing/fixtures.js');
 const { normaliseExtractionForTests } = await import('../../src/ocr/veris.js');
 
 /* ------------------------------------------------------------------ */
@@ -75,7 +75,16 @@ function dateFormatOf(v: unknown): string {
 /* Preflight                                                           */
 /* ------------------------------------------------------------------ */
 
-const fixture = SAMPLE_PASSPORT_PDF();
+/**
+ * The whole booklet, not the photo page alone.
+ *
+ * `SAMPLE_PASSPORT_PDF` is one page, which §14 correctly calls incomplete, so
+ * `keepExtraction` discards its values however well it scanned — a live run
+ * against it can never show an extraction actually being kept. This fixture has
+ * the pages and valid ICAO check digits, so the only thing left for the service
+ * to decide is confidence.
+ */
+const fixture = REALISTIC_PASSPORT_PDF();
 
 line(`
 PREFLIGHT
@@ -96,10 +105,21 @@ let firstJobId = '';
 
 line('=== phase 1: POST /v1/jobs ===');
 
+/**
+ * A key this probe has never spent before.
+ *
+ * The previous value was a constant, and it has already been used against
+ * production. Reusing it returns `duplicate: true` and replays the *old* job —
+ * the single-page fixture's 0.40 result — so the new document would never be
+ * extracted and the run would report a stale answer as a fresh one. Set
+ * `PROBE_RUN_ID` to repeat one specific run deliberately.
+ */
+const RUN_ID = process.env.PROBE_RUN_ID ?? String(Date.now());
+
 const KEY = jobs.ocrIdempotencyKey({
   phoneNumberId: 'probe',
-  wamid: 'wamid.probe.contract.0001',
-  mediaId: 'media.probe.0001',
+  wamid: `wamid.probe.contract.${RUN_ID}`,
+  mediaId: `media.probe.${RUN_ID}`,
   extractor: 'passport',
 });
 line(`  idempotency key: ${KEY.split('/').length} segments, extractor segment present: ${KEY.endsWith('/passport')}`);
