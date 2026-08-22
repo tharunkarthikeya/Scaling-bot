@@ -74,29 +74,71 @@ function latencyFor(n: number): number {
 /* Payloads, shaped for the normalisers in ocr/veris.ts                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Shaped from a real production response, observed via
+ * `loadtest/tools/live-jobs-probe.ts` rather than assumed.
+ *
+ * Two things here were wrong before and both hid real behaviour:
+ *
+ *   - extracted fields are keyed `label`, not `key`. `fromExtractedFields`
+ *     reads `f.label`, so every field this mock produced normalised to the key
+ *     "unknown" — a load test could not have noticed a field mapping break.
+ *   - MRZ dates are ISO `YYYY-MM-DD` (OpenAPI `MRZData`: `format: date`), and
+ *     the given-name key is `given_names`, not `given_name`.
+ */
 const passportPayload = () => ({
+  request_id: 'req_mock_passport',
   confidence: 0.94,
   mrz_source: 'mrz',
+  raw_mrz:
+    'P<INDKUMARI<<ASHA<<<<<<<<<<<<<<<<<<<<<<<<<<<' +
+    String.fromCharCode(10) +
+    'Z1234567<1IND9403143F3105113<<<<<<<<<<<<<<04',
   mrz: {
-    passport_number: 'Z1234567',
+    document_type: 'P',
+    issuing_country: 'IND',
     surname: 'KUMARI',
-    given_name: 'ASHA',
+    given_names: 'ASHA',
+    passport_number: 'Z1234567',
     nationality: 'IND',
-    // ISO `YYYY-MM-DD`, as the real Jobs API returns MRZ dates (OpenAPI
-    // `MRZData`: `format: date`). The ICAO YYMMDD form here used to hide the
-    // fact that `parseMrzDate` could not read what Veris actually sends.
     date_of_birth: '1994-03-14',
-    date_of_issue: '2021-05-12',
-    expiry_date: '2031-05-11',
     sex: 'F',
+    expiry_date: '2031-05-11',
+    date_of_issue: '2021-05-12',
+    personal_number: null,
     all_check_digits_valid: true,
+    individual_check_digits: {
+      passport_number: true,
+      date_of_birth: true,
+      expiry_date: true,
+      personal_number: true,
+      composite: true,
+    },
   },
-  fields: [
-    { key: 'place_of_birth', value: 'TIRUCHIRAPPALLI', confidence: 0.93 },
-    { key: 'place_of_issue', value: 'MADURAI', confidence: 0.92 },
-  ],
-  pages: [{ page_number: 1, average_confidence: 0.94 }],
+  processing_time_ms: 1840,
   warnings: [],
+  fields: [
+    { label: 'passport_number', value: 'Z1234567', category: 'passport', page: 1, source: 'printed_page', confidence: 0.95 },
+    { label: 'surname', value: 'KUMARI', category: 'passport', page: 1, source: 'printed_page', confidence: 0.94 },
+    { label: 'given_names', value: 'ASHA', category: 'passport', page: 1, source: 'printed_page', confidence: 0.94 },
+    { label: 'date_of_birth', value: '14/03/1994', category: 'passport', page: 1, source: 'printed_page', confidence: 0.93 },
+    { label: 'date_of_issue', value: '12/05/2021', category: 'passport', page: 1, source: 'printed_page', confidence: 0.92 },
+    { label: 'date_of_expiry', value: '11/05/2031', category: 'passport', page: 1, source: 'printed_page', confidence: 0.92 },
+    { label: 'place_of_birth', value: 'TIRUCHIRAPPALLI', category: 'passport', page: 1, source: 'printed_page', confidence: 0.93 },
+    { label: 'place_of_issue', value: 'MADURAI', category: 'passport', page: 1, source: 'printed_page', confidence: 0.92 },
+  ],
+  pages: [
+    {
+      page_number: 1,
+      text: 'REPUBLIC OF INDIA PASSPORT Type P Country Code IND Passport No. Z1234567 KUMARI ASHA',
+      html: '',
+      language: 'eng',
+      width: 992,
+      height: 1403,
+      average_confidence: 0.94,
+      processing_time_ms: 1620,
+    },
+  ],
 });
 
 const resumePayload = () => ({

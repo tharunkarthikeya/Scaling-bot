@@ -45,6 +45,62 @@ export function makeTextPdf(lines: string[]): Buffer {
 }
 
 /**
+ * The same, with one real page object per page.
+ *
+ * §14 wants the whole booklet, and `TUNABLES.passportMinPdfPages` is 2, so a
+ * single-page passport is reported incomplete however well it scanned. That
+ * verdict is correct and is not something a fixture should route around — the
+ * honest way to exercise the complete-booklet path is a file that genuinely
+ * has the pages, which is what this builds.
+ *
+ * `scanPageObjects` counts `/Type /Page` objects off the raw bytes rather than
+ * reading `/Count`, so the pages have to be real objects; a padded `/Count`
+ * would be a lie the counter is specifically written not to believe.
+ */
+export function makeMultiPageTextPdf(pages: string[][]): Buffer {
+  // 1 catalog, 2 page tree, 3 font, then a page object and a content stream per
+  // page — so page i is object 4 + 2i and its stream is 5 + 2i.
+  const pageObjNum = (i: number) => 4 + i * 2;
+
+  const objects: string[] = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${pages.map((_, i) => `${pageObjNum(i)} 0 R`).join(' ')}] ` +
+      `/Count ${pages.length} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+  ];
+
+  pages.forEach((lines, i) => {
+    const content =
+      'BT\n/F1 13 Tf\n1 0 0 1 56 780 Tm\n16 TL\n' +
+      lines.map((l) => `(${escapePdfText(l)}) Tj T*`).join('\n') +
+      '\nET\n';
+
+    objects.push(
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ' +
+        `/Resources << /Font << /F1 3 0 R >> >> /Contents ${pageObjNum(i) + 1} 0 R >>`,
+    );
+    objects.push(
+      `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`,
+    );
+  });
+
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [];
+
+  objects.forEach((body, i) => {
+    offsets.push(Buffer.byteLength(pdf, 'latin1'));
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+
+  const xrefOffset = Buffer.byteLength(pdf, 'latin1');
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += `${String(off).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+
+  return Buffer.from(pdf, 'latin1');
+}
+
+/**
  * A plausible candidate CV, with the fields the resume extractor looks for.
  *
  * `discriminator` puts one line of unique text in the file, and it exists
@@ -145,6 +201,68 @@ export const SAMPLE_PASSPORT_PDF = (): Buffer =>
     'Date of Issue: 12/05/2021    Date of Expiry: 11/05/2031',
     'Place of Issue: MADURAI',
     '',
+    // A valid TD3 band. Every check digit is computed with the ICAO 9303
+    // 7-3-1 weighting rather than typed by hand, because the previous digits
+    // did not validate and the live service said so: a real submission scored
+    // 0.40 with "MRZ check digits did not validate" as its first complaint,
+    // which put it under the 0.85 `keepExtraction` threshold and meant no
+    // extracted values were ever kept.
+    //   passport Z1234567< -> 1   dob 940314 -> 3   expiry 310511 -> 3
+    //   personal (filler)  -> 0   composite      -> 4
     'P<INDKUMARI<<ASHA<<<<<<<<<<<<<<<<<<<<<<<<<<<',
-    'Z1234567<4IND9403144F3105114<<<<<<<<<<<<<<02',
+    'Z1234567<1IND9403143F3105113<<<<<<<<<<<<<<04',
+  ]);
+
+/**
+ * The whole booklet, for the case the single-page fixture cannot reach.
+ *
+ * `SAMPLE_PASSPORT_PDF` is one page, which §14 correctly calls incomplete, so
+ * `keepExtraction` discards its values and no test using it can show an
+ * extraction actually being stored. This is the same fictional person with the
+ * pages §14 asks for, so the complete-booklet path is exercised on a document
+ * that genuinely satisfies it rather than on a relaxed rule.
+ *
+ * Confidence is the extractor's to decide and no fixture can assert it. What
+ * this fixture removes is every *other* reason the verdict came back
+ * incomplete: the MRZ check digits validate, and the pages are present.
+ */
+export const REALISTIC_PASSPORT_PDF = (): Buffer =>
+  makeMultiPageTextPdf([
+    [
+      'REPUBLIC OF INDIA',
+      'PASSPORT',
+      '',
+      'Type: P    Country Code: IND    Passport No.: Z1234567',
+      'Surname: KUMARI',
+      'Given Name: ASHA',
+      'Nationality: INDIAN',
+      'Date of Birth: 14/03/1994',
+      'Place of Birth: TIRUCHIRAPPALLI',
+      'Date of Issue: 12/05/2021    Date of Expiry: 11/05/2031',
+      'Place of Issue: MADURAI',
+      '',
+      'P<INDKUMARI<<ASHA<<<<<<<<<<<<<<<<<<<<<<<<<<<',
+      'Z1234567<1IND9403143F3105113<<<<<<<<<<<<<<04',
+    ],
+    [
+      'REPUBLIC OF INDIA',
+      '',
+      'Name of Father: RAMESH KUMAR',
+      'Name of Mother: LAKSHMI KUMARI',
+      'Name of Spouse: --',
+      'Address: 14 BHARATHI STREET',
+      '         TIRUCHIRAPPALLI, TAMIL NADU 620001',
+      '',
+      'Old Passport No. / Date of Issue: --',
+      'File No.: TN1234567890',
+    ],
+    [
+      'OBSERVATIONS',
+      '',
+      'ECR / ECNR: ECNR',
+      '',
+      'This passport contains 36 pages.',
+    ],
+    ['VISAS', '', '(no entries)'],
+    ['', '(this page intentionally blank)'],
   ]);

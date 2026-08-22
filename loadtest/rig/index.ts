@@ -166,6 +166,19 @@ if (process.env.LOADTEST_REAL_VERIS !== 'true') {
   process.env.VERIS_OCR_API_KEY = 'loadtest-not-a-real-key';
 }
 
+// The async Jobs API, which is the transport the deployed service actually
+// offers and the one this rig exists to measure.
+//
+// Set here rather than left to `.env` because the application default is
+// `false`: without this line the rig submits to the synchronous `/extract`
+// routes, every number it reports describes the old transport, and nothing in
+// the output says so. A sync run reported as an async one is the specific
+// failure this is written to prevent — see the assertion after `config` loads.
+//
+// `LOADTEST_SYNC_OCR=true` opts back out, for comparing the two transports
+// deliberately rather than by accident.
+process.env.VERIS_OCR_ASYNC = process.env.LOADTEST_SYNC_OCR === 'true' ? 'false' : 'true';
+
 // Pointed at a dead loopback port rather than deleted.
 //
 // Deleting was wrong and the rig proved it: `config.ts` loads dotenv, dotenv
@@ -286,11 +299,45 @@ const { ensureIndexes, candidates, turnsFor } = await import('../../src/db/model
 const { ensureStorageRoot } = await import('../../src/storage/index.js');
 const { queue, withCandidateLock } = await import('../../src/queue/index.js');
 const { handleInboundMessage } = await import('../../src/conversation/engine.js');
-const { processOcrJob } = await import('../../src/ocr/veris.js');
+const { processOcrJob, sweepRunningExtractions } = await import('../../src/ocr/veris.js');
 const { syncCandidateToCrm } = await import('../../src/crm/sync.js');
 const { buildServer } = await import('../../src/server.js');
 const { validateCopy } = await import('../../src/conversation/validate.js');
 const { modelStats, resetModelStatsForTests } = await import('../../src/conversation/model.js');
+
+/**
+ * The transport the run will actually measure, checked against what it claims.
+ *
+ * Read off the resolved `config`, not off `process.env`, because those are two
+ * different questions: the variable can be set and still not be what the
+ * application resolved — dotenv precedence, a coercion that fell back to the
+ * default, an import ordering that read the value before the rig wrote it. Only
+ * `config` says what the code under test will do.
+ *
+ * This is a hard stop rather than a warning. A sync run mistaken for an async
+ * one does not look wrong: the flow completes, the documents extract, the
+ * numbers are plausible, and the conclusion drawn from them — that the async
+ * Jobs API holds up under load — would be about code that never executed.
+ */
+if (process.env.LOADTEST_SYNC_OCR === 'true') {
+  console.log(
+    '\n  OCR transport: SYNCHRONOUS /extract routes (LOADTEST_SYNC_OCR=true).\n' +
+      '  This run does NOT exercise the async Jobs API.\n',
+  );
+} else if (config.VERIS_OCR_ASYNC !== true) {
+  console.error(
+    '\nRefusing to run: VERIS_OCR_ASYNC did not resolve to true.\n' +
+      `  process.env.VERIS_OCR_ASYNC = ${JSON.stringify(process.env.VERIS_OCR_ASYNC)}\n` +
+      `  config.VERIS_OCR_ASYNC      = ${JSON.stringify(config.VERIS_OCR_ASYNC)}\n\n` +
+      'The rig sets this before importing config, so a mismatch means the value\n' +
+      'was overridden or read too early. Running on would exercise the synchronous\n' +
+      'path and report it as an async load test.\n\n' +
+      'To test the sync transport on purpose, set LOADTEST_SYNC_OCR=true.\n',
+  );
+  process.exit(1);
+} else {
+  console.log('\n  OCR transport: ASYNC Jobs API (config.VERIS_OCR_ASYNC=true)\n');
+}
 
 validateCopy();
 
@@ -349,6 +396,24 @@ const depthTimer = setInterval(() => {
   modelSamples.push({ inFlight: m.inFlight, waiting: m.waiting });
 }, 50);
 depthTimer.unref();
+
+/**
+ * The extraction sweep, exactly as `src/index.ts` runs it in production.
+ *
+ * Required, not optional, once the async transport is on. `processOcrJob`
+ * submits the job and releases its queue slot; from there the upload is with
+ * Veris and only the sweep polls it, applies the result and releases the
+ * candidate. Without this the rig submits every document, nothing ever reaches
+ * a terminal state, and the run reports a document path that silently stalls —
+ * with the queue looking healthy, because the slot was handed back on time.
+ *
+ * `sweepRunningExtractions` returns immediately when the flag is off, so this
+ * costs a `LOADTEST_SYNC_OCR=true` run nothing.
+ */
+const ocrSweepTimer = setInterval(() => {
+  void sweepRunningExtractions().catch(() => undefined);
+}, config.OCR_SWEEP_INTERVAL_MS);
+ocrSweepTimer.unref();
 
 /**
  * Server-side operation latency, straight from mongod.
@@ -752,6 +817,7 @@ console.log(
 
 const shutdown = async () => {
   clearInterval(depthTimer);
+  clearInterval(ocrSweepTimer);
   lag.stop();
   proc.stop();
   try {

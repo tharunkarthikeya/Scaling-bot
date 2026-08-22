@@ -82,21 +82,49 @@ export function resetJobsMock(): void {
 /* ------------------------------------------------------------------ */
 
 const RESULTS: Record<string, () => unknown> = {
+  // Field-for-field what production returned to `live-jobs-probe.ts`: ten MRZ
+  // keys and eight printed-page fields, which normalise to the same eighteen
+  // the live service produced. A single field here was enough to prove the
+  // envelope was intact but not enough for a load test to notice a mapping
+  // break, because one field going missing looks much like one field.
   passport: () => ({
     request_id: 'req_mock',
     confidence: 0.94,
     mrz_source: 'mrz',
+    raw_mrz:
+      'P<INDKUMARI<<ASHA<<<<<<<<<<<<<<<<<<<<<<<<<<<\n' +
+      'Z1234567<1IND9403143F3105113<<<<<<<<<<<<<<04',
     mrz: {
-      passport_number: 'Z1234567',
+      document_type: 'P',
+      issuing_country: 'IND',
       surname: 'KUMARI',
       given_names: 'ASHA',
+      passport_number: 'Z1234567',
       nationality: 'IND',
       date_of_birth: '1994-03-14',
-      expiry_date: '2031-05-11',
       sex: 'F',
+      expiry_date: '2031-05-11',
+      date_of_issue: '2021-05-12',
+      personal_number: null,
       all_check_digits_valid: true,
+      individual_check_digits: {
+        passport_number: true,
+        date_of_birth: true,
+        expiry_date: true,
+        personal_number: true,
+        composite: true,
+      },
     },
-    fields: [{ label: 'place_of_issue', value: 'MADURAI', confidence: 0.92 }],
+    fields: [
+      { label: 'passport_number', value: 'Z1234567', category: 'passport', page: 1, source: 'printed_page', confidence: 0.95 },
+      { label: 'surname', value: 'KUMARI', category: 'passport', page: 1, source: 'printed_page', confidence: 0.94 },
+      { label: 'given_names', value: 'ASHA', category: 'passport', page: 1, source: 'printed_page', confidence: 0.94 },
+      { label: 'date_of_birth', value: '14/03/1994', category: 'passport', page: 1, source: 'printed_page', confidence: 0.93 },
+      { label: 'date_of_issue', value: '12/05/2021', category: 'passport', page: 1, source: 'printed_page', confidence: 0.92 },
+      { label: 'date_of_expiry', value: '11/05/2031', category: 'passport', page: 1, source: 'printed_page', confidence: 0.92 },
+      { label: 'place_of_birth', value: 'TIRUCHIRAPPALLI', category: 'passport', page: 1, source: 'printed_page', confidence: 0.93 },
+      { label: 'place_of_issue', value: 'MADURAI', category: 'passport', page: 1, source: 'printed_page', confidence: 0.92 },
+    ],
     pages: [{ page_number: 1, average_confidence: 0.94 }],
     warnings: [],
     processing_time_ms: 1200,
