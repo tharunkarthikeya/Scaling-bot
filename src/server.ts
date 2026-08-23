@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { config } from './config.js';
+import { config, instanceId } from './config.js';
 import { logger } from './logger.js';
 import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
@@ -43,7 +43,21 @@ function withoutRawOcr<T extends { ocr?: { raw?: unknown } }>(uploads: T[]): T[]
   );
 }
 
-export async function buildServer(): Promise<FastifyInstance> {
+export interface ServerOptions {
+  /**
+   * Serve the Meta webhook and the admin API.
+   *
+   * False on the `worker` and `scheduler` roles. They still listen, because a
+   * container with no socket cannot be health-checked and an orchestrator that
+   * cannot health-check a container cannot tell "starting" from "wedged" - but
+   * they serve `/health` and `/metrics` and nothing else. A process with no
+   * reason to expose candidate PII does not get routes that can.
+   */
+  webhook?: boolean;
+}
+
+export async function buildServer(options: ServerOptions = {}): Promise<FastifyInstance> {
+  const servesWebhook = options.webhook ?? true;
   const app = Fastify({ logger: false, bodyLimit: 5 * 1024 * 1024 });
 
   // Meta signs the raw bytes. Parse from a buffer and keep the original around —
@@ -61,7 +75,19 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
   );
 
-  app.get('/health', async () => ({ ok: true, shadowMode: config.SHADOW_MODE }));
+  app.get('/health', async () => ({
+    ok: true,
+    role: config.ROLE,
+    instance: instanceId,
+    shadowMode: config.SHADOW_MODE,
+  }));
+
+  // Everything below is the webhook and the admin API. A role that serves
+  // neither stops here with a live socket and nothing else on it.
+  if (!servesWebhook) {
+    logger.info({ role: config.ROLE }, 'ops-only server: /health and /metrics only');
+    return app;
+  }
 
   /** Meta's subscription handshake. Echoes the challenge if our token matches. */
   app.get('/webhook', async (req, res) => {

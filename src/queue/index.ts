@@ -27,6 +27,38 @@ export interface JobQueue {
   register<K extends JobName>(name: K, handler: JobHandler<K>, concurrency?: number): void;
   start(): Promise<void>;
   close(): Promise<void>;
+
+  /**
+   * How far behind each queue is, whichever implementation is running.
+   *
+   * `waiting` is the number to watch under load: flat is keeping up, rising is
+   * not, whatever the latency averages say. Both backends answer this, so
+   * `/metrics` never has to know which one it got.
+   */
+  depth(): Promise<Record<string, QueueDepth>>;
+
+  /**
+   * Report this job name in `depth()` even though this process does not consume
+   * it.
+   *
+   * A `web` instance registers no workers but is the one being scraped, so
+   * without this its metrics would claim every queue is empty — which is the
+   * most misleading thing a queue metric can say.
+   */
+  observe(name: JobName): void;
+}
+
+export interface QueueDepth {
+  /** Accepted, not yet started. */
+  waiting: number;
+  /** Started, not yet finished. */
+  active: number;
+  /** Exhausted their retries. Redis only; the in-process queue does not retry. */
+  failed: number;
+  /** Waiting out a retry backoff. Redis only. */
+  delayed: number;
+  /** What this process is willing to run at once, when it consumes this queue. */
+  concurrency: number;
 }
 
 /**
@@ -55,6 +87,8 @@ class RedisQueue implements JobQueue {
   private readonly workers: Worker[] = [];
   private readonly pending: Array<{ name: JobName; handler: JobHandler<any>; concurrency: number }> =
     [];
+  /** What this process runs each queue at. Zero when it only observes. */
+  private readonly concurrencyFor = new Map<JobName, number>();
 
   /**
    * BullMQ gets its own connection, and it must be an unbounded one.
@@ -80,17 +114,22 @@ class RedisQueue implements JobQueue {
   }
 
   /**
-   * Depth and in-flight count per job name, read from Redis.
+   * Depth per job name, read from Redis, so it is the depth of the whole fleet
+   * rather than of this process.
    *
-   * The counterpart of `InProcessQueue.stats()`, and the reason both exist: the
-   * metrics endpoint asks the queue how far behind it is without caring which
-   * implementation answered. `waiting` is the number that matters under load -
-   * flat is keeping up, rising is not, whatever the latency averages say.
+   * That distinction is the entire reason to scrape it: one worker reporting an
+   * empty local pool while eight thousand jobs wait in Redis is exactly the
+   * picture a per-process metric would paint.
    */
-  async counts(): Promise<Record<string, { waiting: number; active: number; failed: number; delayed: number }>> {
+  async depth(): Promise<Record<string, QueueDepth>> {
     const entries = await Promise.all(
       [...this.queues.keys()].map(async (name) => {
-        const counts = await this.queueFor(name).getJobCounts('waiting', 'active', 'failed', 'delayed');
+        const counts = await this.queueFor(name).getJobCounts(
+          'waiting',
+          'active',
+          'failed',
+          'delayed',
+        );
         return [
           name,
           {
@@ -98,6 +137,7 @@ class RedisQueue implements JobQueue {
             active: counts.active ?? 0,
             failed: counts.failed ?? 0,
             delayed: counts.delayed ?? 0,
+            concurrency: this.concurrencyFor.get(name) ?? 0,
           },
         ] as const;
       }),
@@ -105,8 +145,7 @@ class RedisQueue implements JobQueue {
     return Object.fromEntries(entries);
   }
 
-  /** Ensures a queue object exists for a job name, so `counts()` reports it. */
-  track(name: JobName): void {
+  observe(name: JobName): void {
     this.queueFor(name);
   }
 
@@ -116,6 +155,8 @@ class RedisQueue implements JobQueue {
 
   register<K extends JobName>(name: K, handler: JobHandler<K>, concurrency = 4): void {
     this.pending.push({ name, handler, concurrency });
+    this.concurrencyFor.set(name, concurrency);
+    this.queueFor(name);
   }
 
   async start(): Promise<void> {
@@ -313,6 +354,32 @@ export class InProcessQueue implements JobQueue {
       ]),
     );
   }
+
+  /**
+   * The same shape the Redis queue reports, so `/metrics` is implementation-
+   * blind.
+   *
+   * `failed` and `delayed` are always zero and that is not a gap in the
+   * reporting: this queue has no retries and no backoff, which is the honest
+   * answer and the reason it is not the production backend.
+   */
+  async depth(): Promise<Record<string, QueueDepth>> {
+    return Object.fromEntries(
+      [...this.pools.entries()].map(([name, pool]) => [
+        name,
+        {
+          waiting: pool.depth,
+          active: pool.running,
+          failed: 0,
+          delayed: 0,
+          concurrency: pool.concurrency,
+        },
+      ]),
+    );
+  }
+
+  /** No-op: this queue only knows about job names it has a handler for. */
+  observe(): void {}
 
   async close(): Promise<void> {
     await Promise.all([...this.pools.values()].map((pool) => pool.drain()));
