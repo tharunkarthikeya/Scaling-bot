@@ -561,8 +561,20 @@ if (!parsed.success) {
   const issues = parsed.error.issues
     .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
     .join('\n');
+
   // Fail at boot, not on the first candidate's resume.
-  console.error(`Invalid environment configuration:\n${issues}`);
+  //
+  // Every issue at once rather than the first one: an operator filling in a
+  // fresh environment should get the whole list, not discover it one restart at
+  // a time. The pointer to .env.example is there because half of these are
+  // cross-field rules whose message names a variable that is present and
+  // whose fix is a different variable entirely.
+  console.error(
+    `Invalid environment configuration:\n\n${issues}\n
+
+Every variable, with what it is for, is in .env.example.\n
+In production these are set in the Dokploy Environment tab, not in a file.`,
+  );
   process.exit(1);
 }
 
