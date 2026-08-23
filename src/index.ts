@@ -13,6 +13,7 @@ import { buildServer } from './server.js';
 import { describePlan, planFor } from './roles.js';
 import { Lease, scheduleWithLease } from './scheduler/leader.js';
 import { closeRedis, pingRedis, redisEnabled, requireRedisUrl } from './redis/index.js';
+import { startEventLoopMonitor, stopEventLoopMonitor } from './metrics/index.js';
 
 /** How often the §21 reminder sweep runs. The claim is per candidate, not per sweep. */
 const REMINDER_SWEEP_MS = 15 * 60 * 1000;
@@ -122,6 +123,10 @@ async function main(): Promise<void> {
   const plan = planFor(config.ROLE, redisEnabled());
   await preflight(plan);
 
+  // Before anything that could block it, so the first samples describe a real
+  // boot rather than an idle process. Native, so it costs no JavaScript.
+  startEventLoopMonitor();
+
   await connectDb();
   await ensureIndexes();
   await ensureStorageRoot();
@@ -225,6 +230,7 @@ async function main(): Promise<void> {
     logger.info({ signal, instance: instanceId }, 'shutting down');
     for (const stop of stopSweeps) stop();
     if (taxonomySweep) clearInterval(taxonomySweep);
+    stopEventLoopMonitor();
 
     try {
       // Order matters. Stop accepting new work, then let in-flight work finish,

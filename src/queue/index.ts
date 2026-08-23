@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { key, redisFor } from '../redis/index.js';
+import { record } from '../metrics/record.js';
 
 export interface JobPayloads {
   /** One inbound WhatsApp message, already deduped and persisted. */
@@ -69,6 +70,29 @@ export interface QueueDepth {
  * other's jobs - which is a mistake that looks exactly like message loss.
  */
 const QUEUE_PREFIX = key('bull');
+
+/**
+ * Times one job and records its outcome, whichever backend is running it.
+ *
+ * Wrapped here rather than at each registration site so the two implementations
+ * cannot report different things, and so a handler added later is measured
+ * without anybody remembering to measure it. The error is re-thrown untouched:
+ * this observes, it does not handle.
+ */
+async function instrumented(name: JobName, run: () => Promise<void>): Promise<void> {
+  const startedAt = process.hrtime.bigint();
+  record.jobStarted(name);
+
+  const seconds = () => Number(process.hrtime.bigint() - startedAt) / 1e9;
+
+  try {
+    await run();
+    record.jobFinished(name, seconds(), true);
+  } catch (err) {
+    record.jobFinished(name, seconds(), false);
+    throw err;
+  }
+}
 
 const DEFAULT_JOB_OPTIONS: JobsOptions = {
   attempts: 4,
@@ -161,7 +185,7 @@ class RedisQueue implements JobQueue {
 
   async start(): Promise<void> {
     for (const { name, handler, concurrency } of this.pending) {
-      const worker = new Worker(name, async (job) => handler(job.data), {
+      const worker = new Worker(name, async (job) => instrumented(name, () => handler(job.data)), {
         connection: this.connection,
         prefix: QUEUE_PREFIX,
         concurrency,
@@ -287,7 +311,7 @@ class JobPool {
     if (job.key) this.busyKeys.add(job.key);
 
     try {
-      await this.handler(job.payload);
+      await instrumented(this.name, () => this.handler(job.payload));
     } catch (err) {
       logger.error({ err, job: this.name }, 'job failed (no retry in the in-process queue)');
     } finally {

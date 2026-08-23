@@ -23,10 +23,13 @@ import { queue } from './queue/index.js';
 import { markAsRead } from './whatsapp/client.js';
 import { captureAttachment } from './ingestion/whatsapp.js';
 import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
+import { record, renderMetrics } from './metrics/index.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
     rawBody?: Buffer;
+    /** Set by the metrics hook. Nanoseconds, from a monotonic clock. */
+    startedAt?: bigint;
   }
 }
 
@@ -75,12 +78,61 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     },
   );
 
+  /* --------------------------------------------------------------- */
+  /* Metrics                                                           */
+  /* --------------------------------------------------------------- */
+
+  /**
+   * Times every request.
+   *
+   * Labelled by `routerPath` rather than by `url`, deliberately: the url
+   * carries a waId on the admin routes, and a per-candidate label would be an
+   * unbounded series and a PII leak in the same mistake. An unmatched request
+   * is labelled `unmatched` for the same reason - 404 scanning traffic must not
+   * be able to create series.
+   */
+  app.addHook('onRequest', async (req) => {
+    req.startedAt = process.hrtime.bigint();
+  });
+
+  app.addHook('onResponse', async (req, res) => {
+    if (req.startedAt === undefined) return;
+    const seconds = Number(process.hrtime.bigint() - req.startedAt) / 1e9;
+    const route = req.routeOptions?.url ?? 'unmatched';
+    record.http(req.method, route, res.statusCode, seconds);
+  });
+
   app.get('/health', async () => ({
     ok: true,
     role: config.ROLE,
     instance: instanceId,
     shadowMode: config.SHADOW_MODE,
   }));
+
+  if (config.METRICS_ENABLED) {
+    app.get('/metrics', async (req, res) => {
+      // Unset means open, which is right on a private network and wrong on a
+      // public domain. The endpoint carries no candidate PII either way - no
+      // waId, no name, no document - but queue depth and error rates still tell
+      // a stranger more about the service than they need to know.
+      if (config.METRICS_API_KEY) {
+        const expected = Buffer.from(config.METRICS_API_KEY);
+        const provided = req.headers['x-api-key'];
+        const supplied = Buffer.from(typeof provided === 'string' ? provided : '');
+
+        const ok =
+          supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+
+        if (!ok) return res.code(401).send('unauthorized');
+      }
+
+      // Prometheus is specific about this content type; a scrape will reject
+      // anything else.
+      return res.type('text/plain; version=0.0.4; charset=utf-8').send(await renderMetrics());
+    });
+  } else {
+    logger.warn('METRICS_ENABLED=false - /metrics is not served');
+  }
 
   // Everything below is the webhook and the admin API. A role that serves
   // neither stops here with a live socket and nothing else on it.
