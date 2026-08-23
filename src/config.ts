@@ -1,3 +1,4 @@
+import os from 'node:os';
 import 'dotenv/config';
 import { z } from 'zod';
 
@@ -14,8 +15,49 @@ const schema = z.object({
   MONGODB_URI: z.string().min(1),
   MONGODB_DB: z.string().min(1),
 
-  // Omit to fall back to the in-process queue (local dev only — jobs are lost on restart).
+  /* ---------------------------------------------------------------- */
+  /* Redis - what makes more than one instance safe                     */
+  /*                                                                    */
+  /* Omit it and the queue, the candidate lock and the rate limiters    */
+  /* all fall back to per-process implementations. Those are correct    */
+  /* for exactly one instance, which is what makes them fine for local  */
+  /* development and unsafe for anything behind a load balancer.        */
+  /*                                                                    */
+  /* Required whenever ROLE is set to anything but `all` - see the      */
+  /* cross-field checks at the bottom of this file.                     */
+  /* ---------------------------------------------------------------- */
+
   REDIS_URL: z.string().min(1).optional(),
+
+  /**
+   * Namespace for every key this application writes.
+   *
+   * One Redis is often shared - with a staging copy of this bot, or with
+   * something else entirely. Without a prefix, two deployments would share a
+   * candidate lock namespace and a rate-limit budget, and the second one to
+   * start would silently throttle the first.
+   */
+  REDIS_KEY_PREFIX: z.string().min(1).default('adira'),
+
+  /**
+   * How long a candidate lock is held before Redis expires it.
+   *
+   * This is a crash guard, not a timeout: the lock is renewed while its holder
+   * is alive (see `queue/lock.ts`), so a turn that legitimately runs longer
+   * than this keeps its lock. What the TTL bounds is how long a candidate stays
+   * locked by a process that died holding it.
+   */
+  LOCK_TTL_MS: z.coerce.number().int().positive().default(30_000),
+
+  /**
+   * How long to wait for a candidate's lock before giving up on the turn.
+   *
+   * Giving up throws, which fails the job, which BullMQ retries with backoff -
+   * so the turn is not lost, it is deferred. Waiting forever would be worse: a
+   * worker slot held indefinitely by a candidate whose lock is never coming is
+   * one fewer slot for everyone else.
+   */
+  LOCK_ACQUIRE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
   WHATSAPP_APP_SECRET: z.string().min(1),
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
@@ -144,7 +186,56 @@ const schema = z.object({
   OCR_CLAIM_STALE_MS: z.coerce.number().int().positive().default(120_000),
 
 
+  /* ---------------------------------------------------------------- */
+  /* Storage                                                           */
+  /*                                                                   */
+  /* Candidate documents. `local` writes to a mounted volume and is    */
+  /* correct for one instance; `s3` is what more than one instance     */
+  /* requires, because a file written by the web process is read back  */
+  /* later by an OCR worker that may be in a different container.      */
+  /* ---------------------------------------------------------------- */
+
+  STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
+
+  /**
+   * Where `local` writes. Must be a mounted volume - a container filesystem
+   * does not survive a redeploy.
+   */
   STORAGE_PATH: z.string().default('./storage'),
+
+  /** Bucket name. Required when STORAGE_DRIVER=s3. */
+  S3_BUCKET: z.string().min(1).optional(),
+
+  /**
+   * Region. `auto` is what Cloudflare R2 expects and is harmless elsewhere;
+   * real AWS wants its own (`ap-south-1`, `eu-west-1`, ...).
+   */
+  S3_REGION: z.string().min(1).default('auto'),
+
+  /**
+   * Endpoint for S3-compatible storage - R2, MinIO, Backblaze, Wasabi. Omit
+   * for real AWS S3, where the SDK derives it from the region.
+   */
+  S3_ENDPOINT: z.string().min(1).optional(),
+
+  S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+  S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+
+  /**
+   * Path-style addressing (`host/bucket/key`) rather than virtual-hosted
+   * (`bucket.host/key`).
+   *
+   * Defaulted on because every self-hosted S3-compatible service needs it and
+   * AWS still accepts it. Turn it off for AWS if the bucket name is not
+   * DNS-safe in a path.
+   */
+  S3_FORCE_PATH_STYLE: bool.default('true'),
+
+  /**
+   * Key prefix inside the bucket, so one bucket can hold more than one
+   * environment without a staging run overwriting production documents.
+   */
+  S3_PREFIX: z.string().default(''),
 
   // Guards the read-only /api/* endpoints, which expose candidate PII —
   // names, passport numbers, transcripts. Unset means those routes are not
@@ -350,7 +441,104 @@ const schema = z.object({
    * yet, not that the registration did not happen.
    */
   CRM_SYNC_MAX_ATTEMPTS: z.coerce.number().int().positive().default(6),
-});
+
+  /* ---------------------------------------------------------------- */
+  /* Process role                                                      */
+  /*                                                                   */
+  /* One image, three jobs. Which one this container does is a         */
+  /* deployment decision, so it is an environment variable and not a   */
+  /* separate entry point.                                             */
+  /*                                                                   */
+  /*   all        HTTP, workers and sweeps in one process. The default,*/
+  /*              because it is what every deployment of this bot has  */
+  /*              run so far, and changing that silently would be a    */
+  /*              worse thing to do than requiring a decision.         */
+  /*   web        HTTP only. Accepts webhooks, enqueues, serves the    */
+  /*              admin API. Runs no workers and no sweeps, so it      */
+  /*              scales with inbound traffic and nothing else.        */
+  /*   worker     BullMQ workers only. No webhook. Scales with the     */
+  /*              backlog.                                             */
+  /*   scheduler  Sweeps only, and only ever one of them at a time - a */
+  /*              Redis leader lock decides which instance is it.      */
+  /*                                                                   */
+  /* Anything but `all` requires REDIS_URL. Two instances with no      */
+  /* shared queue is not a smaller version of this architecture, it is */
+  /* two bots answering the same candidate.                            */
+  /* ---------------------------------------------------------------- */
+
+  ROLE: z.enum(['all', 'web', 'worker', 'scheduler']).default('all'),
+
+  /**
+   * Names this instance in logs, metrics and the lock's fencing token.
+   *
+   * Defaults to `hostname:pid`, which under Docker is the container id - which
+   * is exactly what you want when reading a log line back and asking which
+   * replica produced it.
+   */
+  INSTANCE_ID: z.string().min(1).optional(),
+
+  /* ---------------------------------------------------------------- */
+  /* Metrics                                                           */
+  /* ---------------------------------------------------------------- */
+
+  /** Serve `GET /metrics` in Prometheus text format. */
+  METRICS_ENABLED: bool.default('true'),
+
+  /**
+   * Require `X-API-Key` on /metrics.
+   *
+   * Optional, and unset means the endpoint is open. That is right for a
+   * private network and wrong for a public domain: this bot is served at a
+   * public hostname, so set it there. Metrics carry no candidate PII - no
+   * waId, no name, no document - but queue depth and error rates still tell a
+   * stranger more about the service than they need to know.
+   */
+  METRICS_API_KEY: z.string().min(16).optional(),
+})
+  /* ------------------------------------------------------------------ */
+  /* Cross-field rules                                                   */
+  /*                                                                     */
+  /* A variable can be individually valid and collectively wrong. Every  */
+  /* rule below is a combination that starts cleanly and then fails in   */
+  /* production, which is the worst kind: STORAGE_DRIVER=s3 with no      */
+  /* bucket boots fine and loses the first passport it is handed.        */
+  /* ------------------------------------------------------------------ */
+  .superRefine((env, ctx) => {
+    const missing = (path: string, message: string) =>
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+
+    if (env.STORAGE_DRIVER === 's3') {
+      if (!env.S3_BUCKET) missing('S3_BUCKET', 'required when STORAGE_DRIVER=s3');
+      if (!env.S3_ACCESS_KEY_ID) missing('S3_ACCESS_KEY_ID', 'required when STORAGE_DRIVER=s3');
+      if (!env.S3_SECRET_ACCESS_KEY) {
+        missing('S3_SECRET_ACCESS_KEY', 'required when STORAGE_DRIVER=s3');
+      }
+    }
+
+    // The whole point of a role is that another process has the other half of
+    // the work. Without Redis they share nothing: two queues, two lock tables,
+    // two rate-limit budgets, and one candidate answered twice.
+    if (env.ROLE !== 'all' && !env.REDIS_URL) {
+      missing('REDIS_URL', `required when ROLE=${env.ROLE} - roles have nothing to share without it`);
+    }
+
+    // More than one instance behind a load balancer needs shared storage for
+    // the same reason it needs a shared queue: whichever process downloads a
+    // document is rarely the one that later reads it back for OCR or the CRM.
+    if (env.ROLE !== 'all' && env.STORAGE_DRIVER === 'local') {
+      missing(
+        'STORAGE_DRIVER',
+        `must be s3 when ROLE=${env.ROLE} - a local volume is not visible to the other role`,
+      );
+    }
+
+    // A lock that expires while its holder still believes it holds it is worse
+    // than no lock, because nothing reports it. The renewal interval is a third
+    // of the TTL, so anything under a second of headroom is a misconfiguration.
+    if (env.LOCK_TTL_MS < 3_000) {
+      missing('LOCK_TTL_MS', 'must be at least 3000ms - it is renewed at a third of this interval');
+    }
+  });
 
 const parsed = schema.safeParse(process.env);
 
@@ -365,5 +553,16 @@ if (!parsed.success) {
 
 export const config = parsed.data;
 export type Config = typeof config;
+
+/**
+ * Which replica this is.
+ *
+ * Under Docker `os.hostname()` is the container id, so this is stable for the
+ * life of a container and unique across the fleet without anyone configuring
+ * it. It ends up in the lock's fencing token, in the leader election, and in
+ * every metric sample, which is what makes a graph answerable when it shows one
+ * instance behaving differently from the others.
+ */
+export const instanceId = config.INSTANCE_ID ?? `${os.hostname()}:${process.pid}`;
 
 export const graphBaseUrl = `https://graph.facebook.com/${config.WHATSAPP_GRAPH_API_VERSION}`;

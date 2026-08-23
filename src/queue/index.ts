@@ -1,7 +1,8 @@
 import { Queue as BullQueue, Worker, type JobsOptions } from 'bullmq';
-import { Redis } from 'ioredis';
+import type { Redis } from 'ioredis';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { key, redisFor } from '../redis/index.js';
 
 export interface JobPayloads {
   /** One inbound WhatsApp message, already deduped and persisted. */
@@ -28,6 +29,15 @@ export interface JobQueue {
   close(): Promise<void>;
 }
 
+/**
+ * Every BullMQ key under the application's namespace.
+ *
+ * BullMQ builds its own key structure beneath this, so one Redis can carry a
+ * staging copy of this bot and production without the two consuming each
+ * other's jobs - which is a mistake that looks exactly like message loss.
+ */
+const QUEUE_PREFIX = key('bull');
+
 const DEFAULT_JOB_OPTIONS: JobsOptions = {
   attempts: 4,
   backoff: { type: 'exponential', delay: 2_000 },
@@ -46,17 +56,58 @@ class RedisQueue implements JobQueue {
   private readonly pending: Array<{ name: JobName; handler: JobHandler<any>; concurrency: number }> =
     [];
 
-  constructor(url: string) {
-    this.connection = new Redis(url, { maxRetriesPerRequest: null });
+  /**
+   * BullMQ gets its own connection, and it must be an unbounded one.
+   *
+   * Workers hold a blocking read open waiting for the next job. ioredis'
+   * default `maxRetriesPerRequest` counts that as a command in flight and tears
+   * the connection down when the ceiling is reached, so BullMQ documents `null`
+   * as a requirement rather than a preference. Nothing else in this application
+   * wants that: a lock or a limiter with no retry ceiling is a promise that
+   * never settles when Redis goes away.
+   */
+  constructor() {
+    this.connection = redisFor('queue', { maxRetriesPerRequest: null });
   }
 
   private queueFor(name: JobName): BullQueue {
     let q = this.queues.get(name);
     if (!q) {
-      q = new BullQueue(name, { connection: this.connection });
+      q = new BullQueue(name, { connection: this.connection, prefix: QUEUE_PREFIX });
       this.queues.set(name, q);
     }
     return q;
+  }
+
+  /**
+   * Depth and in-flight count per job name, read from Redis.
+   *
+   * The counterpart of `InProcessQueue.stats()`, and the reason both exist: the
+   * metrics endpoint asks the queue how far behind it is without caring which
+   * implementation answered. `waiting` is the number that matters under load -
+   * flat is keeping up, rising is not, whatever the latency averages say.
+   */
+  async counts(): Promise<Record<string, { waiting: number; active: number; failed: number; delayed: number }>> {
+    const entries = await Promise.all(
+      [...this.queues.keys()].map(async (name) => {
+        const counts = await this.queueFor(name).getJobCounts('waiting', 'active', 'failed', 'delayed');
+        return [
+          name,
+          {
+            waiting: counts.waiting ?? 0,
+            active: counts.active ?? 0,
+            failed: counts.failed ?? 0,
+            delayed: counts.delayed ?? 0,
+          },
+        ] as const;
+      }),
+    );
+    return Object.fromEntries(entries);
+  }
+
+  /** Ensures a queue object exists for a job name, so `counts()` reports it. */
+  track(name: JobName): void {
+    this.queueFor(name);
   }
 
   async enqueue<K extends JobName>(name: K, payload: JobPayloads[K]): Promise<void> {
@@ -71,6 +122,7 @@ class RedisQueue implements JobQueue {
     for (const { name, handler, concurrency } of this.pending) {
       const worker = new Worker(name, async (job) => handler(job.data), {
         connection: this.connection,
+        prefix: QUEUE_PREFIX,
         concurrency,
       });
       worker.on('failed', (job, err) => {
@@ -82,9 +134,11 @@ class RedisQueue implements JobQueue {
   }
 
   async close(): Promise<void> {
+    // Workers first, so nothing is mid-job when the queues go. The connection
+    // itself is closed by `closeRedis()` at the end of shutdown, because it is
+    // shared with whatever else asked `redisFor('queue')` for it.
     await Promise.all(this.workers.map((w) => w.close()));
     await Promise.all([...this.queues.values()].map((q) => q.close()));
-    this.connection.disconnect();
   }
 }
 
@@ -265,9 +319,7 @@ export class InProcessQueue implements JobQueue {
   }
 }
 
-export const queue: JobQueue = config.REDIS_URL
-  ? new RedisQueue(config.REDIS_URL)
-  : new InProcessQueue();
+export const queue: JobQueue = config.REDIS_URL ? new RedisQueue() : new InProcessQueue();
 
 /* ------------------------------------------------------------------ */
 /* Per-candidate serialisation                                         */
