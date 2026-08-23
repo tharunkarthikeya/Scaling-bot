@@ -564,3 +564,5 @@ Requests deliberately send no `thinking` or `effort` parameter, so the same code
 runs on Haiku and on Opus without changes — `effort` errors on Haiku 4.5. If you
 move to `claude-opus-5` for better handling of messy multilingual replies, it is
 a one-line env change.
+#   S c a l i n g - b o t  
+ 
