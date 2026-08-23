@@ -1,6 +1,10 @@
 /**
  * Offline checks for the pieces that need no Mongo, Redis, or network.
  *
+ * Enforced rather than assumed, since the rate limiters became Redis-backed:
+ * `./testing/offline.js` is imported first and blanks REDIS_URL, so these run
+ * against the local implementations whatever the environment says.
+ *
  * Most of what this covers is the protocol's own rules expressed as assertions:
  * that a question already answered is never asked again, that a Gulf candidate is
  * never asked for identity documents, that what a candidate wants is never
@@ -9,6 +13,10 @@
  *
  * Run with: npm run smoke
  */
+// First, and it has to be: this blanks REDIS_URL before `config.ts` is parsed,
+// which is what keeps these checks offline when a developer's .env points at a
+// deployment's Redis. See the module for why blanking rather than deleting.
+import './testing/offline.js';
 import assert from 'node:assert/strict';
 import { ObjectId } from 'mongodb';
 import crypto from 'node:crypto';

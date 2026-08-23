@@ -105,7 +105,13 @@ async function probeRedis(): Promise<boolean> {
 }
 
 const REDIS_AVAILABLE = await probeRedis();
-if (REDIS_AVAILABLE) process.env.REDIS_URL = TEST_REDIS_URL;
+
+// Set either way, and never left alone. `config.ts` loads dotenv, and dotenv
+// fills in anything absent — so on a machine whose .env carries a deployment's
+// Redis, leaving this unset would point the "no Redis" path at a host that is
+// unreachable rather than at no host at all, and the checks that are supposed to
+// run locally would fail on a connection instead. Blank is read as unset.
+process.env.REDIS_URL = REDIS_AVAILABLE ? TEST_REDIS_URL : '';
 
 /* ------------------------------------------------------------------ */
 /* Imports, after the environment is settled                           */
