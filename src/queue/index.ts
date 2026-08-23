@@ -325,28 +325,20 @@ export const queue: JobQueue = config.REDIS_URL ? new RedisQueue() : new InProce
 /* Per-candidate serialisation                                         */
 /* ------------------------------------------------------------------ */
 
-const locks = new Map<string, Promise<unknown>>();
-
 /**
- * Runs `fn` with an exclusive lock on `key`. Two messages from the same
- * candidate must not be handled concurrently, or the bot answers both with the
- * same stale checklist and asks for the same document twice.
+ * Re-exported so every existing import keeps working.
  *
- * In-memory, so it holds for a single instance. Running more than one instance
- * needs this backed by a Redis lock.
+ * The lock moved to `./lock.ts` when it stopped being a `Map` and became a
+ * Redis key, because it is no longer a detail of the queue — the OCR completion
+ * path and the idle-session sweep take it from outside the queue entirely. It
+ * is exported from here as well so that the eleven call sites that already say
+ * `from '../queue/index.js'` did not all have to be edited to prove the same
+ * behaviour.
  */
-export async function withCandidateLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const previous = locks.get(key) ?? Promise.resolve();
-  // Run whether or not the previous holder succeeded — one candidate's failure
-  // must not wedge the queue behind them.
-  const run = previous.then(fn, fn);
-  const tail = run.catch(() => undefined);
-  locks.set(key, tail);
-
-  try {
-    return await run;
-  } finally {
-    // Only clear if nothing queued behind us in the meantime.
-    if (locks.get(key) === tail) locks.delete(key);
-  }
-}
+export {
+  withCandidateLock,
+  releaseHeldLocks,
+  lockStats,
+  LockTimeoutError,
+  type LockHandle,
+} from './lock.js';
