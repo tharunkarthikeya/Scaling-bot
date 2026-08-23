@@ -24,6 +24,7 @@
  * handover — lands back on the duplicate-safe sweeps described above.
  */
 
+import crypto from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { config, instanceId } from '../config.js';
 import { logger } from '../logger.js';
@@ -32,14 +33,25 @@ import { key, redisEnabled, sharedRedis } from '../redis/index.js';
 /**
  * Takes the lease, or renews it if we already hold it.
  *
- * `GET` then `SET` in one script, so two replicas asking simultaneously cannot
- * both be told yes. Renewal is the same call as acquisition, which is what makes
- * the leader's steady state a single round trip per tick.
+ * `SET NX PX` first, which is the whole acquisition: Redis grants it to exactly
+ * one caller and refuses everyone else, atomically, with no read-then-write
+ * window for two schedulers to race through.
+ *
+ * Only if that refusal comes back is the holder's token compared, and only a
+ * match extends the TTL. That ordering matters. Reading first and writing after
+ * — which is what this did — makes the *comparison* the gate rather than the
+ * SET, so anything that can present the incumbent's token is handed the lease
+ * as a renewal. The token therefore has to identify one claimant and nothing
+ * coarser; see `owner` below for the identity that got this wrong.
+ *
+ * Still one round trip in the steady state, because a renewal is the same call.
  */
 const ACQUIRE_OR_RENEW = `
-local current = redis.call('GET', KEYS[1])
-if current == false or current == ARGV[1] then
-  redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2]) then
+  return 1
+end
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
   return 1
 end
 return 0
@@ -87,6 +99,23 @@ export class Lease {
   private readonly leaseKey: string;
 
   /**
+   * Who holds it. Unique to this object, not to this process.
+   *
+   * This was `instanceId` — `hostname:pid` — and that was wrong, because the
+   * thing that holds a lease is a `Lease`, not the process it happens to live
+   * in. Two leases on one process presented the same token, so the second one's
+   * *acquisition* was indistinguishable from the first one's *renewal* and both
+   * were told they were the leader. Two schedulers in one container, or two on
+   * hosts that shared a hostname and a pid, would have swept simultaneously
+   * while Redis reported a single well-behaved holder.
+   *
+   * The instance id is kept as a prefix because it is what makes an unreleased
+   * key attributable to a replica in an incident; the uuid is what makes the
+   * token mean one claimant.
+   */
+  private readonly owner = `${instanceId}:${crypto.randomUUID()}`;
+
+  /**
    * `ttlMs` must comfortably exceed the interval this lease is claimed at, or a
    * leader that is merely busy loses it to a replica that is merely idle, and
    * the fleet spends its time handing the duty back and forth.
@@ -115,7 +144,8 @@ export class Lease {
     if (!redisEnabled()) return true;
 
     try {
-      const won = (await scripts().leaderClaim(this.leaseKey, instanceId, String(this.ttlMs))) === 1;
+      const won =
+        (await scripts().leaderClaim(this.leaseKey, this.owner, String(this.ttlMs))) === 1;
 
       // Log the edges only. A leader that has been the leader for a week should
       // not have said so ten thousand times.
@@ -138,13 +168,37 @@ export class Lease {
     }
   }
 
-  /** Gives the lease up at shutdown so the next instance does not wait out the TTL. */
+  /**
+   * Gives the lease up at shutdown so the next instance does not wait out the
+   * TTL.
+   *
+   * Attempted whenever there is a Redis, rather than only when `this.leader`
+   * says we are the holder. The Lua compares the token before deleting, so a
+   * call from a non-holder removes nothing — which means the local flag is not
+   * load-bearing here, and shutdown does not depend on it being accurate. That
+   * matters precisely in the case where it might not be: a renewal that failed
+   * transiently leaves `leader` false while the key is still ours and still
+   * unexpired, and skipping the delete there would strand the duty for a full
+   * TTL during a rolling deploy.
+   */
   async release(): Promise<void> {
-    if (!redisEnabled() || !this.leader) return;
+    if (!redisEnabled()) {
+      this.leader = false;
+      return;
+    }
+
+    const wasLeader = this.leader;
     this.leader = false;
+
     try {
-      await scripts().leaderRelease(this.leaseKey, instanceId);
-      logger.info({ lease: this.name }, 'released the sweep lease');
+      const released = await scripts().leaderRelease(this.leaseKey, this.owner);
+      if (released === 1) logger.info({ lease: this.name }, 'released the sweep lease');
+      else if (wasLeader) {
+        // Believed we held it and did not: it expired under us, and somebody
+        // else may already have taken it. Worth a line, because it means the
+        // work outran its TTL.
+        logger.warn({ lease: this.name }, 'the sweep lease had already gone before release');
+      }
     } catch (err) {
       logger.warn({ err, lease: this.name }, 'could not release the sweep lease; it will expire');
     }
