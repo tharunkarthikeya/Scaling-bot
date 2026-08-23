@@ -89,19 +89,73 @@ try {
 /* 3. Storage -------------------------------------------------------------- */
 
 try {
-  const root = path.resolve(config.STORAGE_PATH);
-  await fs.mkdir(root, { recursive: true });
-  const probe = path.join(root, `.doctor-${Date.now()}`);
-  await fs.writeFile(probe, 'ok');
-  await fs.unlink(probe);
-  record('ok', 'storage', `writable — ${root}`);
+  if (config.STORAGE_DRIVER === 's3') {
+    // HeadBucket through the real backend, so this proves the same thing the
+    // application proves at boot rather than a rehearsal of it.
+    const { ensureStorageRoot } = await import('./storage/index.js');
+    await ensureStorageRoot();
+    record('ok', 'storage', `s3 — bucket ${config.S3_BUCKET} reachable`);
+  } else {
+    const root = path.resolve(config.STORAGE_PATH);
+    await fs.mkdir(root, { recursive: true });
+    const probe = path.join(root, `.doctor-${Date.now()}`);
+    await fs.writeFile(probe, 'ok');
+    await fs.unlink(probe);
+    record('ok', 'storage', `local — writable, ${root}`);
+
+    // Correct on one instance and silently wrong on two: whichever process
+    // downloads a document is rarely the one that reads it back for OCR.
+    if (config.ROLE !== 'all') {
+      record(
+        'fail',
+        'storage',
+        `STORAGE_DRIVER=local with ROLE=${config.ROLE}`,
+        'A local volume is not visible to the other role. Set STORAGE_DRIVER=s3.',
+      );
+    }
+  }
 } catch (err) {
   record(
     'fail',
     'storage',
     short(err),
-    'STORAGE_PATH must point at a writable mounted volume. Candidate documents live here.',
+    config.STORAGE_DRIVER === 's3'
+      ? 'Check S3_BUCKET, S3_ENDPOINT, S3_REGION and the credentials. Candidate documents live here.'
+      : 'STORAGE_PATH must point at a writable mounted volume. Candidate documents live here.',
   );
+}
+
+/* 3b. Redis --------------------------------------------------------------- */
+
+try {
+  const { pingRedis, redisEnabled } = await import('./redis/index.js');
+
+  if (!redisEnabled()) {
+    // Not a failure on its own — one instance with no Redis is a supported and
+    // fully correct deployment. It is only fatal for a role, and config.ts has
+    // already refused to start in that case.
+    record(
+      config.ROLE === 'all' ? 'warn' : 'fail',
+      'redis',
+      'REDIS_URL is not set',
+      'Queue, candidate locks and rate limits are per-process. Correct for exactly ' +
+        'one instance; unsafe behind a load balancer.',
+    );
+  } else {
+    const { ok, error } = await pingRedis();
+    if (ok) record('ok', 'redis', 'reachable — queue, locks and rate limits are shared');
+    else {
+      record(
+        'fail',
+        'redis',
+        error ?? 'no response',
+        'On Dokploy use the Internal Connection URL of the Redis service. The app and Redis ' +
+          'must be in the same project to resolve the internal host.',
+      );
+    }
+  }
+} catch (err) {
+  record('fail', 'redis', short(err), 'Check REDIS_URL.');
 }
 
 /* 4. Anthropic ------------------------------------------------------------ */
