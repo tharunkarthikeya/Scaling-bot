@@ -126,6 +126,30 @@ function assertLocalMongo(uri: string): void {
 
 assertLocalMongo(MONGO_URI);
 
+/**
+ * The same refusal, for Redis.
+ *
+ * Redis now carries the job queue, the candidate locks and the rate-limit
+ * budgets, so a rig pointed at the production Redis would consume the
+ * production queue and hold locks against real candidates - which is a strictly
+ * worse incident than writing to the production database, because it is
+ * invisible from the database.
+ */
+function assertLocalRedis(url: string): void {
+  let host: string;
+  try {
+    host = new URL(url.replace(/^rediss?:\/\//, 'http://')).hostname;
+  } catch {
+    throw new Error('loadtest: could not parse LOADTEST_REDIS_URL');
+  }
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
+    throw new Error(
+      `loadtest: refusing to run against a non-local Redis (${host}). ` +
+        'Point LOADTEST_REDIS_URL at the compose container on 127.0.0.1:6379.',
+    );
+  }
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Environment, set before `config` is first imported                  */
@@ -179,6 +203,28 @@ if (process.env.LOADTEST_REAL_VERIS !== 'true') {
 // `LOADTEST_SYNC_OCR=true` opts back out, for comparing the two transports
 // deliberately rather than by accident.
 process.env.VERIS_OCR_ASYNC = process.env.LOADTEST_SYNC_OCR === 'true' ? 'false' : 'true';
+
+// Redis, and the same lesson as CRM_API_URL below: setting wins, deleting does
+// not. `config.ts` loads dotenv, dotenv fills in anything absent, and a
+// production `.env` carries REDIS_URL - so unsetting the variable here would
+// hand the production Redis straight back and the rig would consume the
+// production queue while claiming to be isolated. Blank is read as absent by
+// `config.ts` precisely so this assignment can win.
+//
+// Off by default, which keeps every existing run byte-identical: the rig has
+// always measured the in-process queue. `LOADTEST_REDIS=true` switches to the
+// backend production actually uses, which is what a run needs in order to say
+// anything about durability, retries, or more than one worker.
+if (process.env.LOADTEST_REDIS === 'true') {
+  const redisUrl = process.env.LOADTEST_REDIS_URL ?? 'redis://127.0.0.1:6379';
+  assertLocalRedis(redisUrl);
+  process.env.REDIS_URL = redisUrl;
+  // Its own namespace per run, so a rig cannot consume jobs left by an earlier
+  // one and a developer's own Redis survives being borrowed.
+  process.env.REDIS_KEY_PREFIX = `adira-loadtest-${crypto.randomBytes(4).toString('hex')}`;
+} else {
+  process.env.REDIS_URL = '';
+}
 
 // Pointed at a dead loopback port rather than deleted.
 //

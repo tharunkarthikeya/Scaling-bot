@@ -7,6 +7,22 @@ const bool = z
   .transform((v) => v.trim().toLowerCase() === 'true')
   .pipe(z.boolean());
 
+/**
+ * An optional setting where blank means absent.
+ *
+ * Two places make this necessary and neither is hypothetical. The Dokploy
+ * Environment tab produces an empty string for a field somebody cleared rather
+ * than removing the variable, so `REDIS_URL=` would otherwise fail `.min(1)`
+ * and refuse to boot a deployment that had simply turned Redis off. And the
+ * load-test rig has to *neutralise* inherited settings rather than delete them:
+ * `dotenv` fills in anything absent, so unsetting a variable hands the value in
+ * `.env` straight back - which is how a load test could end up pointed at the
+ * production Redis. Setting it blank is the only assignment that wins.
+ */
+function blankable<T extends z.ZodTypeAny>(inner: T) {
+  return z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), inner);
+}
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3100),
@@ -27,7 +43,7 @@ const schema = z.object({
   /* cross-field checks at the bottom of this file.                     */
   /* ---------------------------------------------------------------- */
 
-  REDIS_URL: z.string().min(1).optional(),
+  REDIS_URL: blankable(z.string().min(1).optional()),
 
   /**
    * Namespace for every key this application writes.
@@ -63,10 +79,10 @@ const schema = z.object({
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
   WHATSAPP_ACCESS_TOKEN: z.string().min(1),
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
-  WHATSAPP_WABA_ID: z.string().min(1).optional(),
+  WHATSAPP_WABA_ID: blankable(z.string().min(1).optional()),
   WHATSAPP_GRAPH_API_VERSION: z.string().default('v25.0'),
 
-  WHATSAPP_REENGAGEMENT_TEMPLATE: z.string().min(1).optional(),
+  WHATSAPP_REENGAGEMENT_TEMPLATE: blankable(z.string().min(1).optional()),
   WHATSAPP_REENGAGEMENT_TEMPLATE_LANG: z.string().default('en'),
 
   ANTHROPIC_API_KEY: z.string().min(1),
@@ -219,7 +235,7 @@ const schema = z.object({
   STORAGE_PATH: z.string().default('./storage'),
 
   /** Bucket name. Required when STORAGE_DRIVER=s3. */
-  S3_BUCKET: z.string().min(1).optional(),
+  S3_BUCKET: blankable(z.string().min(1).optional()),
 
   /**
    * Region. `auto` is what Cloudflare R2 expects and is harmless elsewhere;
@@ -231,10 +247,10 @@ const schema = z.object({
    * Endpoint for S3-compatible storage - R2, MinIO, Backblaze, Wasabi. Omit
    * for real AWS S3, where the SDK derives it from the region.
    */
-  S3_ENDPOINT: z.string().min(1).optional(),
+  S3_ENDPOINT: blankable(z.string().min(1).optional()),
 
-  S3_ACCESS_KEY_ID: z.string().min(1).optional(),
-  S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  S3_ACCESS_KEY_ID: blankable(z.string().min(1).optional()),
+  S3_SECRET_ACCESS_KEY: blankable(z.string().min(1).optional()),
 
   /**
    * Path-style addressing (`host/bucket/key`) rather than virtual-hosted
@@ -255,7 +271,7 @@ const schema = z.object({
   // Guards the read-only /api/* endpoints, which expose candidate PII —
   // names, passport numbers, transcripts. Unset means those routes are not
   // served at all, which is the safe default for a public deployment.
-  ADMIN_API_KEY: z.string().min(16).optional(),
+  ADMIN_API_KEY: blankable(z.string().min(16).optional()),
 
   // true  = process inbound and decide a reply, but never hand it to Meta.
   // false = actually send.
@@ -440,14 +456,14 @@ const schema = z.object({
    * complete and are still stored here, and their sync status stays `pending`
    * rather than failing, so nothing is lost if the CRM is added later.
    */
-  CRM_API_URL: z.string().min(1).optional(),
+  CRM_API_URL: blankable(z.string().min(1).optional()),
   /**
    * The bot's service credential, sent as `X-Service-Key`.
    *
    * Not a staff login. The CRM authenticates this separately from its
    * recruiters precisely so that neither credential can stand in for the other.
    */
-  CRM_API_KEY: z.string().min(1).optional(),
+  CRM_API_KEY: blankable(z.string().min(1).optional()),
   CRM_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   /**
    * Submission attempts before a candidate is left for an operator.
@@ -490,7 +506,7 @@ const schema = z.object({
    * is exactly what you want when reading a log line back and asking which
    * replica produced it.
    */
-  INSTANCE_ID: z.string().min(1).optional(),
+  INSTANCE_ID: blankable(z.string().min(1).optional()),
 
   /* ---------------------------------------------------------------- */
   /* Metrics                                                           */
@@ -508,7 +524,7 @@ const schema = z.object({
    * waId, no name, no document - but queue depth and error rates still tell a
    * stranger more about the service than they need to know.
    */
-  METRICS_API_KEY: z.string().min(16).optional(),
+  METRICS_API_KEY: blankable(z.string().min(16).optional()),
 })
   /* ------------------------------------------------------------------ */
   /* Cross-field rules                                                   */

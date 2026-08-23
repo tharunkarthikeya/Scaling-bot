@@ -33,6 +33,7 @@ import {
   type OutboundMessage,
 } from './scenario.js';
 import { Stats, percentile } from './stats.js';
+import { STAGES, describeStages, type Stage } from '../stages.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOADTEST_DIR = path.resolve(HERE, '..');
@@ -46,15 +47,44 @@ function arg(name: string, fallback: string): string {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1]! : fallback;
 }
 
+/**
+ * A named stage from `loadtest/stages.ts`, or nothing.
+ *
+ * A stage supplies the whole shape of a run - users, pacing, duration, whether
+ * documents are sent - and a set of thresholds the result is judged against, so
+ * the run ends in a verdict rather than in numbers somebody has to interpret.
+ * Individual flags still win over it, because comparing one variable against a
+ * stage baseline is exactly what a stage is useful for.
+ */
+const STAGE: Stage | undefined = (() => {
+  const name = arg('stage', '');
+  if (!name) return undefined;
+  const found = STAGES[name];
+  if (!found) {
+    console.error(`Unknown stage "${name}". Available:\n${describeStages()}\n`);
+    process.exit(1);
+  }
+  return found;
+})();
+
 const OPTIONS = {
-  users: Number(arg('users', '10')),
-  messages: Number(arg('messages', '8')),
+  users: Number(arg('users', String(STAGE?.users ?? 10))),
+  messages: Number(arg('messages', String(STAGE?.messages ?? 8))),
   /** Think time between a reply landing and the next message, in ms. */
-  think: Number(arg('think', '1200')),
+  think: Number(arg('think', String(STAGE?.think ?? 1200))),
   /** Seconds over which users are started. 0 starts them all at once. */
-  rampup: Number(arg('rampup', '10')),
+  rampup: Number(arg('rampup', String(STAGE?.rampup ?? 10))),
   /** Hard stop, seconds. 0 means run until every user finishes its script. */
-  duration: Number(arg('duration', '0')),
+  duration: Number(arg('duration', String(STAGE?.duration ?? 0))),
+  /**
+   * Documents one candidate will upload before finishing. -1 is unlimited.
+   *
+   * 0 is how a text-only stage is expressed. A document question cannot be
+   * answered with text - the bot asks again, correctly - so a candidate that
+   * refuses to upload would stall rather than stay on the text path. At 0 the
+   * candidate stops when the first document is asked for, and is counted.
+   */
+  documents: Number(arg('documents', String(STAGE?.documents ?? -1))),
   /** How long to wait for one bot reply before recording a timeout. */
   replyTimeout: Number(arg('reply-timeout', '30000')),
   /**
@@ -104,10 +134,45 @@ const runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8')) as {
 };
 
 const APP = arg('target', runtime.appUrl);
+
+/**
+ * Refuses to generate load against anything that is not on this machine.
+ *
+ * The rig already refuses a non-local Mongo and a non-local Redis, and its
+ * fetch guard already stops the application under test from reaching a real
+ * service. This closes the remaining direction: the generator itself, pointed
+ * by a stray --target at a deployed bot. Two thousand signed webhooks a minute
+ * arriving at production is not a load test.
+ *
+ * LOADTEST_ALLOW_REMOTE_TARGET=true is the deliberate way out, and it is a
+ * separate decision from every other switch here on purpose.
+ */
+function assertLocalTarget(url: string): void {
+  if (process.env.LOADTEST_ALLOW_REMOTE_TARGET === 'true') {
+    console.warn(`\n  !! LOADTEST_ALLOW_REMOTE_TARGET=true - driving load at ${url}\n`);
+    return;
+  }
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    throw new Error(`loadtest: could not parse the target "${url}"`);
+  }
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
+    console.error(
+      `\nloadtest: refusing to generate load against a non-local target (${host}).\n` +
+        `Start the rig with "npm run loadtest:rig" and let --target default to it.\n` +
+        `If you genuinely mean to load a remote host, set LOADTEST_ALLOW_REMOTE_TARGET=true.\n`,
+    );
+    process.exit(1);
+  }
+}
+
+assertLocalTarget(APP);
 const CONTROL = arg('control', runtime.controlUrl);
 const MOCK = arg('mock', runtime.mockUrl);
 const OCR = arg('ocr', runtime.ocrUrl ?? 'http://127.0.0.1:8789');
-const LABEL = OPTIONS.label || String(OPTIONS.users);
+const LABEL = OPTIONS.label || STAGE?.name || String(OPTIONS.users);
 
 /* ------------------------------------------------------------------ */
 /* Counters                                                            */
@@ -128,6 +193,7 @@ const counts = {
   usersFinished: 0,
   messagesSent: 0,
   usersAbandoned: 0,
+  usersStoppedAtDocument: 0,
   documentsSent: 0,
   registrationsCompleted: 0,
 };
@@ -206,6 +272,18 @@ async function runUser(index: number): Promise<void> {
     if (OPTIONS.think > 0) await sleep(OPTIONS.think);
 
     outgoing = conversation.next(reply);
+
+    // The text-only stage. `next` has already counted the document it wants to
+    // send, so the candidate stops here having reached the document steps
+    // rather than having failed at them.
+    if (
+      outgoing?.type === 'document' &&
+      OPTIONS.documents >= 0 &&
+      conversation.documentsSent > OPTIONS.documents
+    ) {
+      counts.usersStoppedAtDocument += 1;
+      break;
+    }
   }
 
   if (conversation.completed) counts.registrationsCompleted += 1;
@@ -264,6 +342,17 @@ async function main(): Promise<void> {
       `  app     ${APP}\n  control ${CONTROL}\n`,
   );
 
+  if (STAGE) {
+    console.log(
+      `STAGE ${STAGE.name} - ${STAGE.users} users at human pace ` +
+        `(${STAGE.offeredTurnsPerSecond} turns/sec offered), ` +
+        `${Math.round(STAGE.duration / 60)} minutes, ` +
+        `${STAGE.documents === 0 ? 'no documents' : 'documents included'}\n` +
+        wrap(STAGE.purpose, 74, '  ') +
+        '\n',
+    );
+  }
+
   // Reset both sides so the window is exactly this run.
   await fetch(`${CONTROL}/mark`, { method: 'POST' }).catch(() => undefined);
   await fetch(`${MOCK}/__reset`, { method: 'POST' }).catch(() => undefined);
@@ -320,6 +409,7 @@ async function main(): Promise<void> {
 
   const report = {
     label: LABEL,
+    stage: STAGE?.name,
     options: OPTIONS,
     durationSeconds: round(durationMs / 1000),
     users: {
@@ -327,6 +417,7 @@ async function main(): Promise<void> {
       started: counts.usersStarted,
       finished: counts.usersFinished,
       abandoned: counts.usersAbandoned,
+      stoppedAtDocument: counts.usersStoppedAtDocument,
     },
     messages: {
       sent: counts.messagesSent,
@@ -353,11 +444,154 @@ async function main(): Promise<void> {
 
   print(report);
 
+  const verdict = STAGE ? judge(report, STAGE) : undefined;
+  if (verdict) printVerdict(STAGE!, verdict);
+
   const outDir = path.join(LOADTEST_DIR, 'results');
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, `run-${LABEL}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
   fs.writeFileSync(file, JSON.stringify(report, null, 2));
   console.log(`\nraw results: ${path.relative(process.cwd(), file)}\n`);
+
+  // A stage run is a claim being tested, so it ends in an exit code. A run
+  // without --stage is an exploration and always exits 0.
+  if (verdict?.some((v) => !v.pass)) process.exit(1);
+}
+
+/* ------------------------------------------------------------------ */
+/* Verdict                                                             */
+/* ------------------------------------------------------------------ */
+
+interface Criterion {
+  name: string;
+  actual: number | undefined;
+  limit: number;
+  pass: boolean;
+  unit: string;
+  note?: string;
+}
+
+/**
+ * Judges a run against its stage.
+ *
+ * A missing measurement is a FAIL, not a pass. The rig can fail to report - a
+ * control port that did not answer, an instrumentation gap - and a threshold
+ * that silently passes because nobody measured it is the most expensive kind of
+ * green there is.
+ */
+function judge(report: Record<string, any>, stage: Stage): Criterion[] {
+  const t = stage.thresholds;
+  const server = report.server;
+
+  // The deepest any one queue got at any sample during the run.
+  const depths: number[] = Object.values(
+    (server?.queue?.depth ?? {}) as Record<string, { max?: number }>,
+  )
+    .map((d) => d?.max)
+    .filter((n): n is number => typeof n === 'number');
+
+  const at = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
+
+  const criteria: Criterion[] = [
+    {
+      name: 'ACK latency p95',
+      actual: at(report.ackLatencyMs?.p95),
+      limit: t.ackP95Ms,
+      unit: 'ms',
+      pass: false,
+      note: 'what Meta waits for; sustained highs mean redeliveries',
+    },
+    {
+      name: 'reply latency p95',
+      actual: at(report.replyLatencyMs?.p95),
+      limit: t.replyP95Ms,
+      unit: 'ms',
+      pass: false,
+      note: 'what a candidate actually waits for',
+    },
+    {
+      name: 'peak queue depth',
+      actual: depths.length ? Math.max(...depths) : undefined,
+      limit: t.maxQueueDepth,
+      unit: ' jobs',
+      pass: false,
+      note: 'flat is passing; rising is failing whatever the averages say',
+    },
+    {
+      name: 'event-loop lag p99',
+      actual: at(server?.eventLoopLagMs?.p99),
+      limit: t.eventLoopP99Ms,
+      unit: 'ms',
+      pass: false,
+      note: 'blocking, not waiting - the one where more concurrency hurts',
+    },
+    {
+      name: 'reply timeouts',
+      actual: at(report.replyTimeouts),
+      limit: t.replyTimeouts,
+      unit: '',
+      pass: false,
+      note: 'a candidate who was never answered',
+    },
+    {
+      name: 'candidates who gave up',
+      actual: at(report.users?.abandoned),
+      limit: t.abandoned,
+      unit: '',
+      pass: false,
+    },
+    {
+      name: 'blocked outbound',
+      actual: at(server?.graph?.blocked),
+      limit: 0,
+      unit: '',
+      pass: false,
+      note: 'above zero means a reply was dropped rather than delayed',
+    },
+  ];
+
+  for (const c of criteria) c.pass = c.actual !== undefined && c.actual <= c.limit;
+  return criteria;
+}
+
+function printVerdict(stage: Stage, criteria: Criterion[]): void {
+  const failed = criteria.filter((c) => !c.pass);
+
+  console.log(`\n${'='.repeat(74)}`);
+  console.log(`  VERDICT - stage ${stage.name}`);
+  console.log('='.repeat(74) + '\n');
+
+  for (const c of criteria) {
+    const mark = c.pass ? '\x1b[32mPASS\x1b[0m' : '\x1b[31mFAIL\x1b[0m';
+    const actual = c.actual === undefined ? 'NOT MEASURED' : `${c.actual}${c.unit}`;
+    console.log(
+      `  ${mark}  ${c.name.padEnd(24)} ${actual.padStart(14)}  (limit ${c.limit}${c.unit})`,
+    );
+    if (!c.pass && c.note) console.log(`        ${c.note}`);
+  }
+
+  console.log(
+    failed.length
+      ? `\n\x1b[31m  stage ${stage.name} FAILED on ${failed.length} of ${criteria.length} criteria\x1b[0m\n`
+      : `\n\x1b[32m  stage ${stage.name} PASSED\x1b[0m\n`,
+  );
+}
+
+/** Wraps prose to a width, for the stage purpose printed at the top of a run. */
+function wrap(text: string, width: number, indent: string): string {
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let line = '';
+  for (const word of words) {
+    if ((line + ' ' + word).trim().length > width) {
+      lines.push(indent + line.trim());
+      line = word;
+    } else {
+      line += ' ' + word;
+    }
+  }
+  if (line.trim()) lines.push(indent + line.trim());
+  return lines.join('\n');
 }
 
 const round = (n: number) => Math.round(n * 100) / 100;
