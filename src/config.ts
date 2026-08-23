@@ -124,6 +124,21 @@ const schema = z.object({
    */
   MODEL_MAX_QUEUED: z.coerce.number().int().min(0).default(32),
 
+  /**
+   * A fleet-wide ceiling on model calls per second. 0 disables it.
+   *
+   * The counterpart to MODEL_MAX_CONCURRENCY, and deliberately a different kind
+   * of limit. Concurrency is bounded per process, because what it protects is
+   * this process's memory. Rate is bounded across every process, because what it
+   * protects is an organisation-wide quota that Anthropic enforces per minute
+   * and that four replicas would otherwise spend four times over.
+   *
+   * Off by default: the right number is an account fact, and a limiter set from
+   * a guess is a self-inflicted outage. Set it from the tier's requests-per-
+   * minute divided by sixty, with headroom.
+   */
+  MODEL_RATE_PER_SECOND: z.coerce.number().int().min(0).default(0),
+
   VERIS_OCR_BASE_URL: z.string().min(1),
   VERIS_OCR_API_KEY: z.string().min(1),
   VERIS_OCR_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),

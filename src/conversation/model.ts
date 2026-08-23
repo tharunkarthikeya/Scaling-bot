@@ -33,6 +33,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { modelBudget } from '../whatsapp/rateLimiter.js';
 
 /**
  * Raised when a call could not be completed for a reason that is ours or
@@ -188,6 +189,24 @@ async function takeSlot(label: string): Promise<void> {
  */
 export async function callModel<T>(label: string, run: () => Promise<T>): Promise<T> {
   await takeSlot(label);
+
+  // The local slot is taken first on purpose. It is what bounds the number of
+  // calls that can be *waiting* here, and the wait below is unbounded in time.
+  // Queueing on the global limiter before the local gate would let every worker
+  // in the fleet pile into an unbounded wait, which is the memory failure the
+  // local gate exists to prevent.
+  //
+  // Undefined unless MODEL_RATE_PER_SECOND is set, in which case this is the one
+  // place the whole fleet is paced against Anthropic's per-minute quota.
+  if (modelBudget) {
+    const waitedFrom = Date.now();
+    await modelBudget.acquire();
+    const waited = Date.now() - waitedFrom;
+    if (waited > 1_000) {
+      logger.warn({ label, waitedMs: waited }, 'waited on the fleet-wide model rate limit');
+    }
+  }
+
   counters.calls += 1;
 
   const startedAt = Date.now();

@@ -1,6 +1,6 @@
 import { config, graphBaseUrl } from '../config.js';
 import { logger } from '../logger.js';
-import { RateLimiter } from './rateLimiter.js';
+import { createBudget } from './rateLimiter.js';
 
 /**
  * Outbound Graph traffic, split by what Meta is actually being asked to do.
@@ -17,11 +17,11 @@ import { RateLimiter } from './rateLimiter.js';
  */
 const budgets = {
   /** Messages to candidates. Waited for, never dropped. */
-  replies: new RateLimiter(config.OUTBOUND_RATE_PER_SECOND),
+  replies: createBudget('replies', config.OUTBOUND_RATE_PER_SECOND),
   /** Blue ticks. Dropped when there is no room — see `markAsRead`. */
-  receipts: new RateLimiter(config.READ_RECEIPT_RATE_PER_SECOND),
+  receipts: createBudget('receipts', config.READ_RECEIPT_RATE_PER_SECOND),
   /** Inbound document fetches. Waited for; the file matters. */
-  media: new RateLimiter(config.MEDIA_DOWNLOAD_RATE_PER_SECOND),
+  media: createBudget('media', config.MEDIA_DOWNLOAD_RATE_PER_SECOND),
 } as const;
 
 /**
@@ -294,7 +294,7 @@ export async function sendReengagementTemplate(to: string): Promise<SendResult> 
 export async function markAsRead(wamid: string): Promise<void> {
   if (config.SHADOW_MODE) return;
 
-  if (!budgets.receipts.tryAcquire()) {
+  if (!(await budgets.receipts.tryAcquire())) {
     logger.debug({ wamid }, 'read receipt dropped: no capacity in the receipt budget');
     return;
   }

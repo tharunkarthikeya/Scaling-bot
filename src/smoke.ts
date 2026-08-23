@@ -3358,40 +3358,40 @@ await check('the three budgets are distinct buckets, not one shared one', () => 
   assert.notEqual(receipts, media, 'receipts and media share a bucket');
 });
 
-await check('read receipts cannot spend reply capacity', () => {
+await check('read receipts cannot spend reply capacity', async () => {
   // Asserted against the real wiring rather than a copy of it, so this fails if
   // someone points `markAsRead` back at the reply budget.
   const { replies, receipts } = outboundBudgets;
 
-  const replyCapacity = replies.available;
+  const replyCapacity = await replies.available();
   assert.ok(replyCapacity > 0, 'the reply budget started empty; test cannot prove anything');
 
   // Exhaust receipts completely. The bound is a guard against a refill race,
   // not an expected iteration count.
   let drained = 0;
-  while (drained < 1000 && receipts.tryAcquire()) drained += 1;
+  while (drained < 1000 && (await receipts.tryAcquire())) drained += 1;
   assert.ok(drained > 0, 'the receipt budget had no capacity to drain');
-  assert.equal(receipts.tryAcquire(), false, 'the receipt budget refused to run out');
+  assert.equal(await receipts.tryAcquire(), false, 'the receipt budget refused to run out');
 
   // Replies are untouched by that.
+  const remaining = await replies.available();
   assert.ok(
-    replies.available >= replyCapacity,
-    `draining ${drained} receipts cost reply capacity (${replyCapacity} -> ${replies.available})`,
+    remaining >= replyCapacity,
+    `draining ${drained} receipts cost reply capacity (${replyCapacity} -> ${remaining})`,
   );
-  assert.equal(replies.tryAcquire(), true, 'a reply could not be sent after receipts ran dry');
+  assert.equal(await replies.tryAcquire(), true, 'a reply could not be sent after receipts ran dry');
 });
 
-await check('a drained receipt budget recovers on its own', () => {
+await check('a drained receipt budget recovers on its own', async () => {
   // Receipts are dropped, not queued — so the budget has to come back by itself
   // or blue ticks stop for good after the first burst.
   const limiter = new RateLimiter(20);
   let drained = 0;
-  while (drained < 1000 && limiter.tryAcquire()) drained += 1;
-  assert.equal(limiter.tryAcquire(), false);
+  while (drained < 1000 && (await limiter.tryAcquire())) drained += 1;
+  assert.equal(await limiter.tryAcquire(), false);
 
-  return nap(150).then(() => {
-    assert.equal(limiter.tryAcquire(), true, 'the budget never refilled');
-  });
+  await nap(150);
+  assert.equal(await limiter.tryAcquire(), true, 'the budget never refilled');
 });
 
 await check('candidate replies are still rate limited', async () => {
@@ -3426,25 +3426,27 @@ await check('concurrent sends are paced, not oversubscribed', async () => {
   assert.ok(elapsed >= 1400, `15 concurrent sends at 5/sec finished in ${elapsed}ms`);
 });
 
-await check('a burst can never exceed the configured ceiling', () => {
+await check('a burst can never exceed the configured ceiling', async () => {
   const limiter = new RateLimiter(8);
   let granted = 0;
-  while (granted <= 100 && limiter.tryAcquire()) granted += 1;
+  while (granted <= 100 && (await limiter.tryAcquire())) granted += 1;
   assert.equal(granted, 8, `a burst granted ${granted} tokens against a ceiling of 8`);
 });
 
-await check('tryAcquire reports honestly and never waits', () => {
+await check('tryAcquire reports honestly and never waits', async () => {
   const limiter = new RateLimiter(3);
-  assert.equal(limiter.available, 3);
+  assert.equal(await limiter.available(), 3);
 
   const started = Date.now();
-  assert.equal(limiter.tryAcquire(), true);
-  assert.equal(limiter.tryAcquire(), true);
-  assert.equal(limiter.tryAcquire(), true);
-  assert.equal(limiter.tryAcquire(), false, 'handed out a token it did not have');
-  assert.equal(limiter.available, 0);
+  assert.equal(await limiter.tryAcquire(), true);
+  assert.equal(await limiter.tryAcquire(), true);
+  assert.equal(await limiter.tryAcquire(), true);
+  assert.equal(await limiter.tryAcquire(), false, 'handed out a token it did not have');
+  assert.equal(await limiter.available(), 0);
 
-  // The point of tryAcquire: a refusal costs nothing and blocks nobody.
+  // The point of tryAcquire: a refusal costs nothing and blocks nobody. It is
+  // async now because a shared bucket lives across a socket, but it still never
+  // waits for a token to appear.
   assert.ok(Date.now() - started < 50, 'tryAcquire blocked');
 });
 
