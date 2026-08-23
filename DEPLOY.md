@@ -83,14 +83,67 @@ with a test fixture.
 Mount a persistent volume at **`/data/storage`**. Without it, every redeploy
 destroys candidate documents that have not been reviewed yet.
 
-### Redis (optional)
+### Redis (optional for one instance, required for more than one)
 
-Not required. Without `REDIS_URL` the queue runs in-process, which is fine for
-one instance — but jobs are lost on restart and are never retried. Add a Redis
-service and set `REDIS_URL` when volume justifies it.
+Without `REDIS_URL` the queue, the per-candidate lock and the outbound rate
+limiters are all per-process. That is correct for exactly **one** instance, and
+it is what this bot has run on so far — but jobs are lost on restart and never
+retried.
 
-**Do not run more than one replica without Redis.** The per-candidate lock is
-in-memory, so two instances would answer the same candidate twice.
+**Do not run more than one replica without Redis.** Three things break, and only
+the first is obvious:
+
+- the per-candidate lock is per-process, so two instances answer the same
+  candidate twice;
+- the outbound limiter is per-process, so three replicas send 60/sec against
+  Meta's 20/sec — and Meta *drops* the overage rather than queueing it, so
+  scaling out makes delivery worse;
+- documents are written to a local volume by whichever instance received them
+  and are not visible to the instance that later reads them back for OCR.
+
+With `REDIS_URL` set, all three become fleet-wide and the replica count is free.
+
+Create a Redis service in the **same Dokploy project** and use its Internal
+Connection URL — the hostname is the service name on the internal network, port
+6379. Do not expose it publicly: it holds candidate lock state and job payloads.
+
+### More than one instance
+
+Set `ROLE` per service. One image, three deployments:
+
+| ROLE | Serves | Consumes | Sweeps | Scale with |
+|---|---|---|---|---|
+| `all` | webhook + API | yes | yes | *the default; leave it here for one instance* |
+| `web` | webhook + API | no | no | inbound traffic |
+| `worker` | `/health`, `/metrics` | yes | no | queue backlog |
+| `scheduler` | `/health`, `/metrics` | no | yes (one at a time) | never — replicas are for failover |
+
+Anything but `all` **requires** `REDIS_URL` and `STORAGE_DRIVER=s3`; the process
+refuses to start otherwise rather than starting wrong. `scheduler` replicas
+elect one sweeper through a Redis lease, so running two is redundancy and not
+duplicated work.
+
+Point the load balancer at the `web` service only. `worker` and `scheduler`
+listen so they can be health-checked, and serve nothing else.
+
+### Storage for more than one instance
+
+`STORAGE_DRIVER=s3` with `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
+and — for anything that is not real AWS — `S3_ENDPOINT`.
+
+**Migrate before switching.** Keys are identical across both drivers, but
+documents already on the volume are not in the bucket. Copy `/data/storage` into
+the bucket first, then change the variable; otherwise every existing document is
+stranded and every review task pointing at one fails.
+
+### Metrics
+
+`GET /metrics`, Prometheus text format, on every role. Set `METRICS_API_KEY`
+(16+ characters) — this bot is served at a public hostname, and unset means the
+endpoint is open. It carries no candidate PII by construction.
+
+Watch queue depth first. Flat is keeping up; monotonically rising is not,
+whatever the latency averages say.
 
 ---
 

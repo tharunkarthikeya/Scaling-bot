@@ -431,10 +431,4 @@ export const queue: JobQueue = config.REDIS_URL ? new RedisQueue() : new InProce
  * `from '../queue/index.js'` did not all have to be edited to prove the same
  * behaviour.
  */
-export {
-  withCandidateLock,
-  releaseHeldLocks,
-  lockStats,
-  LockTimeoutError,
-  type LockHandle,
-} from './lock.js';
+export { withCandidateLock, lockStats, LockTimeoutError, type LockHandle } from './lock.js';

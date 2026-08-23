@@ -398,17 +398,3 @@ export async function withCandidateLock<T>(
     }
   });
 }
-
-/**
- * Releases everything this process still holds.
- *
- * Called on shutdown so a rolling deploy hands candidates over immediately
- * rather than leaving them locked for the remainder of a TTL.
- */
-export async function releaseHeldLocks(): Promise<void> {
-  if (!redisEnabled() || held.size === 0) return;
-  logger.info({ count: held.size }, 'releasing held candidate locks');
-  // Only the TTL can be relied on here — the tokens belong to in-flight calls.
-  // Waiting for them is the shutdown path's job, not this one's.
-  held.clear();
-}

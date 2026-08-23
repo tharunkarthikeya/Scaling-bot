@@ -1955,54 +1955,70 @@ export async function endIdleSessions(limit = 200): Promise<number> {
     // The same lock the queue holds. Without it this can land between a
     // candidate's reply and the answer to it — they would be told the session
     // ended a second after being asked the next question.
-    ended += await withCandidateLock(row.waId, async () => {
-      // Re-read under the lock: they may have replied while we queued behind
-      // their own turn, and the row in hand is a snapshot from before that.
-      const candidate = await recordsFor(row.enquiry).findOne({ _id: row._id });
-      if (!candidate) return 0;
-      if (candidate.sessionEndedAt != null) return 0;
-      if (!RESUMABLE_STAGES.has(candidate.stage)) return 0;
-      if (!sessionTimedOut(candidate.lastInboundAt)) return 0;
+    //
+    // Caught per candidate, because the lock can now refuse. It is a Redis key
+    // rather than a local map, so a candidate mid-turn on another instance
+    // holds it and `withCandidateLock` throws once it has waited its timeout
+    // out. Letting that propagate would abandon the rest of this sweep over one
+    // busy candidate — and the one thing a candidate who is actively messaging
+    // does not need is to be told their session went idle. Skipping them is
+    // both the safe answer and the correct one; the next tick will find them if
+    // they really did go quiet.
+    try {
+      ended += await withCandidateLock(row.waId, async () => {
+        // Re-read under the lock: they may have replied while we queued behind
+        // their own turn, and the row in hand is a snapshot from before that.
+        const candidate = await recordsFor(row.enquiry).findOne({ _id: row._id });
+        if (!candidate) return 0;
+        if (candidate.sessionEndedAt != null) return 0;
+        if (!RESUMABLE_STAGES.has(candidate.stage)) return 0;
+        if (!sessionTimedOut(candidate.lastInboundAt)) return 0;
 
-      const claimed = await recordsFor(candidate.enquiry).updateOne(
-        { _id: candidate._id, sessionEndedAt: { $exists: false } },
-        { $set: { sessionEndedAt: new Date(), updatedAt: new Date() } },
-      );
-      if (!claimed.modifiedCount) return 0;
+        const claimed = await recordsFor(candidate.enquiry).updateOne(
+          { _id: candidate._id, sessionEndedAt: { $exists: false } },
+          { $set: { sessionEndedAt: new Date(), updatedAt: new Date() } },
+        );
+        if (!claimed.modifiedCount) return 0;
 
-      await recordAudit({
-        waId: candidate.waId,
-        candidateId: candidate.candidateId,
-        event: 'session_timed_out',
-        detail: `idle at "${candidate.currentStep ?? 'unknown step'}"`,
-      });
+        await recordAudit({
+          waId: candidate.waId,
+          candidateId: candidate.candidateId,
+          event: 'session_timed_out',
+          detail: `idle at "${candidate.currentStep ?? 'unknown step'}"`,
+        });
 
-      // Backfill for records written before a field or document existed — the
-      // render path reads both.
-      candidate.documents = withMissingSlots(candidate.documents);
-      candidate.profile ??= {};
-      candidate.fieldMeta ??= {};
+        // Backfill for records written before a field or document existed — the
+        // render path reads both.
+        candidate.documents = withMissingSlots(candidate.documents);
+        candidate.profile ??= {};
+        candidate.fieldMeta ??= {};
 
-      // Only an approved template may be sent outside the window, and this is
-      // not one. A candidate five minutes idle is comfortably inside it; the
-      // guard is for the backlog a restart sweeps up, where the alternative is
-      // a message Meta rejects for everyone who went quiet yesterday.
-      if ((candidate.windowExpiresAt?.getTime() ?? 0) > Date.now()) {
-        try {
-          await askResume(candidate, copy.SESSION_ENDED, copy.RESUME_CHOICES, MENU.resume);
-        } catch (err) {
-          // The session is closed either way; `handleInboundMessage` still
-          // offers the same choice on their next message.
-          logger.error({ err, waId: candidate.waId }, 'session-ended notice failed to send');
+        // Only an approved template may be sent outside the window, and this is
+        // not one. A candidate five minutes idle is comfortably inside it; the
+        // guard is for the backlog a restart sweeps up, where the alternative is
+        // a message Meta rejects for everyone who went quiet yesterday.
+        if ((candidate.windowExpiresAt?.getTime() ?? 0) > Date.now()) {
+          try {
+            await askResume(candidate, copy.SESSION_ENDED, copy.RESUME_CHOICES, MENU.resume);
+          } catch (err) {
+            // The session is closed either way; `handleInboundMessage` still
+            // offers the same choice on their next message.
+            logger.error({ err, waId: candidate.waId }, 'session-ended notice failed to send');
+          }
         }
-      }
 
-      // Closed after the notice, so the sentence telling them the sitting ended
-      // is the last line of that sitting rather than the first of the next.
-      await closeOpenSession(candidate.waId);
+        // Closed after the notice, so the sentence telling them the sitting ended
+        // is the last line of that sitting rather than the first of the next.
+        await closeOpenSession(candidate.waId);
 
-      return 1;
-    });
+        return 1;
+      });
+    } catch (err) {
+      logger.warn(
+        { err, waId: row.waId },
+        'skipped a candidate in the idle-session sweep: their lock was held elsewhere',
+      );
+    }
   }
 
   if (ended) logger.info({ ended }, 'idle sessions closed and candidates told');
