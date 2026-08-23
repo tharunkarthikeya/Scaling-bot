@@ -1,4 +1,4 @@
-# MongoDB for the load test, and nothing else.
+# MongoDB and Redis for the load test and the scaling tests.
 #
 # Port 27018, not 27017 — so a rig misconfiguration cannot land on a local
 # development mongod, and so this can run alongside one. The rig refuses any
@@ -10,6 +10,11 @@
 #
 #   docker compose -f loadtest/docker-compose.yml up -d
 #   docker compose -f loadtest/docker-compose.yml down -v
+#
+# Redis is here rather than in a file of its own because the scaling tests and
+# the load rig want the same one: the rig needs a queue that survives a restart
+# to measure job loss, and src/scaling-test.ts needs a real Redis to prove that
+# locks and rate limits cross process boundaries at all.
 
 services:
   mongo:
@@ -34,3 +39,45 @@ services:
           # 4-core budget is not spent on the database.
           cpus: "1.5"
           memory: 3G
+
+  # Unlike Mongo above, this is on the default port.
+  #
+  # Mongo moved to 27018 so a misconfigured rig could not land on a development
+  # database and write to it. Redis does not need that guard, because it is not
+  # addressed by database name: every key the tests and the rig write is under a
+  # per-run REDIS_KEY_PREFIX, so landing on a development Redis would create a
+  # handful of namespaced keys and delete exactly those again at the end.
+  #
+  # Staying on 6379 is what makes `npm run test:scaling` work with no
+  # environment at all, which is worth more than a guard against a collision
+  # that cannot corrupt anything.
+  redis:
+    image: redis:7-alpine
+    container_name: adira-loadtest-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    command:
+      - redis-server
+      # Test data. Nothing here is worth writing to disk, and an fsync in the
+      # middle of a load run would be measured as application latency.
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      # BullMQ requires noeviction: a queue that silently drops keys under
+      # memory pressure loses jobs, which is the one thing a durable queue is
+      # for. Redis defaults to this, and it is stated rather than assumed.
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M

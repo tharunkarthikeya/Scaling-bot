@@ -105,7 +105,12 @@ const DEFAULT_JOB_OPTIONS: JobsOptions = {
 /* Redis-backed (production)                                           */
 /* ------------------------------------------------------------------ */
 
-class RedisQueue implements JobQueue {
+/**
+ * Exported for the scaling tests, which build more than one of these to stand
+ * in for more than one worker process. Application code uses the `queue`
+ * singleton at the bottom of this file and should never construct its own.
+ */
+export class RedisQueue implements JobQueue {
   private readonly connection: Redis;
   private readonly queues = new Map<JobName, BullQueue>();
   private readonly workers: Worker[] = [];
