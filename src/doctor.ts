@@ -11,6 +11,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config, graphBaseUrl } from './config.js';
+import { accessTokenFor } from './conversation/lines.js';
 
 type State = 'ok' | 'warn' | 'fail';
 
@@ -195,9 +196,12 @@ try {
 
 /* 6. WhatsApp credentials ------------------------------------------------- */
 
-async function graphGet(pathname: string): Promise<{ ok: boolean; status: number; body: any }> {
+async function graphGet(
+  pathname: string,
+  line?: string,
+): Promise<{ ok: boolean; status: number; body: any }> {
   const res = await fetch(`${graphBaseUrl}/${pathname}`, {
-    headers: { Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}` },
+    headers: { Authorization: `Bearer ${accessTokenFor(line)}` },
     signal: AbortSignal.timeout(20_000),
   });
   const body = await res.json().catch(() => ({}));
@@ -241,6 +245,7 @@ for (const line of lines) {
   try {
     const r = await graphGet(
       `${line.id}?fields=display_phone_number,verified_name,quality_rating`,
+      line.id,
     );
     if (r.ok) {
       record(
@@ -264,31 +269,54 @@ for (const line of lines) {
 
 /* 7. Is Meta actually subscribed to send us anything? --------------------- */
 
-if (config.WHATSAPP_WABA_ID) {
+// Every WABA, because the two numbers are on two of them. Checking one would
+// report the fleet as subscribed while every message to the other number went
+// nowhere — the failure this loop exists to make visible.
+const wabas: Array<{ label: string; id?: string; variable: string; line?: string }> = [
+  { label: 'webhook subscription', id: config.WHATSAPP_WABA_ID, variable: 'WHATSAPP_WABA_ID' },
+  ...(config.WHATSAPP_PHONE_NUMBER_ID_SGMY
+    ? [
+        {
+          label: 'webhook subscription (Singapore/Malaysia line)',
+          id: config.WHATSAPP_WABA_ID_SGMY,
+          variable: 'WHATSAPP_WABA_ID_SGMY',
+          line: config.WHATSAPP_PHONE_NUMBER_ID_SGMY,
+        },
+      ]
+    : []),
+];
+
+for (const waba of wabas) {
+  if (!waba.id) {
+    record('warn', waba.label, `${waba.variable} not set — cannot check`);
+    continue;
+  }
+
   try {
-    const r = await graphGet(`${config.WHATSAPP_WABA_ID}/subscribed_apps`);
+    // On the line's own token. Where the two numbers sit under two Meta apps,
+    // the main token cannot see the second WABA and the check would report a
+    // permissions error as a missing subscription.
+    const r = await graphGet(`${waba.id}/subscribed_apps`, waba.line);
     const apps = Array.isArray(r.body?.data) ? r.body.data : [];
     if (r.ok && apps.length) {
       const names = apps
         .map((a: any) => a?.whatsapp_business_api_data?.name ?? a?.whatsapp_business_api_data?.id ?? '?')
         .join(', ');
-      record('ok', 'webhook subscription', `app subscribed — ${names}`);
+      record('ok', waba.label, `app subscribed — ${names}`);
     } else if (r.ok) {
       record(
         'fail',
-        'webhook subscription',
+        waba.label,
         'no app is subscribed to this WABA',
         'In Meta → WhatsApp → Configuration, set the callback URL and verify token, ' +
           'then subscribe the app to the "messages" field. Until this exists, nothing reaches the bot.',
       );
     } else {
-      record('warn', 'webhook subscription', `${r.status} ${r.body?.error?.message ?? ''}`);
+      record('warn', waba.label, `${r.status} ${r.body?.error?.message ?? ''}`);
     }
   } catch (err) {
-    record('warn', 'webhook subscription', short(err));
+    record('warn', waba.label, short(err));
   }
-} else {
-  record('warn', 'webhook subscription', 'WHATSAPP_WABA_ID not set — cannot check');
 }
 
 /* 8. Summary -------------------------------------------------------------- */

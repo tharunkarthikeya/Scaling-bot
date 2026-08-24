@@ -30,6 +30,14 @@ const schema = z.object({
 
   MONGODB_URI: z.string().min(1),
   MONGODB_DB: z.string().min(1),
+  /**
+   * The ATS database a finished conversation is copied into.
+   *
+   * A second database on the same deployment, not a second server, so it needs
+   * no connection string of its own. Blank it to turn the export off entirely,
+   * which is what a test or a local run that has no ATS to write to wants.
+   */
+  RESUME_ATS_DB: blankable(z.string().min(1).optional().default('resume_ats')),
 
   /* ---------------------------------------------------------------- */
   /* Redis - what makes more than one instance safe                     */
@@ -93,6 +101,30 @@ const schema = z.object({
    */
   WHATSAPP_PHONE_NUMBER_ID_SGMY: blankable(z.string().min(1).optional()),
   WHATSAPP_WABA_ID: blankable(z.string().min(1).optional()),
+  /**
+   * The WhatsApp Business Account the second number belongs to.
+   *
+   * The two numbers are on two WABAs. Only `doctor` reads this — it is how the
+   * webhook subscription is checked, and checking one WABA would have said the
+   * fleet was subscribed while every message to the other number went nowhere.
+   */
+  WHATSAPP_WABA_ID_SGMY: blankable(z.string().min(1).optional()),
+
+  /* ---------------------------------------------------------------- */
+  /* Credentials, where the second line does not share them             */
+  /*                                                                    */
+  /* Two WABAs under one Meta app share an app secret and an access      */
+  /* token, and both of these stay unset. Two WABAs under two apps do    */
+  /* not, and leaving these unset would be a webhook signature that      */
+  /* never verifies and a Graph call that always 401s — for the second   */
+  /* number only, which looks exactly like the bot ignoring it.          */
+  /*                                                                    */
+  /* Each falls back to the main line's value, so unset means "same app" */
+  /* and nothing changes for a deployment that has always had one.       */
+  /* ---------------------------------------------------------------- */
+
+  WHATSAPP_APP_SECRET_SGMY: blankable(z.string().min(1).optional()),
+  WHATSAPP_ACCESS_TOKEN_SGMY: blankable(z.string().min(1).optional()),
   WHATSAPP_GRAPH_API_VERSION: z.string().default('v25.0'),
 
   WHATSAPP_REENGAGEMENT_TEMPLATE: blankable(z.string().min(1).optional()),
@@ -550,6 +582,30 @@ const schema = z.object({
   .superRefine((env, ctx) => {
     const missing = (path: string, message: string) =>
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+
+    // One number cannot run two flows. Set to the same id, `variantForLine`
+    // would answer `sgmy` for every message and the main flow would be
+    // unreachable — which is a one-character mistake in an environment tab and
+    // an entire product behaving differently.
+    if (
+      env.WHATSAPP_PHONE_NUMBER_ID_SGMY &&
+      env.WHATSAPP_PHONE_NUMBER_ID_SGMY === env.WHATSAPP_PHONE_NUMBER_ID
+    ) {
+      missing(
+        'WHATSAPP_PHONE_NUMBER_ID_SGMY',
+        'must be the other number - it is the same as WHATSAPP_PHONE_NUMBER_ID, ' +
+          'which would route every candidate to the Singapore/Malaysia flow',
+      );
+    }
+
+    // A WABA for a line that does not exist is a copy-paste, and it would be
+    // reported as a healthy subscription for a number nothing is routed to.
+    if (env.WHATSAPP_WABA_ID_SGMY && !env.WHATSAPP_PHONE_NUMBER_ID_SGMY) {
+      missing(
+        'WHATSAPP_PHONE_NUMBER_ID_SGMY',
+        'required when WHATSAPP_WABA_ID_SGMY is set - the second line needs a number',
+      );
+    }
 
     if (env.STORAGE_DRIVER === 's3') {
       if (!env.S3_BUCKET) missing('S3_BUCKET', 'required when STORAGE_DRIVER=s3');

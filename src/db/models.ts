@@ -368,8 +368,16 @@ export interface CandidateDoc {
    */
   candidateId?: string;
 
-  /** Which of the three opening options they chose (§2). */
-  enquiry?: 'apply' | 'b2b' | 'track';
+  /**
+   * Which branch this conversation is on (§2).
+   *
+   *   apply  registration
+   *   track  reading back a decision staff recorded
+   *   b2b    a business contact, filed in its own collection
+   *   staff  somebody who asked to speak to a person, and is being asked the
+   *          seven questions that make that call useful (§24)
+   */
+  enquiry?: 'apply' | 'b2b' | 'track' | 'staff';
 
   /**
    * Which of the agency's numbers this conversation belongs to.
@@ -516,11 +524,22 @@ export interface CandidateDoc {
    * and the date of birth is compared and discarded, never stored here.
    */
   tracking?: {
-    /** The Application ID they typed, once it matched a record on this number. */
-    candidateId: string;
-    /** Failed date-of-birth attempts so far. */
+    /**
+     * The application the date-of-birth question is being asked about.
+     *
+     * Absent during the "I have lost my id" lookup, which runs the other way
+     * round — a mobile number and a date of birth that between them name an id
+     * nobody has typed yet.
+     */
+    candidateId?: string;
     attempts: number;
     startedAt: Date;
+    /** Ids that missed. Two, and the lookup below is offered (§25). */
+    idAttempts?: number;
+    /** The mobile number given to the lookup, held while the date is asked for. */
+    forgotMobile?: string;
+    /** Mobile-and-date pairs that missed. Capped like the id check itself. */
+    forgotAttempts?: number;
   };
 
   /** Meta's 24-hour customer service window. Outside it, only templates may be sent. */
@@ -814,7 +833,16 @@ export interface AuditEventDoc {
     | 'passport_expired'
     | 'passport_expiring_soon'
     /** A business contact chose the B2B branch (§2), so data collection began. */
-    | 'b2b_enquiry_started';
+    | 'b2b_enquiry_started'
+    /**
+     * Somebody asked to speak to a person (§24), so the intake began.
+     *
+     * Audited rather than only logged for the same reason consent is: it is the
+     * moment a name and two identity documents started being collected from
+     * somebody who had not registered for anything.
+     */
+    | 'staff_enquiry_started'
+    | 'staff_enquiry_completed';
   detail?: string;
   at: Date;
 }
@@ -1523,15 +1551,39 @@ export async function recordAudit(
  */
 export const CANDIDATE_ID_PREFIX = 'ADR';
 
+/**
+ * The prefix on a staff enquiry's reference number (§24).
+ *
+ * Deliberately not `ADR`. An ADR id means a registration a recruiter can work
+ * on; this is somebody who asked for a call back, and giving the two the same
+ * shape would have staff opening one expecting the other. Its own counter too,
+ * so the two series do not interleave and neither can be used to guess how many
+ * of the other there are.
+ */
+export const ENQUIRY_ID_PREFIX = 'ENQ';
+
 /** Digits in the sequence part of an id. The tracking flow pads to this. */
 export const CANDIDATE_ID_DIGITS = 5;
 
-export async function nextCandidateId(prefix = CANDIDATE_ID_PREFIX): Promise<string> {
+export async function nextCandidateId(
+  prefix = CANDIDATE_ID_PREFIX,
+  counter = 'candidateId',
+): Promise<string> {
   const result = await counters().findOneAndUpdate(
-    { _id: 'candidateId' },
+    { _id: counter },
     { $inc: { seq: 1 } },
     { upsert: true, returnDocument: 'after' },
   );
   const seq = result?.seq ?? 1;
   return `${prefix}-${String(seq).padStart(CANDIDATE_ID_DIGITS, '0')}`;
+}
+
+/**
+ * The next staff-enquiry reference number (§24).
+ *
+ * Its own counter, so `ENQ-00001` is the first call-back request rather than
+ * whatever number the registrations happened to have reached.
+ */
+export function nextEnquiryId(): Promise<string> {
+  return nextCandidateId(ENQUIRY_ID_PREFIX, 'enquiryId');
 }

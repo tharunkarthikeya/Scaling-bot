@@ -370,6 +370,17 @@ export const TUNABLES = {
    * misremembered format, and few enough to be no use for guessing.
    */
   maxTrackingDobAttempts: 3,
+  /**
+   * Application IDs that may miss before the "I have lost it" lookup is offered
+   * (§25).
+   *
+   * Two, and both of them are the same message: check it and send it again. A
+   * transposed digit and a missing zero are what the first two attempts are
+   * for, and offering a slower path in front of a typo teaches candidates to
+   * take it. The third miss is somebody who genuinely does not have their id,
+   * which is a different problem and gets a different answer.
+   */
+  maxTrackingIdAttempts: 2,
   /** OCR field confidence below this routes the document to human review. */
   ocrReviewThreshold: 0.85,
   /** Flag a passport expiring within this many months for staff attention (§12). */

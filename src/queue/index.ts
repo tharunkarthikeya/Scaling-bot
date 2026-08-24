@@ -30,6 +30,14 @@ export interface JobPayloads {
    * rather than failing a registration the candidate has already completed.
    */
   crm_sync: { waId: string };
+  /**
+   * Copying a finished conversation into the ATS database (`ats/export.ts`).
+   *
+   * Its own job for the same reason `crm_sync` is one: the candidate has
+   * already been told they are done, and a second database being briefly
+   * unreachable is ours to retry rather than theirs to wait for.
+   */
+  ats_export: { waId: string };
 }
 
 export type JobName = keyof JobPayloads;

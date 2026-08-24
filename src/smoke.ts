@@ -49,7 +49,10 @@ import { assertOcrRoutingIsSafe, DOCUMENTS, NEVER_OCR } from './conversation/rul
 import {
   desiredJobForLevel,
   disambiguationChoices,
+  FLOWS,
   labelFor,
+  STAFF_STEPS,
+  STAFF_STEPS_SGMY,
   fieldsToClear,
   inferTradeAnswers,
   inferTradePacks,
@@ -105,6 +108,15 @@ import * as copy from './conversation/copy.js';
 import { toCrmPayload } from './crm/mapping.js';
 import { resetTaxonomy, setTaxonomyForTests } from './crm/taxonomy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
+import {
+  CHOICE_FORGOT_ID,
+  CHOICE_STAFF,
+  CONFIRM_CHOICES,
+  RETURNING_CHOICES,
+} from './conversation/copy.js';
+import { CANDIDATE_ID_PREFIX, ENQUIRY_ID_PREFIX } from './db/models.js';
+import { ATS_COLLECTIONS } from './ats/client.js';
+import { atsDocumentRoutes, atsRouteFor } from './ats/export.js';
 import { inspectUpload, normaliseExtractionForTests, resumeCompleteness } from './ocr/veris.js';
 import {
   JobQueueFullError,
@@ -425,7 +437,9 @@ await check('the confirmation offers its buttons to the interpreter too (§18)',
   const c = candidate({ currentStep: 'confirm' });
   assert.deepEqual(
     acceptedChoices(stepById('confirm')!, c).map((o) => o.id),
-    ['correct', 'edit', 'staff'],
+    // Two, not three. The staff row used to sit here as well, and a person is
+    // now reached from the opening menu alone.
+    ['correct', 'edit'],
   );
 });
 
@@ -2759,6 +2773,222 @@ await check('both lines share every step they have in common', () => {
   // And the one question that is not shared is not shared in either direction.
   assert.ok(!SGMY_STEPS.some((step) => step.id === 'country_preference'));
   assert.ok(!STEPS.some((step) => step.id === 'country_preference_sgmy'));
+});
+
+console.log('\nreaching a person: one route, and the intake in front of it (§24)');
+
+/** Somebody who tapped Other → Talk to staff and nothing else. */
+function staffEnquirer(variant?: 'sgmy'): CandidateDoc {
+  return candidate({
+    stage: 'NEW',
+    enquiry: 'staff',
+    languageChosen: undefined,
+    consent: undefined,
+    profile: {},
+    ...(variant ? { flowVariant: variant } : {}),
+  });
+}
+
+await check('the staff option is offered in one place and one place only', () => {
+  // The "Other" menu keeps it. That is the whole design.
+  assert.ok(
+    OTHER_CHOICES.some((o) => o.id === CHOICE_STAFF.id),
+    'Other → Talk to staff is the route to a person',
+  );
+
+  // Nowhere else. Not on the confirmation, not on the returning menu, and not
+  // on any step in any of the four flows — including the hidden choices a step
+  // offers the interpreter, with the single documented exception of the opening
+  // menu, where it is understood in words and sent to the same intake.
+  assert.ok(!CONFIRM_CHOICES.some((o) => o.id === CHOICE_STAFF.id), 'confirmation');
+  assert.ok(!RETURNING_CHOICES.some((o) => o.id === CHOICE_STAFF.id), 'returning menu');
+
+  for (const [name, steps] of Object.entries(FLOWS)) {
+    for (const step of steps) {
+      assert.ok(
+        !(step.choices ?? []).some((o) => o.id === CHOICE_STAFF.id),
+        `step "${step.id}" in the ${name} flow still renders a staff row`,
+      );
+      if (step.id === 'entry') continue;
+      assert.ok(
+        !(step.hiddenChoices ?? []).some((o) => o.id === CHOICE_STAFF.id),
+        `step "${step.id}" in the ${name} flow still offers staff to the interpreter`,
+      );
+    }
+  }
+});
+
+await check('a staff enquiry is asked seven things, in order (§24)', () => {
+  assert.deepEqual(
+    STAFF_STEPS.map((s) => s.id),
+    [
+      'language',
+      'language_other',
+      'full_name',
+      'country_preference',
+      'passport_status',
+      'passport_upload',
+      'aadhaar_upload',
+      'pan_upload',
+      'confirm',
+    ],
+  );
+
+  // The second line differs in exactly the way registration does: two
+  // destinations instead of five.
+  assert.deepEqual(
+    STAFF_STEPS_SGMY.map((s) => s.id),
+    STAFF_STEPS.map((s) => (s.id === 'country_preference' ? 'country_preference_sgmy' : s.id)),
+  );
+
+  // None of registration is in it — no consent, no CV, no trade, no job.
+  for (const id of ['consent', 'cv', 'main_trade', 'job_preference', 'availability', 'dob']) {
+    assert.ok(!STAFF_STEPS.some((s) => s.id === id), `"${id}" does not belong in the intake`);
+  }
+});
+
+await check('the intake walks language → name → country → documents → confirm', () => {
+  const c = staffEnquirer();
+  assert.equal(nextStep(c)?.id, 'language');
+
+  c.languageChosen = true;
+  assert.equal(nextStep(c)?.id, 'full_name');
+
+  c.profile.fullName = 'Asha Kumari';
+  assert.equal(nextStep(c)?.id, 'country_preference');
+
+  c.profile.countryPreference = 'gcc';
+  assert.equal(nextStep(c)?.id, 'passport_status');
+
+  c.profile.passportStatus = 'yes';
+  assert.equal(nextStep(c)?.id, 'passport_upload');
+
+  c.documents.passport!.status = 'ocr_done';
+  assert.equal(nextStep(c)?.id, 'aadhaar_upload');
+
+  c.documents.aadhaar!.status = 'ocr_done';
+  assert.equal(nextStep(c)?.id, 'pan_upload');
+
+  c.documents.pan!.status = 'received';
+  assert.equal(nextStep(c)?.id, 'confirm');
+
+  // Confirmed. The intake ends in a handover, not in REGISTRATION_COMPLETED, so
+  // the reference number is what says the confirmation was answered.
+  c.candidateId = 'ENQ-00001';
+  assert.equal(nextStep(c), undefined, 'nothing is left to ask');
+});
+
+await check('somebody without a passport is not asked to photograph one', () => {
+  const c = staffEnquirer();
+  c.languageChosen = true;
+  c.profile.fullName = 'Asha Kumari';
+  c.profile.countryPreference = 'gcc';
+  c.profile.passportStatus = 'no';
+  assert.equal(nextStep(c)?.id, 'aadhaar_upload');
+});
+
+await check('the intake reads the passport and the Aadhaar, and never the PAN', () => {
+  // The same slots registration uses, so the routing is the same routing —
+  // there is nothing configured separately here that could drift from it.
+  assert.equal(requirementFor('passport')!.ocr, 'passport');
+  assert.notEqual(requirementFor('aadhaar')!.ocr, 'none');
+  assert.equal(requirementFor('pan')!.ocr, 'none');
+  assert.ok(NEVER_OCR.has('pan'));
+
+  for (const id of ['passport_upload', 'aadhaar_upload', 'pan_upload']) {
+    const step = STAFF_STEPS.find((s) => s.id === id)!;
+    assert.ok(step.document, `${id} must file into a document slot`);
+  }
+});
+
+await check('a staff enquiry is given a reference number, not an ADR id (§24)', () => {
+  assert.notEqual(ENQUIRY_ID_PREFIX, CANDIDATE_ID_PREFIX);
+
+  // Both are read back as ids, and each keeps its own series. A registration
+  // and an enquiry that happen to share digits are different records.
+  assert.equal(normaliseApplicationId('ENQ-00007'), 'ENQ-00007');
+  assert.equal(normaliseApplicationId('enq 7'), 'ENQ-00007');
+  assert.equal(normaliseApplicationId('ADR-00042'), 'ADR-00042');
+  assert.equal(normaliseApplicationId('adr 42'), 'ADR-00042');
+
+  // A bare number still reads as a registration id, which is what it has always
+  // meant at the tracking question.
+  assert.equal(normaliseApplicationId('42'), 'ADR-00042');
+
+  // Quoted unprompted, either prefix is recognised anywhere in a message.
+  assert.equal(looksLikeApplicationId('my id is ENQ-00007'), true);
+  assert.equal(looksLikeApplicationId('my id is ADR-00042'), true);
+  // A bare number is not, because that is how a candidate picks a row.
+  assert.equal(looksLikeApplicationId('2'), false);
+});
+
+await check('the forgotten-id lookup is offered on the third miss, not the first (§25)', () => {
+  assert.equal(TUNABLES.maxTrackingIdAttempts, 2);
+
+  // Two chances at typing it, then a way out. The lookup costs attempts of its
+  // own, capped by the same number that caps the date-of-birth check — an id is
+  // worth only as much as the check standing in front of it.
+  assert.ok(TUNABLES.maxTrackingDobAttempts >= 1);
+  assert.equal(CHOICE_FORGOT_ID.id, 'forgot_id');
+});
+
+console.log('\nthe ats export (resume_ats)');
+
+await check('every collection asked for is named, and named once', () => {
+  assert.deepEqual(ATS_COLLECTIONS, {
+    candidates: 'candidates',
+    aadhaarRecords: 'aadhar_records',
+    passportRecords: 'passport_records',
+    messages: 'messages',
+    b2bCompanyDocuments: 'b2b_company_documents',
+    b2bMessages: 'b2b_messages',
+    b2bAgentAadhaar: 'b2b_agent_aadhar',
+  });
+
+  // A name typed twice is a collection created empty beside the one in use.
+  const names = Object.values(ATS_COLLECTIONS);
+  assert.equal(new Set(names).size, names.length);
+});
+
+await check('each document kind goes to its own collection, and reads or does not', () => {
+  const routes = atsDocumentRoutes();
+
+  assert.deepEqual(routes.aadhaar, { collection: 'aadhar_records', ocr: true });
+  assert.deepEqual(routes.passport, { collection: 'passport_records', ocr: true });
+
+  // Both sides of the agent's card, filed together.
+  assert.deepEqual(routes.b2b_aadhaar_front, { collection: 'b2b_agent_aadhar', ocr: true });
+  assert.deepEqual(routes.b2b_aadhaar_back, { collection: 'b2b_agent_aadhar', ocr: true });
+
+  // The company's paperwork is stored and never read — no extractor, so no
+  // `ocr` block, which would otherwise read as an extraction that found nothing.
+  assert.deepEqual(routes.company_registration, {
+    collection: 'b2b_company_documents',
+    ocr: false,
+  });
+});
+
+await check('nothing is routed to an extractor the rules forbid', () => {
+  // The export cannot invent a route that `rules.ts` refuses. This is the same
+  // guarantee `assertOcrRoutingIsSafe` makes at boot, checked from the other
+  // end: a kind exported *with* OCR must be a kind the bot is allowed to read.
+  for (const [kind, route] of Object.entries(atsDocumentRoutes())) {
+    if (!route.ocr) continue;
+    assert.ok(!NEVER_OCR.has(kind), `${kind} must never be exported with an extraction`);
+  }
+
+  // And the PAN specifically, which is the one this protects.
+  assert.equal(atsRouteFor('pan'), undefined, 'the PAN has no record collection');
+  assert.ok(NEVER_OCR.has('pan'));
+});
+
+await check('a kind with no collection of its own is still named on the candidate', () => {
+  // The PAN, the CV, a driving licence, a loose certificate. None was asked for
+  // as a collection; all of them are on the candidate record's document index,
+  // so a documentation officer can still find the file.
+  for (const kind of ['pan', 'cv', 'driving_licence', 'certificate']) {
+    assert.equal(atsRouteFor(kind), undefined, `${kind} should have no collection of its own`);
+  }
 });
 
 console.log('\nwhat may be sent to an extractor');

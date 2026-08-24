@@ -24,6 +24,19 @@ export function getDb(): Db {
   return db;
 }
 
+/**
+ * The connection itself, for code that needs a second database on it.
+ *
+ * The ATS export writes into `resume_ats`, which lives on this same deployment
+ * — a different database, not a different server. Handing out the client rather
+ * than opening a second one is what keeps that a second handle on one pool
+ * instead of a second pool nobody is counting.
+ */
+export function getMongoClient(): MongoClient {
+  if (!client) throw new Error('getMongoClient() called before connectDb()');
+  return client;
+}
+
 export async function closeDb(): Promise<void> {
   await client?.close();
   client = undefined;

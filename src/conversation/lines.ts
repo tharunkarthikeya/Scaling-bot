@@ -75,6 +75,40 @@ export function sendingNumberFor(phoneNumberId: string | undefined): string {
   return phoneNumberId || config.WHATSAPP_PHONE_NUMBER_ID;
 }
 
+/**
+ * The Graph access token to call on behalf of a line.
+ *
+ * Two WABAs under one Meta app share a token and `WHATSAPP_ACCESS_TOKEN_SGMY`
+ * stays unset, which is the common case and the one every existing deployment
+ * is in. Two WABAs under two apps do not share one, and a call made with the
+ * wrong token is a 401 on the second number alone — indistinguishable, from
+ * outside, from the bot ignoring that number.
+ */
+export function accessTokenFor(phoneNumberId: string | undefined): string {
+  const second = config.WHATSAPP_PHONE_NUMBER_ID_SGMY;
+  if (second && phoneNumberId === second && config.WHATSAPP_ACCESS_TOKEN_SGMY) {
+    return config.WHATSAPP_ACCESS_TOKEN_SGMY;
+  }
+  return config.WHATSAPP_ACCESS_TOKEN;
+}
+
+/**
+ * Every app secret a delivery could legitimately be signed with.
+ *
+ * Meta signs a webhook with the secret of the app that owns the subscription,
+ * and the envelope's signature is checked before anything in it is parsed — so
+ * there is no line to look the secret up by yet. Both are ours, so trying both
+ * widens nothing: a body signed with neither is still rejected.
+ *
+ * One entry unless the second line has a secret of its own.
+ */
+export function webhookSecrets(): string[] {
+  const second = config.WHATSAPP_APP_SECRET_SGMY;
+  return second && second !== config.WHATSAPP_APP_SECRET
+    ? [config.WHATSAPP_APP_SECRET, second]
+    : [config.WHATSAPP_APP_SECRET];
+}
+
 /** Whether the second line is configured at all. Read by `doctor` and the smoke checks. */
 export function secondLineConfigured(): boolean {
   return !!config.WHATSAPP_PHONE_NUMBER_ID_SGMY;

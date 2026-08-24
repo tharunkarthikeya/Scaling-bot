@@ -447,10 +447,12 @@ export const CONFIRM_LABELS: Record<string, Localised> = {
   documents: { en: 'Documents', ta: 'ஆவணங்கள்', hi: 'दस्तावेज़', te: 'డాక్యుమెంట్లు', ml: 'ഡോക്യുമെന്റുകൾ' },
 };
 
+// No staff row. A person is reached from one place only - "Other" on the
+// opening menu - and offering it here as well put the button at the end of a
+// registration somebody had just finished answering.
 export const CONFIRM_CHOICES: Choice[] = [
   { id: 'correct', label: { en: 'Yes, correct', ta: 'ஆம், சரி', hi: 'हाँ, सही है', te: 'అవును, సరైనది', ml: 'അതെ, ശരിയാണ്' } },
   { id: 'edit', label: { en: 'Edit details', ta: 'திருத்த வேண்டும்', hi: 'बदलाव करें', te: 'వివరాలు మార్చండి', ml: 'വിവരം തിരുത്തുക' } },
-  CHOICE_STAFF,
 ];
 
 export const EDIT_PROMPT: Localised = {
@@ -552,15 +554,79 @@ export const TRACK_REJECTED: Localised = {
  * Deliberately does not distinguish "no such id" from "that id is someone
  * else's" — an application id is short and guessable, and confirming that one
  * exists would leak another candidate's record to anyone who typed it.
+ *
+ * Sent on either of the first two attempts, with no option attached and none
+ * needed: the id question stays open, so the next thing they type is read as
+ * another id. It used to offer a staff button; a person is now reached from the
+ * opening menu alone, and the third miss offers the lookup below instead.
  */
 export const TRACK_NOT_FOUND: Localised = {
-  en: 'I could not find an application with that ID for this number. Please check the ID, or tap below to talk to our staff.',
-  ta: 'இந்த எண்ணுக்கு அந்த விண்ணப்ப எண்ணில் எதுவும் கிடைக்கவில்லை. எண்ணைச் சரிபார்க்கவும், அல்லது ஊழியருடன் பேச கீழே தட்டவும்.',
-  hi: 'इस नंबर के लिए उस ID से कोई आवेदन नहीं मिला। कृपया ID जाँच लें, या स्टाफ से बात करने के लिए नीचे टैप करें।',
-  te: 'ఈ నంబర్‌కు ఆ ID తో ఏ దరఖాస్తు నాకు కనబడలేదు. దయచేసి ID చెక్ చేయండి, లేదా మా సిబ్బందితో మాట్లాడటానికి కింద నొక్కండి.',
-  ml: 'ഈ നമ്പറിന് ഈ ഐഡിയിൽ ഒരു അപേക്ഷയും കണ്ടെത്താൻ പറ്റിയില്ല. ഐഡി ഒന്ന് കൂടെ ചെക്ക് ചെയ്യൂ, അല്ലെങ്കിൽ ഞങ്ങളുടെ സ്റ്റാഫിനോട് സംസാരിക്കാൻ താഴെ ടാപ്പ് ചെയ്യൂ.',
+  en: 'I could not find an application with that ID for this number. Please check the ID and send it again.',
+  ta: 'இந்த எண்ணுக்கு அந்த விண்ணப்ப எண்ணில் எதுவும் கிடைக்கவில்லை. எண்ணைச் சரிபார்த்து மீண்டும் அனுப்பவும்.',
+  hi: 'इस नंबर के लिए उस ID से कोई आवेदन नहीं मिला। कृपया ID जाँचकर दोबारा भेजें।',
+  te: 'ఈ నంబర్‌కు ఆ ID తో ఏ దరఖాస్తూ కనబడలేదు. దయచేసి ID చెక్ చేసి మళ్ళీ పంపండి.',
+  ml: 'ഈ നമ്പറിന് ആ ഐഡിയിൽ ഒരു അപേക്ഷയും കണ്ടെത്താനായില്ല. ഐഡി ഒന്ന് പരിശോധിച്ച് വീണ്ടും അയക്കൂ.',
 };
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §25  "I have lost my Application ID"
+ *
+ * Offered on the third miss, not the first. Two attempts is enough for a typo
+ * or a transposed digit, and putting a lookup in front of somebody who is
+ * simply mistyping teaches them to use the slower path.
+ *
+ * The lookup itself is the tracking check with its two halves swapped: instead
+ * of an id confirmed by a date of birth, it is a mobile number and a date of
+ * birth that between them name the id. It is scoped to the number that sent it,
+ * exactly as `lookUpApplication` is, and it costs attempts the same way — an id
+ * is worth only as much as the check standing in front of it.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** Offered as a row once two ids have missed. Inside the 20-glyph title limit. */
+export const CHOICE_FORGOT_ID: Choice = {
+  id: 'forgot_id',
+  label: { en: 'Forgot my ID', ta: 'ID மறந்தேன்', hi: 'ID याद नहीं', te: 'ID గుర్తు లేదు', ml: 'ID ഓർമ്മയില്ല' },
+};
+
+export const TRACK_NOT_FOUND_FORGOT: Localised = {
+  en: 'I still could not find that ID for this number. If you do not have it, tap below and I will look it up from your mobile number and date of birth.',
+  ta: 'இந்த எண்ணுக்கு அந்த விண்ணப்ப எண் இன்னும் கிடைக்கவில்லை. உங்களிடம் அது இல்லையென்றால் கீழே தட்டவும் — உங்கள் மொபைல் எண் மற்றும் பிறந்த தேதி மூலம் நான் தேடிச் சொல்கிறேன்.',
+  hi: 'इस नंबर के लिए वह ID अब भी नहीं मिली। अगर आपके पास नहीं है, तो नीचे टैप करें — मैं आपके मोबाइल नंबर और जन्म तिथि से ढूँढ दूँगा।',
+  te: 'ఈ నంబర్‌కు ఆ ID ఇప్పటికీ కనబడలేదు. మీ దగ్గర లేకపోతే కింద నొక్కండి — మీ మొబైల్ నంబర్, పుట్టిన తేదీతో నేను వెతికి చెప్తాను.',
+  ml: 'ഈ നമ്പറിന് ആ ഐഡി ഇപ്പോഴും കണ്ടെത്താനായില്ല. നിങ്ങളുടെ കയ്യിൽ ഇല്ലെങ്കിൽ താഴെ ടാപ്പ് ചെയ്യൂ — മൊബൈൽ നമ്പറും ജനന തീയതിയും വെച്ച് ഞാൻ കണ്ടുപിടിക്കാം.',
+};
+
+export const TRACK_FORGOT_ASK_MOBILE: Localised = {
+  en: 'No problem. Please send the mobile number on your application.\nExample: 9876543210',
+  ta: 'பரவாயில்லை. உங்கள் விண்ணப்பத்தில் உள்ள மொபைல் எண்ணை அனுப்பவும்.\nஎடுத்துக்காட்டு: 9876543210',
+  hi: 'कोई बात नहीं। कृपया अपने आवेदन में दिया मोबाइल नंबर भेजें।\nउदाहरण: 9876543210',
+  te: 'ఫర్వాలేదు. మీ దరఖాస్తులో ఇచ్చిన మొబైల్ నంబర్ పంపండి.\nఉదాహరణ: 9876543210',
+  ml: 'കുഴപ്പമില്ല. നിങ്ങളുടെ അപേക്ഷയിൽ കൊടുത്ത മൊബൈൽ നമ്പർ അയക്കൂ.\nഉദാഹരണം: 9876543210',
+};
+
+export const TRACK_FORGOT_ASK_DOB: Localised = {
+  en: 'And the date of birth on it.\nExample: 25/05/1994',
+  ta: 'அதில் உள்ள பிறந்த தேதியையும் அனுப்பவும்.\nஎடுத்துக்காட்டு: 25/05/1994',
+  hi: 'और उसमें दी गई जन्म तिथि भेजिए।\nउदाहरण: 25/05/1994',
+  te: 'అందులో ఉన్న పుట్టిన తేదీ కూడా పంపండి.\nఉదాహరణ: 25/05/1994',
+  ml: 'അതിലെ ജനന തീയതിയും അയക്കൂ.\nഉദാഹരണം: 25/05/1994',
+};
+
+export const TRACK_FORGOT_FOUND: Localised = {
+  en: 'Found it. Your Application ID is {{candidateId}}.\nPlease keep it safe — you will need it to check your application.',
+  ta: 'கிடைத்துவிட்டது. உங்கள் விண்ணப்ப எண்: {{candidateId}}.\nஇதைப் பத்திரமாக வைத்திருங்கள் — விண்ணப்ப நிலையைப் பார்க்க இது தேவை.',
+  hi: 'मिल गया। आपकी एप्लिकेशन ID है {{candidateId}}।\nइसे सँभालकर रखें — आवेदन की स्थिति देखने के लिए यही चाहिए।',
+  te: 'దొరికింది. మీ Application ID: {{candidateId}}.\nదీన్ని జాగ్రత్తగా ఉంచుకోండి — దరఖాస్తు స్థితి చూడటానికి ఇదే కావాలి.',
+  ml: 'കിട്ടി. നിങ്ങളുടെ അപേക്ഷ ഐഡി {{candidateId}} ആണ്.\nഇത് സൂക്ഷിച്ചു വെക്കൂ — അപേക്ഷയുടെ സ്ഥിതി അറിയാൻ ഇത് വേണം.',
+};
+
+export const TRACK_FORGOT_NO_MATCH: Localised = {
+  en: 'Those details do not match an application on this number. Please try once more — {{remaining}} left.',
+  ta: 'இந்த எண்ணில் உள்ள எந்த விண்ணப்பத்துடனும் இந்த விவரங்கள் பொருந்தவில்லை. மீண்டும் முயற்சிக்கவும் — இன்னும் {{remaining}} வாய்ப்பு.',
+  hi: 'ये जानकारी इस नंबर के किसी आवेदन से मेल नहीं खाती। कृपया एक बार और कोशिश करें — {{remaining}} मौके बाकी।',
+  te: 'ఈ నంబర్‌లోని ఏ దరఖాస్తుతోనూ ఈ వివరాలు సరిపోలడం లేదు. మరోసారి ప్రయత్నించండి — ఇంకా {{remaining}} అవకాశాలు.',
+  ml: 'ഈ നമ്പറിലെ ഒരു അപേക്ഷയുമായും ഈ വിവരങ്ങൾ ചേരുന്നില്ല. ഒന്നു കൂടി ശ്രമിക്കൂ — ഇനി {{remaining}} തവണ.',
+};
 /* ─────────────────────────────────────────────────────────────────────────────
  * The identity check in front of a status (§25, §27)
  *
@@ -735,6 +801,40 @@ export const RETURNING_NO_ID: Localised = {
   ml: 'തിരികെ വന്നതിൽ സന്തോഷം, {{name}}. എന്താണ് ചെയ്യേണ്ടത്?',
 };
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §24  Talking to a person
+ *
+ * The one route to a human a candidate can choose: "Other" on the opening menu,
+ * then "Talk to staff". It no longer hands the conversation straight over — the
+ * member of staff picking it up used to get a phone number and nothing else,
+ * and their first four messages were always the same four questions. Those are
+ * asked here instead, so whoever rings back already knows who they are speaking
+ * to and has the documents on file.
+ *
+ * The automatic escalations are untouched, and deliberately so: distress, a
+ * report that somebody has demanded money, a legal or medical matter, an
+ * under-age date of birth, and two replies the bot could not read all still
+ * reach a person immediately, with no questions first. Putting a document
+ * checklist in front of a safeguarding report would be the worst thing this
+ * file could do.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export const STAFF_INTAKE_START: Localised = {
+  en: 'Of course. Before I pass you to our staff, may I take a few details so they can help you properly?',
+  ta: 'கண்டிப்பாக. உங்களை எங்கள் ஊழியரிடம் இணைக்கும் முன், அவர்கள் சரியாக உதவ சில விவரங்களைக் கேட்கலாமா?',
+  hi: 'ज़रूर। आपको हमारे स्टाफ से जोड़ने से पहले, कुछ जानकारी ले लूँ ताकि वे आपकी ठीक से मदद कर सकें।',
+  te: 'తప్పకుండా. మిమ్మల్ని మా సిబ్బందికి కలిపే ముందు, వాళ్ళు సరిగ్గా సాయం చేయడానికి కొన్ని వివరాలు తీసుకుంటాను.',
+  ml: 'തീർച്ചയായും. നിങ്ങളെ ഞങ്ങളുടെ സ്റ്റാഫിലേക്ക് ബന്ധിപ്പിക്കും മുൻപ്, അവർക്ക് ശരിയായി സഹായിക്കാൻ കുറച്ച് വിവരങ്ങൾ എടുക്കട്ടെ?',
+};
+
+export const STAFF_INTAKE_COMPLETE: Localised = {
+  en: 'Thank you. Our staff will contact you shortly.\nYour reference number is {{enquiryId}} — please keep it for any follow-up.',
+  ta: 'நன்றி. எங்கள் ஊழியர் விரைவில் உங்களைத் தொடர்பு கொள்வார்கள்.\nஉங்கள் குறிப்பு எண்: {{enquiryId}} — தொடர்ந்து பேச இதை வைத்திருங்கள்.',
+  hi: 'धन्यवाद। हमारा स्टाफ जल्द ही आपसे संपर्क करेगा।\nआपका रेफरेंस नंबर है {{enquiryId}} — आगे बात करने के लिए इसे रखें।',
+  te: 'ధన్యవాదాలు. మా సిబ్బంది త్వరలో మిమ్మల్ని సంప్రదిస్తారు.\nమీ రిఫరెన్స్ నంబర్: {{enquiryId}} — తర్వాత మాట్లాడటానికి దీన్ని ఉంచుకోండి.',
+  ml: 'നന്ദി. ഞങ്ങളുടെ സ്റ്റാഫ് ഉടൻ നിങ്ങളെ ബന്ധപ്പെടും.\nനിങ്ങളുടെ റഫറൻസ് നമ്പർ {{enquiryId}} ആണ് — തുടർന്നുള്ള ആവശ്യങ്ങൾക്ക് ഇത് സൂക്ഷിക്കൂ.',
+};
+
 export const RETURNING_CHOICES: Choice[] = [
   {
     id: 'track',
@@ -749,7 +849,6 @@ export const RETURNING_CHOICES: Choice[] = [
     id: 'upload_documents',
     label: { en: 'Upload documents', ta: 'ஆவணம் அனுப்ப', hi: 'दस्तावेज़ भेजें', te: 'డాక్యుమెంట్లు పంపండి', ml: 'രേഖകൾ അപ്‌ലോഡ് ചെയ്യുക' },
   },
-  CHOICE_STAFF,
   { id: 'delete', label: { en: 'Delete profile', ta: 'சுயவிவரம் நீக்க', hi: 'प्रोफ़ाइल हटाएँ', te: 'ప్రొఫైల్ తీసేయండి', ml: 'പ്രൊഫൈൽ ഡിലീറ്റ് ചെയ്യാം' } },
 ];
 

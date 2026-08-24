@@ -57,15 +57,13 @@ function checkChoices(where: string, options: Choice[]): void {
 }
 
 function checkStep(step: FlowStep): void {
-  // Rendering adds a Done row to a multi-select and a staff row where the step
-  // allows one, so both have to be counted against the limit here.
-  const rendered =
-    (step.choices?.length ?? 0) + (step.input === 'multi_choice' ? 1 : 0) + (step.allowStaff ? 1 : 0);
+  // Rendering adds a Done row to a multi-select, so it has to be counted against
+  // the limit here.
+  const rendered = (step.choices?.length ?? 0) + (step.input === 'multi_choice' ? 1 : 0);
 
   if (step.choices?.length) {
     const options = [...step.choices];
     if (step.input === 'multi_choice') options.push(copy.CHOICE_DONE);
-    if (step.allowStaff) options.push(copy.CHOICE_STAFF);
     checkChoices(`step "${step.id}"`, options);
   }
 
@@ -122,6 +120,7 @@ export function validateCopy(): void {
   // Menus are rendered by the same code path as steps, so they get the same
   // treatment — the interpreter never sees them, but the candidate does.
   checkChoices('opening menu', copy.ENTRY_CHOICES);
+  checkChoices('forgotten id', [copy.CHOICE_FORGOT_ID]);
   checkChoices('"Other" menu', copy.OTHER_CHOICES);
   checkChoices('resume prompt', copy.RESUME_CHOICES);
   checkChoices('confirmation', copy.CONFIRM_CHOICES);
@@ -169,7 +168,14 @@ export function validateCopy(): void {
   checkMessage('track: pending', copy.TRACK_PENDING);
   checkMessage('track: completed', copy.TRACK_COMPLETED);
   checkMessage('track: rejected', copy.TRACK_REJECTED);
-  checkInteractive('track: not found', copy.TRACK_NOT_FOUND);
+  checkMessage('track: not found', copy.TRACK_NOT_FOUND);
+  checkInteractive('track: not found, offering the lookup', copy.TRACK_NOT_FOUND_FORGOT);
+  checkMessage('track: ask for the mobile number', copy.TRACK_FORGOT_ASK_MOBILE);
+  checkMessage('track: ask for the date of birth', copy.TRACK_FORGOT_ASK_DOB);
+  checkMessage('track: id recovered', copy.TRACK_FORGOT_FOUND);
+  checkMessage('track: details did not match', copy.TRACK_FORGOT_NO_MATCH);
+  checkMessage('staff intake: opening', copy.STAFF_INTAKE_START);
+  checkMessage('staff intake: complete', copy.STAFF_INTAKE_COMPLETE);
   checkInteractive('track: not registered', copy.TRACK_NOT_REGISTERED);
   // The identity check in front of a status (§25, §27).
   checkMessage('track: ask for date of birth', copy.TRACK_ASK_DOB);

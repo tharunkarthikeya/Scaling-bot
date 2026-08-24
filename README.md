@@ -204,10 +204,24 @@ The agency runs two WhatsApp numbers off one app, and they do not ask the same
 questions. Which flow a conversation gets is decided from the `phone_number_id`
 Meta puts in the webhook envelope, in `conversation/lines.ts`, and nowhere else:
 
-| Number | Flow | |
+| Number | WABA | Flow | |
+|---|---|---|---|
+| `WHATSAPP_PHONE_NUMBER_ID` | `WHATSAPP_WABA_ID` | `STEPS` | The flow this bot has always run. Unchanged. |
+| `WHATSAPP_PHONE_NUMBER_ID_SGMY` | `WHATSAPP_WABA_ID_SGMY` | `SGMY_STEPS` | Singapore and Malaysia. |
+
+The two numbers are on two WhatsApp Business Accounts. Whether they are also on
+two Meta **apps** is the question that decides two more settings:
+
+| | Under one app | Under two apps |
 |---|---|---|
-| `WHATSAPP_PHONE_NUMBER_ID` | `STEPS` | The flow this bot has always run. Unchanged. |
-| `WHATSAPP_PHONE_NUMBER_ID_SGMY` | `SGMY_STEPS` | Singapore and Malaysia. |
+| App secret | shared — leave `WHATSAPP_APP_SECRET_SGMY` unset | set it, or every webhook from the second number fails its signature check |
+| Access token | shared — leave `WHATSAPP_ACCESS_TOKEN_SGMY` unset | set it, or every reply to the second number gets a 401 |
+
+Both failures look identical from outside: the bot ignoring that number. Each
+setting falls back to the main line's value, so unset means "same app" and
+nothing changes for a deployment that has only ever had one number.
+`npm run doctor` checks both numbers and both WABA subscriptions, each on its own
+token, and refuses at boot if the two numbers are set to the same id.
 
 **Leave the second variable unset and there is no second line.** Every message
 runs the default flow, which is the state every existing deployment is in — an
@@ -305,7 +319,7 @@ much of the machinery runs at all:
 
 | Option | What happens |
 |---|---|
-| Other | Opens a second, two-option menu: **B2B enquiry** or **Talk to staff**. |
+| Other | Opens a second, two-option menu: **B2B enquiry** or **Talk to staff** — the only place either is offered. |
 | Track application | Reads back the outcome staff recorded. Nothing else. |
 | Apply for a job | The registration flow. |
 
@@ -359,6 +373,100 @@ matching indexes and the document review queue contain candidates and nothing
 else. The transcript stays in `messages`, keyed by `waId` like every other
 conversation — it is the log of a conversation, not enquiry data.
 
+### Other → Talk to staff
+
+The one route to a person a candidate can choose. It no longer hands the
+conversation straight over: a member of staff picking it up used to get a phone
+number and nothing else, and their first four messages were always the same four
+questions. Those are asked here instead.
+
+```
+Other → Talk to staff
+  1. Language
+  2. Full name
+  3. Country preference        ← whichever question this number asks
+  4. Passport — do you have one?
+     ...if yes, upload         → read by the passport extractor
+  5. Aadhaar upload            → read by the document extractor
+  6. PAN upload                → stored, never read
+  7. Confirm
+  → "Our staff will contact you shortly", with a reference number
+  → the conversation goes to a person
+```
+
+Every one of those is a step that already existed. Nothing here is a new
+question; what is new is which of them are asked, and in what order. The
+documents route to OCR exactly as they do in registration, because they are the
+same slots — `rules.ts` decides, `NEVER_OCR` keeps the PAN away from both
+extractors, and there is nothing configured separately here that could drift.
+
+The reference number is an **`ENQ-00001`, not an `ADR-`**, on its own counter. An
+ADR id means a registration a recruiter can work on; this is somebody who asked
+for a call back, and giving the two the same shape would have staff opening one
+expecting the other. Both are recognised at the tracking question and anywhere
+else a candidate quotes one.
+
+The record stays in `candidates` — it is a person, their passport and their
+Aadhaar, and the uploads belong where every other candidate's go. Only the B2B
+branch is filed apart, and only because a business contact is not applying for
+anything. What a staff enquiry does *not* get: a CV, trade questions, job
+preferences, a CRM submission, or a §21 reminder.
+
+Nothing asks for a date of birth, and tracking needs one. In practice the
+passport and Aadhaar extractors supply it, which is what makes the reference
+number checkable later; where neither yielded one, tracking says so rather than
+releasing a status on an unverified claim.
+
+### The staff option is gone from everywhere else
+
+It used to appear on the confirmation, on the returning menu, on the consent
+question, and as an extra row under seven steps and every re-asked question. A
+button offering a human on every screen is an invitation to leave, and it was
+being offered hardest at the moments a candidate was most likely to take it —
+underneath a question they had just failed to answer.
+
+There is now exactly one: **Other → Talk to staff**. A smoke check walks all four
+flows and every menu to keep it that way.
+
+**The automatic escalations are untouched.** Distress, a report that somebody has
+demanded money, a legal or medical matter, an under-age date of birth, and two
+replies the bot could not read all still reach a person immediately, with no
+questions in front of them. Putting a document checklist between somebody and
+help is the one thing this change must not do. Typing "talk to staff" mid-flow
+also still reaches a person directly — they are already deep in a conversation
+that has their details.
+
+### "I have lost my Application ID"
+
+Two attempts at an id are a typo, and both get the same answer: check it and send
+it again. The third miss is somebody who genuinely does not have it, so that is
+when a **Forgot my ID** row appears:
+
+```
+Application ID?  → miss  → "check it and send it again"
+                 → miss  → "...or tap below"   [ Forgot my ID ]
+                              ↓
+                         mobile number → date of birth
+                              ↓
+                    both match a record on this number
+                              ↓
+                    "Your Application ID is ADR-00042"
+```
+
+It is the tracking check with its halves swapped: instead of an id confirmed by a
+date of birth, a mobile number and a date of birth that between them name the id.
+Scoped to the number that sent it, exactly as the id lookup is — an id is short
+and sequential, and a lookup that answered for any number would hand one person's
+reference, and the fact that their record exists, to anybody who guessed a phone
+number. The mobile is a second factor, not the search key, and it is checked
+against both the number they are messaging from and the one recorded on their
+profile.
+
+It costs attempts on the same budget as the date-of-birth check, and a date it
+could not parse costs nothing — that is somebody who has not understood the
+format, not somebody guessing.
+
+
 An application id also works on its own, typed at any point — `ADR-00042`,
 `adr 42`, or a bare `42` at the tracking question. A **bare number elsewhere is
 never read as an id**, because that is how candidates pick a row from a list.
@@ -380,6 +488,66 @@ curl -X PATCH https://<host>/api/candidates/<waId>/application \
 `pending` · `completed` · `rejected`. Setting one does **not** message the
 candidate — they are told when they ask. Pushing an outcome unprompted is a
 decision for staff, not a side effect of a CRM edit.
+
+## The ATS export (`resume_ats`)
+
+A finished conversation is copied into `resume_ats`, a second database on this
+same MongoDB deployment — not a second server, and not an API, so it needs no
+connection string of its own. Blank `RESUME_ATS_DB` to turn the export off.
+
+Every row the bot writes carries **`source: 'whatsapp'`**, so it is obvious which
+records it put there and which arrived some other way.
+
+| Collection | What goes in it |
+|---|---|
+| `candidates` | One row per person — a registration, or somebody who asked to speak to staff. Their answers, flattened. |
+| `messages` | One row per person: the whole conversation, every sitting in order. |
+| `aadhar_records` | One row per Aadhaar upload, with what the extractor read off it. |
+| `passport_records` | One row per passport upload, likewise. |
+| `b2b_company_documents` | A business contact's company paperwork — registration certificate, MSME certificate, whatever they sent. **No OCR.** |
+| `b2b_messages` | One row per business contact: their whole conversation. |
+| `b2b_agent_aadhar` | The agent's own Aadhaar, both sides, with what was read off them. |
+
+**Nothing that already exists is created.** `ensureAtsCollections` lists what is
+in `resume_ats` at boot and creates only the missing names. It never drops,
+never renames, and never alters a collection it did not create — including its
+indexes, because a unique index dropped onto a populated collection fails on the
+first duplicate and takes the deploy with it. A collection created here gets a
+non-unique index on its natural key and nothing more.
+
+**Nothing is overwritten blind.** Every write is an upsert on a natural key — the
+WhatsApp id for a person, the upload id for a document — so a retry, a redeploy,
+or a document that arrived late updates one row rather than adding another. The
+export is idempotent by construction and safe to run again.
+
+The bot's own database stays the record of what happened; this is a copy for the
+ATS to read. It runs on the queue after the person has been told they are done,
+for the reason the CRM sync does: whether another database is reachable that
+second is not the candidate's problem.
+
+### Which branch writes where
+
+| | `candidates` | `messages` | documents |
+|---|---|---|---|
+| **Apply** | ✓ | ✓ | `aadhar_records`, `passport_records` |
+| **Talk to staff** | ✓ | ✓ | `aadhar_records`, `passport_records` |
+| **B2B** | — | `b2b_messages` | `b2b_company_documents`, `b2b_agent_aadhar` |
+
+A staff enquiry is filed with the candidates deliberately: they gave the same
+name and the same documents, and a recruiter opening the record should not have
+to know which menu brought them in. `enquiry` on the row says which it was. A
+business contact has no candidate row, here or in the bot's own database.
+
+Every version of a document is exported and nothing is ever removed (§22), so a
+reader wanting "their Aadhaar" filters on **`isCurrent: true`** rather than
+guessing from dates.
+
+**The PAN has no collection of its own**, because none was asked for. Nothing
+reads a PAN (`NEVER_OCR`), so there is no extraction to file — it is named on the
+candidate row's `documents` index with its status, which is what a documentation
+officer needs to find the file. The CV, driving licences and loose certificates
+are indexed the same way. Say the word if the PAN should have a `pan_records`
+collection like the other two.
 
 ## Sessions
 
@@ -581,11 +749,14 @@ normally when they ask *whether there is a fee*. Collapsing the two sent every
 worried candidate to a human instead of telling them registration is free — the
 harness drives that question specifically.
 
-**There are two ways to reach a person, and neither is a shrug.** A candidate
-asks for one — the button, or "talk to staff" typed at any point — or the bot
-could not read two replies in a row, at which point it says so and hands over.
-The staff line is attached to nothing else: not to a retry, not to a question
-with no approved answer, not to a reply the bot understood but could not record.
+**There is one button to reach a person, and it is not a shrug.** "Other →
+Talk to staff" on the opening menu, which runs the intake above before handing
+over — or "talk to staff" typed at any point, which hands over directly. The
+option is attached to nothing else: not to the confirmation, not to the
+returning menu, not to a retry, not to a question with no approved answer, not
+to a reply the bot understood but could not record. It used to be on all of
+them, which meant it was offered hardest underneath a question the candidate had
+just failed to answer.
 A message the bot *did* understand is answered by `faq.ts` or `respond.ts` and
 never counted towards the handoff, so engaging with the bot can no longer walk a
 candidate towards being passed off. Distress, a report that someone has demanded

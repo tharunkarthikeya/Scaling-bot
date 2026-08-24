@@ -155,8 +155,6 @@ export interface FlowStep {
    * rather than recorded. See `TradeQuestion.expects` for why.
    */
   expects?: { context: string; examples?: string };
-  /** Offer "Talk to staff" alongside the answers. Always available by typing (§24). */
-  allowStaff?: boolean;
   /** Accept a photo, file or voice note as an answer as well as a tap or text. */
   allowMedia?: boolean;
   when?: (c: CandidateDoc) => boolean;
@@ -457,6 +455,11 @@ const START_STEPS: FlowStep[] = [
     // person, is understood the first time. Every id here is absent from
     // `choices` above — a duplicate would be numbered twice in the list the
     // interpreter sees and break "2 means the second option".
+    //
+    // `staff` stays here and stays hidden. Someone who types "I want to talk to
+    // someone" at the opening menu means the same thing as someone who taps
+    // Other → Talk to staff, and `handleSpecialStep` sends both to the same
+    // place: the intake, not a bare handover.
     hiddenChoices: [
       { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
       CHOICE_STAFF,
@@ -530,10 +533,11 @@ const START_STEPS: FlowStep[] = [
         ml: 'നിങ്ങളുടെ വിവരങ്ങളും ഡോക്യുമെന്റുകളും ഞങ്ങൾ സൂക്ഷിക്കും, അപേക്ഷ പ്രോസസ്സ് ചെയ്യാനും അനുയോജ്യമായ വിദേശ ജോലികളെക്കുറിച്ച് WhatsApp വഴി അറിയിക്കാനും. നിങ്ങൾക്ക് എപ്പോൾ വേണമെങ്കിലും പ്രൊഫൈൽ UPDATE ചെയ്യാം അല്ലെങ്കിൽ DELETE ചെയ്യാം.\nനമുക്ക് തുടരാമോ?',
     },
     input: 'choice',
+    // Two answers, and no staff row. Consent is a yes-or-no question, and a
+    // third option beside it invited a tap that answered neither.
     choices: [
       { id: 'yes', label: { en: 'Yes, continue', ta: 'ஆம், தொடரவும்', hi: 'हाँ, आगे बढ़ें', te: 'అవును, కొనసాగించండి', ml: 'അതെ, തുടരാം' } },
       { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
-      CHOICE_STAFF,
     ],
     // Consent lives on the candidate, not the profile — the engine writes it.
     satisfied: (c) => c.consent?.given === true,
@@ -576,7 +580,6 @@ const CV_STEP: FlowStep = {
     { id: 'no_cv', label: { en: "I don't have a CV", ta: 'CV இல்லை', hi: 'CV नहीं है', te: 'నా దగ్గర CV లేదు', ml: 'എന്റെ കയ്യിൽ CV ഇല്ല' } },
   ],
   hiddenChoices: DOCUMENT_FALLBACKS,
-  allowStaff: true,
   /**
    * Unconditional on the default line. Conditional on the Singapore/Malaysia
    * one, and this is the only thing that differs about the step itself — it is
@@ -649,7 +652,6 @@ export const B2B_STEPS: FlowStep[] = [
     input: 'document',
     document: 'b2b_aadhaar_front',
     allowMedia: true,
-    allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     when: isB2b,
     satisfied: (c) => b2bDocumentSatisfied(c, 'b2b_aadhaar_front'),
@@ -668,7 +670,6 @@ export const B2B_STEPS: FlowStep[] = [
     input: 'document',
     document: 'b2b_aadhaar_back',
     allowMedia: true,
-    allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     when: isB2b,
     satisfied: (c) => b2bDocumentSatisfied(c, 'b2b_aadhaar_back'),
@@ -687,7 +688,6 @@ export const B2B_STEPS: FlowStep[] = [
     input: 'document',
     document: 'company_registration',
     allowMedia: true,
-    allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     when: isB2b,
     satisfied: (c) => b2bDocumentSatisfied(c, 'company_registration'),
@@ -1492,7 +1492,6 @@ const DOCUMENT_STEPS: FlowStep[] = [
     input: 'document',
     document: 'passport',
     allowMedia: true,
-    allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     when: (c) => p(c).passportStatus === 'yes',
     satisfied: (c) => documentSatisfied(c, 'passport'),
@@ -1515,7 +1514,6 @@ const DOCUMENT_STEPS: FlowStep[] = [
     input: 'document',
     document: 'aadhaar',
     allowMedia: true,
-    allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     satisfied: (c) => documentSatisfied(c, 'aadhaar'),
   },
@@ -1541,7 +1539,6 @@ const DOCUMENT_STEPS: FlowStep[] = [
     input: 'document',
     document: 'pan',
     allowMedia: true,
-    allowStaff: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     satisfied: (c) => documentSatisfied(c, 'pan'),
   },
@@ -1831,7 +1828,13 @@ const CONFIRM_STEP: FlowStep = {
   // no answer could ever match — not even a tapped button, whose id is checked
   // against this list before it is trusted. Registration could not complete.
   choices: CONFIRM_CHOICES,
-  satisfied: (c) => c.stage === 'REGISTRATION_COMPLETED',
+  // Or by a staff intake that has been confirmed. That one does not end in
+  // REGISTRATION_COMPLETED — nobody registered — so without this the step would
+  // read as unanswered forever, and any sweep that re-walked the flow would put
+  // the confirmation back in front of somebody whose conversation is with a
+  // person now.
+  satisfied: (c) =>
+    c.stage === 'REGISTRATION_COMPLETED' || (c.enquiry === 'staff' && has(c.candidateId)),
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1944,10 +1947,79 @@ export const SGMY_STEPS: FlowStep[] = [
   CONFIRM_STEP,
 ];
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §24  The staff intake
+ *
+ * What "Other → Talk to staff" runs, instead of handing the conversation over
+ * on the spot. Seven questions, every one of them a step that already exists —
+ * the same language question, the same name question, the same country
+ * question, the same three documents, the same confirmation. Nothing here is a
+ * new question; what is new is which of them are asked and in what order.
+ *
+ * The point is what a member of staff has in front of them when they pick the
+ * conversation up. It used to be a phone number. It is now a name, a
+ * destination, a passport read off the page, an Aadhaar read off the page, and
+ * a PAN filed as it arrived — so the call starts where it used to get to after
+ * four messages.
+ *
+ * The documents route to OCR exactly as they do in registration, because they
+ * are the same slots: `rules.ts` sends the passport to the passport extractor
+ * and the Aadhaar to the document extractor, and `NEVER_OCR` keeps the PAN away
+ * from both. There is nothing to configure here and nothing that could drift.
+ *
+ * No consent step, following the B2B branch, which collects a name and an
+ * Aadhaar the same way. Worth a decision rather than an assumption if this ever
+ * carries more than it does today.
+ *
+ * No CV, no trade questions, no job preferences: this is somebody who asked to
+ * speak to a person, not somebody registering for work. If they turn out to
+ * want that, staff start the registration.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** Picks named steps out of a list, in the order named, for the intake below. */
+function pick(from: FlowStep[], ...ids: string[]): FlowStep[] {
+  return ids.map((id) => {
+    const step = from.find((s) => s.id === id);
+    if (!step) throw new Error(`the staff intake names a step that does not exist: ${id}`);
+    return step;
+  });
+}
+
+/**
+ * The intake, for one line.
+ *
+ * The country question is the only thing that differs between the two numbers,
+ * and it differs for the same reason it does in registration: the second line
+ * places into two countries and offering the other five would be offering
+ * somewhere nobody is hiring for.
+ */
+function staffIntake(country: FlowStep): FlowStep[] {
+  return [
+    ...pick(START_STEPS, 'language', 'language_other'),
+    ...pick(PERSONAL_STEPS, 'full_name'),
+    country,
+    ...pick(DOCUMENT_STEPS, 'passport_status', 'passport_upload', 'aadhaar_upload', 'pan_upload'),
+    CONFIRM_STEP,
+  ];
+}
+
+export const STAFF_STEPS: FlowStep[] = staffIntake(
+  pick(COUNTRY_STEPS, 'country_preference')[0]!,
+);
+
+export const STAFF_STEPS_SGMY: FlowStep[] = staffIntake(SGMY_COUNTRY_STEP);
+
+/** The intake belonging to a line. */
+export function staffStepsForVariant(variant: FlowVariant | undefined): FlowStep[] {
+  return variant === 'sgmy' ? STAFF_STEPS_SGMY : STAFF_STEPS;
+}
+
 /** Every flow list, for the boot-time checks and the id registry. */
-export const FLOWS: Record<FlowVariant, FlowStep[]> = {
+export const FLOWS: Record<string, FlowStep[]> = {
   default: STEPS,
   sgmy: SGMY_STEPS,
+  'staff intake': STAFF_STEPS,
+  'staff intake (sgmy)': STAFF_STEPS_SGMY,
 };
 
 /** The list a variant walks. `nextStep` picks the B2B branch out of it separately. */
@@ -1966,6 +2038,9 @@ export function stepsForVariant(variant: FlowVariant | undefined): FlowStep[] {
  */
 export function stepsFor(c: CandidateDoc): FlowStep[] {
   if (c.enquiry === 'b2b') return B2B_STEPS;
+  // Somebody who asked to speak to a person is asked the seven questions that
+  // make that conversation useful, and none of registration's.
+  if (c.enquiry === 'staff') return staffStepsForVariant(c.flowVariant);
   return stepsForVariant(c.flowVariant);
 }
 
@@ -1978,7 +2053,7 @@ export function stepsFor(c: CandidateDoc): FlowStep[] {
  * lists, so only a question unique to one line adds an entry of its own.
  */
 const STEP_BY_ID = new Map<string, FlowStep>();
-for (const step of [...STEPS, ...SGMY_STEPS]) {
+for (const step of [...STEPS, ...SGMY_STEPS, ...STAFF_STEPS, ...STAFF_STEPS_SGMY]) {
   if (!STEP_BY_ID.has(step.id)) STEP_BY_ID.set(step.id, step);
 }
 
@@ -2032,6 +2107,22 @@ export function fieldsToClear(section: Section, variant?: FlowVariant): string[]
   return [...new Set(stepsInSection(section, variant).flatMap((s) => s.clears ?? []))];
 }
 
+/**
+ * The same two, resolved against the flow this conversation is actually on.
+ *
+ * Which matters most for the staff intake, whose `personal` section is one
+ * question where registration's is five. Editing by variant alone would clear a
+ * date of birth and an education level the intake never asked for, and then
+ * queue those questions to be answered.
+ */
+export function sectionStepsFor(c: CandidateDoc, section: Section): FlowStep[] {
+  return stepsFor(c).filter((s) => s.section === section);
+}
+
+export function sectionFieldsFor(c: CandidateDoc, section: Section): string[] {
+  return [...new Set(sectionStepsFor(c, section).flatMap((s) => s.clears ?? []))];
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * Label lookup
  *
@@ -2043,7 +2134,7 @@ const LABELS = new Map<string, Localised>();
 // Both lists. The confirmation summary reads a stored option id back into a
 // label, and a candidate on the second line has "singapore" on their record --
 // a label that exists only in that line's country question.
-for (const step of [...STEPS, ...SGMY_STEPS]) {
+for (const step of [...STEPS, ...SGMY_STEPS, ...STAFF_STEPS, ...STAFF_STEPS_SGMY]) {
   for (const choice of [...(step.choices ?? []), ...(step.hiddenChoices ?? [])]) {
     LABELS.set(`${step.id}:${choice.id}`, choice.label);
     if (!LABELS.has(choice.id)) LABELS.set(choice.id, choice.label);

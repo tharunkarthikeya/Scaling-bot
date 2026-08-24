@@ -1,6 +1,6 @@
 import { config, graphBaseUrl } from '../config.js';
 import { logger } from '../logger.js';
-import { sendingNumberFor } from '../conversation/lines.js';
+import { accessTokenFor, sendingNumberFor } from '../conversation/lines.js';
 import { createBudget } from './rateLimiter.js';
 
 /**
@@ -62,12 +62,17 @@ export class WhatsAppApiError extends Error {
  * reply and a read receipt — they are the same endpoint. So every caller takes
  * its token first, from the budget named above. Adding a caller here without
  * taking one spends nobody's allowance and will eventually cost a real message.
+ *
+ * `from` is the number the call is made on behalf of, and it decides the
+ * credential as well as the path. Where the two lines share a Meta app that is
+ * the same token either way; where they do not, calling the second number with
+ * the first's token is a 401 nobody would attribute to configuration.
  */
-async function graphPost(path: string, body: unknown): Promise<any> {
+async function graphPost(path: string, body: unknown, from?: FromNumber): Promise<any> {
   const res = await fetch(`${graphBaseUrl}/${path}`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}`,
+      Authorization: `Bearer ${accessTokenFor(sendingNumberFor(from))}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -147,13 +152,17 @@ export async function sendText(
     // One token per chunk, because Meta counts one message per chunk.
     await budgets.replies.acquire();
 
-    const json = await graphPost(`${sendingNumberFor(from)}/messages`, {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'text',
-      text: { preview_url: false, body: part },
-    });
+    const json = await graphPost(
+      `${sendingNumberFor(from)}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'text',
+        text: { preview_url: false, body: part },
+      },
+      from,
+    );
 
     results.push({ wamid: json?.messages?.[0]?.id, shadowed: false });
   }
@@ -262,13 +271,17 @@ export async function send(
 
   await budgets.replies.acquire();
 
-  const json = await graphPost(`${sendingNumberFor(from)}/messages`, {
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to,
-    type: 'interactive',
-    interactive,
-  });
+  const json = await graphPost(
+    `${sendingNumberFor(from)}/messages`,
+    {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive,
+    },
+    from,
+  );
 
   results.push({ wamid: json?.messages?.[0]?.id, shadowed: false });
   return results;
@@ -292,15 +305,19 @@ export async function sendReengagementTemplate(
 
   await budgets.replies.acquire();
 
-  const json = await graphPost(`${sendingNumberFor(from)}/messages`, {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'template',
-    template: {
-      name,
-      language: { code: config.WHATSAPP_REENGAGEMENT_TEMPLATE_LANG },
+  const json = await graphPost(
+    `${sendingNumberFor(from)}/messages`,
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name,
+        language: { code: config.WHATSAPP_REENGAGEMENT_TEMPLATE_LANG },
+      },
     },
-  });
+    from,
+  );
 
   return { wamid: json?.messages?.[0]?.id, shadowed: false };
 }
@@ -329,11 +346,15 @@ export async function markAsRead(wamid: string, from?: FromNumber): Promise<void
     // The receipt has to be posted to the number the message arrived on. Sent
     // to the other one it is a message id that number has never seen, and Meta
     // rejects it — a blue tick that never appears on the second line.
-    await graphPost(`${sendingNumberFor(from)}/messages`, {
-      messaging_product: 'whatsapp',
-      status: 'read',
-      message_id: wamid,
-    });
+    await graphPost(
+      `${sendingNumberFor(from)}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: wamid,
+      },
+      from,
+    );
   } catch (err) {
     logger.warn({ err, wamid }, 'failed to mark message as read');
   }
@@ -481,7 +502,11 @@ export async function readCappedBody(
  * `filename` is only ever read in mock mode, to choose which canned file to
  * serve. The real download is by id and Meta tells us the type itself.
  */
-export async function downloadMedia(mediaId: string, filename?: string): Promise<MediaPayload> {
+export async function downloadMedia(
+  mediaId: string,
+  filename?: string,
+  from?: FromNumber,
+): Promise<MediaPayload> {
   const limit = config.MEDIA_MAX_BYTES;
 
   if (config.MOCK_WHATSAPP_MEDIA) {
@@ -506,8 +531,12 @@ export async function downloadMedia(mediaId: string, filename?: string): Promise
   // queue's latency to every ACK.
   await budgets.media.acquire();
 
+  // A media id belongs to the WABA it was uploaded to, so the credential has to
+  // be that line's. The wrong one is a 404 on a file that is really there.
+  const token = accessTokenFor(sendingNumberFor(from));
+
   const metaRes = await fetch(`${mediaBaseUrl}/${mediaId}`, {
-    headers: { Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}` },
+    headers: { Authorization: `Bearer ${token}` },
   });
 
   if (!metaRes.ok) {
@@ -536,7 +565,7 @@ export async function downloadMedia(mediaId: string, filename?: string): Promise
   const controller = new AbortController();
 
   const fileRes = await fetch(meta.url, {
-    headers: { Authorization: `Bearer ${config.WHATSAPP_ACCESS_TOKEN}` },
+    headers: { Authorization: `Bearer ${token}` },
     signal: controller.signal,
   });
 

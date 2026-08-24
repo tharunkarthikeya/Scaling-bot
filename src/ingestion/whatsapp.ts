@@ -74,6 +74,13 @@ export async function captureAttachment(params: {
   mimeType?: string;
   filename?: string;
   receivedAt?: Date;
+  /**
+   * The number it arrived on (`conversation/lines.ts`).
+   *
+   * A media id belongs to the WABA it was uploaded to, so where the two lines
+   * do not share a Meta app the download has to present that line's token.
+   */
+  phoneNumberId?: string;
 }): Promise<IngestionRow> {
   const key = whatsappKey(params.wamid, params.mediaId);
 
@@ -102,7 +109,7 @@ export async function captureAttachment(params: {
   }
 
   try {
-    const media = await downloadMedia(params.mediaId, params.filename);
+    const media = await downloadMedia(params.mediaId, params.filename, params.phoneNumberId);
 
     const stored = await saveFile({
       waId: params.waId,

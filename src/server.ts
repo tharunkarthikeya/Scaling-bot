@@ -212,6 +212,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
           mimeType: msg.media.mimeType,
           filename: msg.media.filename,
           receivedAt: msg.timestamp,
+          phoneNumberId: msg.phoneNumberId,
         });
       }
 

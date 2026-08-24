@@ -40,6 +40,8 @@ import {
   uploadsFor,
   CANDIDATE_ID_DIGITS,
   CANDIDATE_ID_PREFIX,
+  ENQUIRY_ID_PREFIX,
+  nextEnquiryId,
   type ApplicationStatus,
   type CandidateDoc,
   type CandidateStatus,
@@ -58,7 +60,8 @@ import { saveFile } from '../storage/index.js';
 import { queue, withCandidateLock } from '../queue/index.js';
 import * as copy from './copy.js';
 import {
-  fieldsToClear,
+  sectionFieldsFor,
+  sectionStepsFor,
   inferTradeAnswers,
   inferTradePacks,
   desiredJobForLevel,
@@ -116,7 +119,25 @@ const MENU = {
   trackId: 'ask:track_id',
   /** The identity check between the Application ID and the status (§25, §27). */
   trackDob: 'ask:track_dob',
+  /**
+   * The "I have lost my id" lookup (§25), offered after two ids have missed.
+   *
+   * The tracking check with its halves swapped: a mobile number and a date of
+   * birth that between them name an id, instead of an id confirmed by a date.
+   */
+  forgotMobile: 'ask:forgot_mobile',
+  forgotDob: 'ask:forgot_dob',
 } as const;
+
+/**
+ * Somebody saying they do not have their Application ID, in words (§25).
+ *
+ * The row is offered after two misses, but a candidate who has just been asked
+ * for an id and types "I forgot it" has said the same thing, and reading that
+ * as another wrong id would cost them one of the two.
+ */
+const FORGOT_ID_WORDS =
+  /\b(?:forgot|forgotten|lost|don'?t\s+have|do\s+not\s+have|no)\b.{0,20}\b(?:id|number|reference)\b|\bid\b.{0,20}\b(?:forgot|forgotten|lost|missing)\b/i;
 
 /** Suffix marking the free-text follow-up to an "Other" choice. */
 const OTHER_SUFFIX = '#other';
@@ -400,6 +421,10 @@ function statusForStage(stage: ConversationStage, current: CandidateStatus): Can
  * registration.
  */
 async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
+  // Nobody in the staff intake is asked about a trade, so there is nothing to
+  // write questions about.
+  if (candidate.enquiry === 'staff') return;
+
   const profile = candidate.profile ?? {};
 
   if ((profile.tradePacks ?? []).length) return;
@@ -470,7 +495,7 @@ async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
  */
 async function ensureJobLevel(candidate: CandidateDoc): Promise<void> {
   if (candidate.flowVariant !== 'sgmy') return;
-  if (candidate.enquiry === 'b2b') return;
+  if (candidate.enquiry === 'b2b' || candidate.enquiry === 'staff') return;
 
   const job = desiredJobForLevel(candidate);
   // Nothing to classify yet — the job preferences are still ahead of us. The
@@ -575,6 +600,10 @@ async function askNextQuestion(
   if (!step) {
     if (candidate.enquiry === 'b2b') {
       await completeB2bEnquiry(candidate);
+      return;
+    }
+    if (candidate.enquiry === 'staff') {
+      await completeStaffEnquiry(candidate);
       return;
     }
     if (candidate.stage === 'REGISTRATION_COMPLETED') {
@@ -688,6 +717,10 @@ async function startB2bEnquiry(candidate: CandidateDoc): Promise<void> {
  */
 async function completeB2bEnquiry(candidate: CandidateDoc): Promise<void> {
   await tell(candidate, copy.B2B_COMPLETE);
+
+  // Their three collections in the ATS, and no candidate row: a business
+  // contact is filed apart here exactly as they are in our own database.
+  await queue.enqueue('ats_export', { waId: candidate.waId });
   await handOffToStaff(candidate, 'B2B enquiry: details and documents collected', {
     announce: false,
   });
@@ -764,6 +797,10 @@ async function completeRegistration(candidate: CandidateDoc): Promise<void> {
     await setState(candidate, { crmSync: { status: 'pending', attempts: 0 } });
     await queue.enqueue('crm_sync', { waId: candidate.waId });
   }
+
+  // And into the ATS database, which is a copy rather than a handover: the
+  // record stays here, and `resume_ats` is what a recruiter reads.
+  await queue.enqueue('ats_export', { waId: candidate.waId });
 }
 
 /**
@@ -823,9 +860,40 @@ const TRACK_COPY: Record<ApplicationStatus, Localised> = {
  * digits are load-bearing; the prefix is reattached here.
  */
 export function normaliseApplicationId(typed: string): string | undefined {
-  const digits = /(\d{1,10})/.exec(typed.replace(/\s+/g, ''));
+  const compact = typed.replace(/\s+/g, '');
+  const digits = /(\d{1,10})/.exec(compact);
   if (!digits) return undefined;
-  return `${CANDIDATE_ID_PREFIX}-${digits[1]!.padStart(CANDIDATE_ID_DIGITS, '0')}`;
+
+  // The prefix they typed, where they typed one. A staff enquiry's reference is
+  // `ENQ-00007` and rebuilding it as `ADR-00007` would look up a different
+  // record — or somebody else's — from the same digits.
+  const prefix = new RegExp(`^${ENQUIRY_ID_PREFIX}`, 'i').test(compact)
+    ? ENQUIRY_ID_PREFIX
+    : CANDIDATE_ID_PREFIX;
+
+  return `${prefix}-${digits[1]!.padStart(CANDIDATE_ID_DIGITS, '0')}`;
+}
+
+/**
+ * Both readings of a bare number, for the lookup.
+ *
+ * "42" at the tracking question is an application id with the prefix left off,
+ * and there are two series it could belong to. Trying both is what stops
+ * somebody with `ENQ-00042` being told their own reference does not exist —
+ * still scoped to the number that sent it, so it widens nothing.
+ */
+function applicationIdsToTry(typed: string): string[] {
+  const normalised = normaliseApplicationId(typed);
+  if (!normalised) return [];
+
+  const compact = typed.replace(/\s+/g, '');
+  const typedAPrefix = new RegExp(`^(${CANDIDATE_ID_PREFIX}|${ENQUIRY_ID_PREFIX})`, 'i').test(
+    compact,
+  );
+  if (typedAPrefix) return [normalised];
+
+  const digits = normalised.slice(normalised.indexOf('-') + 1);
+  return [`${CANDIDATE_ID_PREFIX}-${digits}`, `${ENQUIRY_ID_PREFIX}-${digits}`];
 }
 
 /**
@@ -835,7 +903,10 @@ export function normaliseApplicationId(typed: string): string | undefined {
  * list — "2" means the second row — and treating that as an application id
  * would hijack every numbered answer in the flow.
  */
-const APPLICATION_ID_PATTERN = new RegExp(`\\b${CANDIDATE_ID_PREFIX}[\\s-]?\\d{1,10}\\b`, 'i');
+const APPLICATION_ID_PATTERN = new RegExp(
+  `\\b(?:${CANDIDATE_ID_PREFIX}|${ENQUIRY_ID_PREFIX})[\\s-]?\\d{1,10}\\b`,
+  'i',
+);
 
 export function looksLikeApplicationId(text: string | undefined): boolean {
   return !!text && APPLICATION_ID_PATTERN.test(text);
@@ -892,10 +963,10 @@ async function startTracking(candidate: CandidateDoc): Promise<void> {
  * candidate the date-of-birth question; the status waits behind it.
  */
 async function lookUpApplication(candidate: CandidateDoc, typed: string): Promise<void> {
-  const id = normaliseApplicationId(typed);
-  const record = id
+  const ids = applicationIdsToTry(typed);
+  const record = ids.length
     ? // Only ever a candidate: a business enquiry has no Application ID to quote.
-      await candidates().findOne({ candidateId: id, waId: candidate.waId })
+      await candidates().findOne({ candidateId: { $in: ids }, waId: candidate.waId })
     : null;
 
   if (record) {
@@ -906,8 +977,10 @@ async function lookUpApplication(candidate: CandidateDoc, typed: string): Promis
         { waId: candidate.waId, candidateId: record.candidateId },
         'tracking blocked: no date of birth on the application to verify against',
       );
-      await ask(candidate, copy.TRACK_CANNOT_VERIFY, [copy.CHOICE_STAFF], MENU.trackId);
-      await setState(candidate, { tracking: undefined });
+      // No option attached: the staff row is gone from everywhere but the
+      // opening menu. The id question stays open, so another id can be tried.
+      await tell(candidate, copy.TRACK_CANNOT_VERIFY);
+      await setState(candidate, { currentStep: MENU.trackId, tracking: undefined });
       return;
     }
 
@@ -926,7 +999,22 @@ async function lookUpApplication(candidate: CandidateDoc, typed: string): Promis
     return;
   }
 
-  await ask(candidate, copy.TRACK_NOT_FOUND, [copy.CHOICE_STAFF], MENU.trackId);
+  // A miss. Two of them are a typo; the third is somebody who does not have
+  // their id, and that is when the lookup is worth offering (§25).
+  const idAttempts = (candidate.tracking?.idAttempts ?? 0) + 1;
+  const tracking = {
+    ...(candidate.tracking ?? { attempts: 0, startedAt: new Date() }),
+    idAttempts,
+  };
+
+  if (idAttempts >= TUNABLES.maxTrackingIdAttempts) {
+    await ask(candidate, copy.TRACK_NOT_FOUND_FORGOT, [copy.CHOICE_FORGOT_ID], MENU.trackId);
+    await setState(candidate, { tracking });
+    return;
+  }
+
+  await tell(candidate, copy.TRACK_NOT_FOUND);
+  await setState(candidate, { currentStep: MENU.trackId, tracking });
 }
 
 /**
@@ -943,7 +1031,7 @@ async function lookUpApplication(candidate: CandidateDoc, typed: string): Promis
  */
 async function verifyTrackingDob(candidate: CandidateDoc, typed: string): Promise<void> {
   const tracking = candidate.tracking;
-  if (!tracking) {
+  if (!tracking?.candidateId) {
     // The check was cleared underneath us — a restart, a deletion, a staff
     // takeover. Start again rather than compare against nothing.
     await startTracking(candidate);
@@ -987,8 +1075,8 @@ async function verifyTrackingDob(candidate: CandidateDoc, typed: string): Promis
       { waId: candidate.waId, candidateId: tracking.candidateId, attempts },
       'tracking identity check exhausted; sending the candidate to staff',
     );
-    await setState(candidate, { tracking: undefined, currentStep: undefined });
-    await ask(candidate, copy.TRACK_DOB_EXHAUSTED, [copy.CHOICE_STAFF], MENU.trackId);
+    await setState(candidate, { tracking: undefined, currentStep: MENU.trackId });
+    await tell(candidate, copy.TRACK_DOB_EXHAUSTED);
     return;
   }
 
@@ -997,6 +1085,199 @@ async function verifyTrackingDob(candidate: CandidateDoc, typed: string): Promis
     currentStep: MENU.trackDob,
   });
   await tell(candidate, copy.TRACK_DOB_WRONG, { remaining: String(remaining) });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §24  The staff intake
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * "Other → Talk to staff", which no longer hands over on the spot.
+ *
+ * The seven questions in `STAFF_STEPS` run first, so the member of staff who
+ * picks the conversation up has a name, a destination and three documents
+ * rather than a phone number. `nextStep` switches lists on `enquiry`, exactly
+ * as it does for a business contact, so nothing below has to know which branch
+ * it is on.
+ *
+ * The record stays in `candidates`: this is a person, their Aadhaar and their
+ * passport, and `documentCollectionFor` files those uploads where every other
+ * candidate's go. Only the B2B branch is filed apart, and only because a
+ * business contact is not a person applying for anything.
+ */
+async function startStaffEnquiry(candidate: CandidateDoc): Promise<void> {
+  await setState(candidate, { enquiry: 'staff', currentStep: undefined, unclearCount: 0 });
+  await recordAudit({
+    waId: candidate.waId,
+    event: 'staff_enquiry_started',
+    detail: 'asked to speak to a person; collecting details first',
+  });
+
+  await tell(candidate, copy.STAFF_INTAKE_START);
+  await askNextQuestion(candidate);
+}
+
+/**
+ * The end of the intake: a reference number, a promise of a call, and a person.
+ *
+ * The id is an `ENQ`, not an `ADR`. They have not registered for work and a
+ * recruiter opening an ADR expects somebody who has — but they have given us
+ * their documents and they need something to quote when they ring back, which
+ * is what a reference number is for.
+ *
+ * `application` is seeded `pending` for the same reason it is on a finished
+ * registration: it is the field staff record an outcome in, and the bot never
+ * writes another value into it (§26, §27).
+ *
+ * Nothing is sent to the CRM. That is for candidates, and this is a call-back
+ * request.
+ */
+async function completeStaffEnquiry(candidate: CandidateDoc): Promise<void> {
+  const enquiryId = candidate.candidateId ?? (await nextEnquiryId());
+  const now = new Date();
+
+  await setState(candidate, {
+    candidateId: enquiryId,
+    application: candidate.application ?? { status: 'pending', updatedAt: now },
+    completedAt: candidate.completedAt ?? now,
+    currentStep: undefined,
+    editQueue: [],
+    unclearCount: 0,
+    sessionEndedAt: now,
+  });
+
+  await tell(candidate, copy.STAFF_INTAKE_COMPLETE, { enquiryId });
+  await closeOpenSession(candidate.waId);
+  await recordAudit({
+    waId: candidate.waId,
+    candidateId: enquiryId,
+    event: 'staff_enquiry_completed',
+  });
+  logger.info({ waId: candidate.waId, enquiryId }, 'staff enquiry collected; handing over');
+
+  // Filed with the candidates, as asked: they gave the same name and the same
+  // documents, and a recruiter opening the record should not have to know which
+  // menu brought them in. Enqueued before the handover, so the export does not
+  // depend on staff doing anything.
+  await queue.enqueue('ats_export', { waId: candidate.waId });
+
+  // `announce: false` — they have just been told staff will contact them, and
+  // the generic handover line underneath it would say the same thing twice.
+  await handOffToStaff(candidate, 'staff enquiry: details and documents collected', {
+    announce: false,
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §25  "I have lost my Application ID"
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** Opens the lookup. Offered once two ids have missed, never before. */
+async function startForgotIdLookup(candidate: CandidateDoc): Promise<void> {
+  await tell(candidate, copy.TRACK_FORGOT_ASK_MOBILE);
+  await setState(candidate, {
+    currentStep: MENU.forgotMobile,
+    tracking: {
+      ...(candidate.tracking ?? { attempts: 0, startedAt: new Date() }),
+      forgotMobile: undefined,
+    },
+  });
+}
+
+/** Holds the mobile number and asks for the date that has to go with it. */
+async function receiveForgotMobile(candidate: CandidateDoc, typed: string): Promise<void> {
+  const digits = typed.replace(/\D/g, '');
+
+  // Not a number at all. Costs no attempt — the attempts exist to bound
+  // guessing at a date of birth, and this is somebody mistyping a phone number.
+  if (digits.length < 6) {
+    await tell(candidate, copy.TRACK_FORGOT_ASK_MOBILE);
+    return;
+  }
+
+  await setState(candidate, {
+    currentStep: MENU.forgotDob,
+    tracking: {
+      ...(candidate.tracking ?? { attempts: 0, startedAt: new Date() }),
+      forgotMobile: digits,
+    },
+  });
+  await tell(candidate, copy.TRACK_FORGOT_ASK_DOB);
+}
+
+/**
+ * Matches a mobile number and a date of birth against this number's records.
+ *
+ * Scoped to `waId` like every other read in the tracking flow, and for the same
+ * reason: an id is short and sequential, and a lookup that answered for any
+ * number would hand one person's reference — and the fact that their record
+ * exists — to anybody who guessed a phone number (§27).
+ *
+ * Which means the mobile number is a second factor rather than the search key.
+ * It is checked against the number they are messaging from and against the one
+ * recorded on the profile, because a candidate whose CV gave a different number
+ * has both on file and may quote either.
+ */
+async function verifyForgotIdentity(candidate: CandidateDoc, typed: string): Promise<void> {
+  const tracking = candidate.tracking;
+  const mobile = tracking?.forgotMobile;
+  if (!mobile) {
+    // The lookup was cleared underneath us — a restart, a deletion, a takeover.
+    await startForgotIdLookup(candidate);
+    return;
+  }
+
+  const supplied = normaliseDate(typed);
+  if (!supplied) {
+    await tell(candidate, copy.TRACK_DOB_UNREADABLE);
+    return;
+  }
+
+  const record = await candidates().findOne({
+    waId: candidate.waId,
+    candidateId: { $exists: true },
+  });
+
+  const last = (value: string | undefined): string => (value ?? '').replace(/\D/g, '').slice(-10);
+  const mobileMatches =
+    !!record &&
+    [record.profile?.mobileNumber, record.phone, record.waId].some(
+      (known) => last(known) && last(known) === last(mobile),
+    );
+  const onFile = record?.profile?.dateOfBirth ? normaliseDate(record.profile.dateOfBirth) : undefined;
+
+  if (record?.candidateId && mobileMatches && onFile && onFile === supplied) {
+    await setState(candidate, { tracking: undefined, currentStep: undefined });
+    await tell(candidate, copy.TRACK_FORGOT_FOUND, { candidateId: record.candidateId });
+    logger.info(
+      { waId: candidate.waId, candidateId: record.candidateId },
+      'application id returned after a successful mobile and date-of-birth check',
+    );
+    return;
+  }
+
+  const attempts = (tracking?.forgotAttempts ?? 0) + 1;
+  const remaining = TUNABLES.maxTrackingDobAttempts - attempts;
+
+  if (remaining <= 0) {
+    logger.warn(
+      { waId: candidate.waId, attempts },
+      'forgotten-id lookup exhausted; nothing released',
+    );
+    await setState(candidate, { tracking: undefined, currentStep: undefined });
+    await tell(candidate, copy.TRACK_DOB_EXHAUSTED);
+    return;
+  }
+
+  // Back to the start of the pair. A date that did not match may have been the
+  // wrong date or the wrong number, and there is no way to tell which, so both
+  // are asked again — leaving `currentStep` on the date would have their next
+  // message read as a second date against a number already known to be wrong.
+  await setState(candidate, {
+    tracking: { ...(tracking ?? { attempts: 0, startedAt: new Date() }), forgotAttempts: attempts },
+  });
+  await tell(candidate, copy.TRACK_FORGOT_NO_MATCH, { remaining: String(remaining) });
+  await startForgotIdLookup(candidate);
 }
 
 /**
@@ -1224,7 +1505,7 @@ async function ingestVoiceNote(
 
   let media;
   try {
-    media = await downloadMedia(msg.mediaId);
+    media = await downloadMedia(msg.mediaId, undefined, candidate.phoneNumberId);
   } catch (err) {
     logger.error({ err, waId: candidate.waId }, 'voice note download failed');
     return undefined;
@@ -1335,7 +1616,9 @@ async function handleSpecialStep(
           return true;
 
         case 'staff':
-          await handOffToStaff(candidate, 'asked for a person at the opening menu');
+          // Typed rather than tapped — the option is not rendered here. It means
+          // the same thing as Other → Talk to staff, so it goes the same way.
+          await startStaffEnquiry(candidate);
           return true;
 
         case 'track':
@@ -1418,6 +1701,12 @@ async function handleSpecialStep(
 
     case 'confirm':
       if (chosen === 'correct') {
+        // The same question ends two different things. A staff enquiry has no
+        // registration to complete and nothing to hand to the CRM.
+        if (candidate.enquiry === 'staff') {
+          await completeStaffEnquiry(candidate);
+          return true;
+        }
         await completeRegistration(candidate);
         return true;
       }
@@ -1605,11 +1894,27 @@ const SECTION_BY_MENU_CHOICE: Record<string, Section> = {
  * registration, which is why only that section's fields are forgotten.
  */
 async function startEdit(candidate: CandidateDoc, section: Section): Promise<void> {
+  // This conversation's questions — its line and its branch. The `country`
+  // section holds a different question on each number, and the staff intake's
+  // `personal` section is one question where registration's is five. Resolving
+  // by anything less would clear an answer this conversation never gave and
+  // then queue the question that gave it.
+  const steps = sectionStepsFor(candidate, section);
+
+  if (!steps.length) {
+    // Nothing in this section belongs to this conversation. Offered by a fixed
+    // menu that does not know which branch it is on; the honest answer is to go
+    // back to what was on screen rather than to clear nothing and say nothing.
+    logger.info(
+      { waId: candidate.waId, section, enquiry: candidate.enquiry },
+      'edit asked for a section this conversation does not have',
+    );
+    await askNextQuestion(candidate);
+    return;
+  }
+
   const unset: Record<string, ''> = {};
-  // This line's questions, not the other one's. The `country` section holds a
-  // different question on each, and queueing the wrong one would ask a
-  // Singapore/Malaysia candidate to choose between the Gulf and Europe.
-  for (const field of fieldsToClear(section, candidate.flowVariant)) {
+  for (const field of sectionFieldsFor(candidate, section)) {
     unset[`profile.${field}`] = '';
     delete candidate.profile[field];
   }
@@ -1619,7 +1924,7 @@ async function startEdit(candidate: CandidateDoc, section: Section): Promise<voi
   }
 
   await setState(candidate, {
-    editQueue: stepsInSection(section, candidate.flowVariant).map((s) => s.id),
+    editQueue: steps.map((s) => s.id),
     unclearCount: 0,
   });
   await askNextQuestion(candidate);
@@ -1637,7 +1942,9 @@ async function handleMenuAnswer(
         await startB2bEnquiry(candidate);
         return;
       }
-      await handOffToStaff(candidate, 'asked for a person from the "Other" menu');
+      // The one place a candidate chooses to reach a person. It collects the
+      // details that make the call useful before it hands over (§24).
+      await startStaffEnquiry(candidate);
       return;
 
     case MENU.returning:
@@ -2319,11 +2626,41 @@ export async function handleInboundMessage(payload: {
   }
 
   if (current === MENU.trackId) {
+    // The row offered after two misses. Checked before the text below, because
+    // a tap arrives carrying its title, and "Forgot my ID" is not an id.
+    if (msg.replyId === copy.CHOICE_FORGOT_ID.id || FORGOT_ID_WORDS.test(text)) {
+      await startForgotIdLookup(candidate);
+      return;
+    }
     if (!text.trim()) {
       await tell(candidate, voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.TRACK_ASK_ID);
       return;
     }
     await lookUpApplication(candidate, text.trim());
+    return;
+  }
+
+  if (current === MENU.forgotMobile) {
+    if (!text.trim()) {
+      await tell(
+        candidate,
+        voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.TRACK_FORGOT_ASK_MOBILE,
+      );
+      return;
+    }
+    await receiveForgotMobile(candidate, text.trim());
+    return;
+  }
+
+  if (current === MENU.forgotDob) {
+    if (!text.trim()) {
+      await tell(
+        candidate,
+        voiceNoteUnread ? copy.VOICE_NOT_UNDERSTOOD : copy.TRACK_FORGOT_ASK_DOB,
+      );
+      return;
+    }
+    await verifyForgotIdentity(candidate, text.trim());
     return;
   }
 
@@ -3067,7 +3404,32 @@ export async function resumeAfterDocument(
   // renewal is due is not a reason to refuse their registration.
   if (docType === 'passport') await reportPassportValidity(candidate);
 
+  // The ATS holds a row per upload with what was read off it, and this is the
+  // moment there is something to read. Only once the conversation has produced
+  // a record worth exporting — before that, completion will carry it.
+  await exportAfterExtraction(candidate);
+
   await askNextQuestion(candidate);
+}
+
+/**
+ * Re-exports a conversation whose documents have just changed.
+ *
+ * An extraction finishes on its own schedule, and often after the candidate has
+ * been told they are registered — a passport sent at the last question is still
+ * with Veris when the confirmation is tapped. The export at completion writes
+ * the upload with whatever was known then; this writes it again once the fields
+ * exist.
+ *
+ * Only for a conversation that has already been exported, which `candidateId`
+ * marks: a document arriving mid-registration will be carried by the completion
+ * export anyway, and exporting a half-answered profile would put a row in front
+ * of a recruiter for somebody who has not finished.
+ */
+async function exportAfterExtraction(candidate: CandidateDoc): Promise<void> {
+  const exported = candidate.enquiry === 'b2b' ? candidate.completedAt : candidate.candidateId;
+  if (!exported) return;
+  await queue.enqueue('ats_export', { waId: candidate.waId });
 }
 
 /**
@@ -3174,6 +3536,11 @@ export async function sendReminders(limit = 50): Promise<number> {
         ] as ConversationStage[],
       },
       status: { $nin: ['not_interested', 'consent_withdrawn'] as CandidateStatus[] },
+      // Not a staff enquiry. Those live in `candidates` and pass through the
+      // same stages, but §21's reminder is written for somebody part-way
+      // through a registration and there is none here to be reminded about —
+      // the same reason `B2B_PENDING` is absent from the stages above.
+      enquiry: { $ne: 'staff' },
     })
     .limit(limit)
     .toArray();

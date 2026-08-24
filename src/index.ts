@@ -8,6 +8,8 @@ import { endIdleSessions, handleInboundMessage, sendReminders } from './conversa
 import { validateCopy } from './conversation/validate.js';
 import { processOcrJob, sweepRunningExtractions } from './ocr/veris.js';
 import { reconcileCrmSync, syncCandidateToCrm } from './crm/sync.js';
+import { exportToAts } from './ats/export.js';
+import { ensureAtsCollections } from './ats/client.js';
 import { TAXONOMY_REFRESH_MS, refreshTaxonomy } from './crm/taxonomy.js';
 import { buildServer } from './server.js';
 import { describePlan, planFor } from './roles.js';
@@ -112,6 +114,13 @@ function registerWorkers(): void {
   // unnecessary — the submission is idempotent by key, so a duplicate job
   // returns the same candidate rather than creating a second one.
   queue.register('crm_sync', syncCandidateToCrm, config.QUEUE_CONCURRENCY_CRM_SYNC);
+
+  // Copying finished conversations into the ATS. Shares the CRM pool's size
+  // because it is the same kind of work — a handful of writes to a database
+  // that is not on the candidate's critical path — and every write is an
+  // upsert on a natural key, so a duplicate job rewrites a row rather than
+  // adding one.
+  queue.register('ats_export', exportToAts, config.QUEUE_CONCURRENCY_CRM_SYNC);
 }
 
 async function main(): Promise<void> {
@@ -129,6 +138,10 @@ async function main(): Promise<void> {
 
   await connectDb();
   await ensureIndexes();
+  // Only the ones that are not there yet — see `ats/client.ts`. Never throws:
+  // an ATS that cannot be prepared is a failed export, not a bot that refuses
+  // to answer anybody.
+  await ensureAtsCollections();
   await ensureStorageRoot();
 
   if (plan.workers) {
@@ -140,6 +153,7 @@ async function main(): Promise<void> {
     queue.observe('inbound_message');
     queue.observe('ocr');
     queue.observe('crm_sync');
+    queue.observe('ats_export');
   }
 
   await queue.start();
