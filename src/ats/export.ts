@@ -10,13 +10,14 @@
  * took (§2):
  *
  *   apply   candidate → `candidates`, conversation → `messages`,
- *           documents → `aadhar_records` / `passport_records`
+ *           documents → `aadhaar_records` / `passport_records`
  *   staff   the same three. Somebody who asked to speak to a person gave us the
  *           same name and the same documents, and a recruiter opening them
  *           should not have to know which menu they came through.
- *   b2b     a business contact → `b2b_company_documents`, `b2b_messages`,
- *           `b2b_agent_aadhar`. Filed apart in the bot's own database and filed
- *           apart here, because a business contact is not a candidate.
+ *   b2b     a business contact → `sourcing_clients`, `b2b_company_documents`,
+ *           `b2b_messages`, `b2b_agent_aadhar`. Filed apart in the bot's own
+ *           database and filed apart here, because an agent sourcing workers is
+ *           not somebody applying for a job.
  *
  * Every row carries `source: 'whatsapp'`. Every write is an upsert on a natural
  * key. Re-exporting the same person updates their rows rather than adding more,
@@ -41,6 +42,16 @@ import { atsCollection, atsConfigured, ATS_COLLECTIONS } from './client.js';
 
 /** What every row this file writes says about where it came from. */
 const SOURCE = 'whatsapp' as const;
+
+/**
+ * What a business contact is, in the ATS's own vocabulary.
+ *
+ * `sourcing_clients` holds more than one kind of thing, and this is the token
+ * that says which of them these rows are. Change it here if the ATS spells it
+ * differently — it is written to every row and read by nothing else in this
+ * codebase.
+ */
+const B2B_CLIENT_TYPE = 'b2b agents' as const;
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * The shapes
@@ -256,6 +267,43 @@ function exportedCandidate(candidate: CandidateDoc): Record<string, unknown> {
   };
 }
 
+/**
+ * The business contact, as a sourcing client.
+ *
+ * `type` is what distinguishes them from whatever else sources workers into the
+ * ATS, and `source` is how they reached us — the same `whatsapp` every other
+ * row this file writes carries.
+ *
+ * What is deliberately thin: the B2B branch asks four questions, so there are
+ * four things to say. Their Aadhaar and their company paperwork have rows of
+ * their own; this names the person those rows belong to.
+ */
+function exportedSourcingClient(candidate: CandidateDoc): Record<string, unknown> {
+  return {
+    source: SOURCE,
+    /** Which kind of sourcing client. Set for every row the bot writes here. */
+    type: B2B_CLIENT_TYPE,
+
+    waId: candidate.waId,
+    phone: candidate.phone,
+    contactName: candidate.profile?.fullName ?? candidate.profileName,
+    /** Which of the agency's numbers they wrote to (`conversation/lines.ts`). */
+    whatsappNumberId: candidate.phoneNumberId,
+
+    stage: candidate.stage,
+    status: candidate.status,
+    language: candidate.language,
+
+    /** What they sent, and where the bytes are. The rows themselves are elsewhere. */
+    documents: documentIndex(candidate),
+
+    firstContactAt: candidate.createdAt,
+    enquiredAt: candidate.completedAt,
+    lastMessageAt: candidate.lastInboundAt,
+    exportedAt: new Date(),
+  };
+}
+
 /** Slot → status and current storage key, for the candidate record above. */
 function documentIndex(candidate: CandidateDoc): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -331,6 +379,9 @@ async function exportedConversation(candidate: CandidateDoc): Promise<Record<str
  */
 const DOCUMENT_ROUTES: Record<string, { collection: string; ocr: boolean }> = {
   aadhaar: { collection: ATS_COLLECTIONS.aadhaarRecords, ocr: true },
+  // The back of the same card, filed beside the front rather than apart from
+  // it: one Aadhaar, two sides, and `documentType` says which is which.
+  aadhaar_back: { collection: ATS_COLLECTIONS.aadhaarRecords, ocr: true },
   passport: { collection: ATS_COLLECTIONS.passportRecords, ocr: true },
 
   // The agent's own Aadhaar, both sides, filed together.
@@ -370,16 +421,14 @@ export async function exportToAts(payload: { waId: string }): Promise<void> {
   const b2b = candidate.enquiry === 'b2b';
   const documents = await documentsFor(waId);
 
-  // A business contact is not a candidate and has no row in `candidates`. Their
-  // name and their number travel on the documents and the conversation instead,
-  // which are the three collections asked for.
-  if (!b2b) {
-    await atsCollection(ATS_COLLECTIONS.candidates).updateOne(
-      { waId, source: SOURCE },
-      { $set: exportedCandidate(candidate) },
-      { upsert: true },
-    );
-  }
+  // A business contact is not a candidate and never gets a `candidates` row —
+  // a recruiter's candidate list is the one place somebody who wrote in to
+  // source workers must not appear. They go to `sourcing_clients` instead.
+  await atsCollection(b2b ? ATS_COLLECTIONS.sourcingClients : ATS_COLLECTIONS.candidates).updateOne(
+    { waId, source: SOURCE },
+    { $set: b2b ? exportedSourcingClient(candidate) : exportedCandidate(candidate) },
+    { upsert: true },
+  );
 
   await atsCollection(b2b ? ATS_COLLECTIONS.b2bMessages : ATS_COLLECTIONS.messages).updateOne(
     { waId, source: SOURCE },
@@ -443,6 +492,11 @@ async function exportDocuments(
 /** Whether a document kind has a collection of its own in the ATS. */
 export function atsRouteFor(docType: string): { collection: string; ocr: boolean } | undefined {
   return DOCUMENT_ROUTES[docType];
+}
+
+/** The `type` written on every sourcing client this bot creates. For the smoke checks. */
+export function b2bClientType(): string {
+  return B2B_CLIENT_TYPE;
 }
 
 /** The routing table, for the smoke checks. */

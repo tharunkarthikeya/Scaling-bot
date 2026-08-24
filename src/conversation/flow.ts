@@ -30,6 +30,7 @@ import {
   render,
 } from './copy.js';
 import { DOCUMENTS, TUNABLES } from './rules.js';
+import { aadhaarFullyRead } from './checklist.js';
 import {
   answersFromEvidence,
   disambiguationFor,
@@ -671,7 +672,11 @@ export const B2B_STEPS: FlowStep[] = [
     document: 'b2b_aadhaar_back',
     allowMedia: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
-    when: isB2b,
+    // Not when the front already carried the whole card. A contact who sends a
+    // PDF, both images at once, or one photo of the card laid out flat has
+    // answered this question with the previous one, and asking again is asking
+    // for something already on file (§1).
+    when: (c) => isB2b(c) && !aadhaarFullyRead(c),
     satisfied: (c) => b2bDocumentSatisfied(c, 'b2b_aadhaar_back'),
   },
 
@@ -748,29 +753,6 @@ const PERSONAL_STEPS: FlowStep[] = [
     clears: ['currentCity', 'currentDistrict', 'currentState', 'currentCountry'],
   },
 
-  {
-    id: 'dob',
-    section: 'personal',
-    prompt: {
-      en: 'What is your date of birth?',
-      ta: 'உங்கள் பிறந்த தேதி என்ன?',
-      hi: 'आपकी जन्मतिथि क्या है?',
-      te: 'మీ పుట్టిన తేదీ ఏంటి?',
-      ml: 'നിങ്ങളുടെ ജനന തീയതി എന്താണ്?',
-    },
-    hint: {
-      en: 'Example: 15/08/1995',
-      ta: 'எடுத்துக்காட்டு: 15/08/1995',
-      hi: 'उदाहरण: 15/08/1995',
-      te: 'ఉదాహరణ: 15/08/1995',
-      ml: 'ഉദാഹരണം: 15/08/1995',
-    },
-    input: 'date',
-    // Age is derived from this, never asked separately (§6).
-    satisfied: (c) => has(p(c).dateOfBirth),
-    apply: (a) => ({ dateOfBirth: a.value }),
-    clears: ['dateOfBirth'],
-  },
 
   {
     id: 'education',
@@ -1207,36 +1189,6 @@ const PREFERENCE_STEPS: FlowStep[] = [
     ],
   },
 
-  {
-    id: 'related_acceptance',
-    section: 'job_preference',
-    prompt: {
-      en: 'Will you accept related jobs also?',
-      ta: 'தொடர்புடைய வேலைகளையும் ஏற்பீர்களா?',
-      hi: 'क्या आप मिलते-जुलते काम भी करेंगे?',
-      te: 'సంబంధిత పనులు కూడా చేస్తారా?',
-      ml: 'ഇതുമായി ബന്ധപ്പെട്ട പണികളും സമ്മതമാണോ?',
-    },
-    input: 'choice',
-    choices: [
-      {
-        id: 'only_my_job',
-        label: { en: 'Only my job', ta: 'என் வேலை மட்டும்', hi: 'सिर्फ़ मेरा काम', te: 'నా ఉద్యోగం మాత్రమే', ml: 'എന്റെ ജോലി മാത്രം' },
-      },
-      {
-        id: 'related_ok',
-        label: { en: 'Related jobs okay', ta: 'தொடர்புடையது சரி', hi: 'मिलते-जुलते ठीक हैं', te: 'సంబంధిత పనులు ఓకే', ml: 'അനുബന്ധ ജോലികൾ മതി' },
-      },
-      {
-        id: 'any_suitable',
-        label: { en: 'Any suitable work', ta: 'ஏதேனும் பொருத்தமானது', hi: 'कोई भी उपयुक्त काम', te: 'ఏదైనా సరిపడే పని', ml: 'ഏത് ജോലിയും മതി' },
-      },
-    ],
-    when: (c) => p(c).workTypePreference === 'current_trade',
-    satisfied: (c) => has(p(c).relatedAcceptance),
-    apply: (a) => ({ relatedAcceptance: a.ids?.[0] }),
-    clears: ['relatedAcceptance'],
-  },
 
   {
     id: 'general_work',
@@ -1516,6 +1468,46 @@ const DOCUMENT_STEPS: FlowStep[] = [
     allowMedia: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
     satisfied: (c) => documentSatisfied(c, 'aadhaar'),
+  },
+
+  {
+    /**
+     * The other side of the Aadhaar — asked only when it is genuinely missing.
+     *
+     * Three ways a candidate sends one card and answers everything: a PDF with
+     * both pages, two images in quick succession, or a single photo of the card
+     * laid out flat. In all three the extractor returns the name, the date of
+     * birth, the address and the number, and this step never runs. It runs when
+     * the front alone came through, which is the one case where there really is
+     * a second side to ask for.
+     *
+     * Gated on what was *read*, never on how many files arrived: two blurred
+     * photos of the front are two files and still only one side of a card.
+     */
+    id: 'aadhaar_back_upload',
+    section: 'documents',
+    prompt: {
+      en: 'Thank you. Now please send the back of the same Aadhaar card.',
+      ta: 'நன்றி. இப்போது அதே ஆதார் அட்டையின் பின்புறத்தை அனுப்பவும்.',
+      hi: 'धन्यवाद। अब उसी आधार कार्ड का पिछला हिस्सा भेजिए।',
+      te: 'ధన్యవాదాలు. ఇప్పుడు అదే ఆధార్ కార్డు వెనుక వైపు పంపండి.',
+      ml: 'നന്ദി. ഇനി അതേ ആധാർ കാർഡിന്റെ പുറകുവശം അയക്കൂ.',
+    },
+    input: 'document',
+    document: 'aadhaar_back',
+    allowMedia: true,
+    hiddenChoices: DOCUMENT_FALLBACKS,
+    when: (c) => {
+      // Only once a front has actually been read. A candidate who said they do
+      // not have an Aadhaar, or has not sent one yet, is not asked for its back.
+      // Only once the extraction has actually come back. `received` means the
+      // file is on disk and Veris may still be reading it — asking for the back
+      // then is asking before we know whether the front already carried it.
+      const front = c.documents?.aadhaar;
+      if (!front || !['ocr_done', 'needs_review'].includes(front.status)) return false;
+      return !aadhaarFullyRead(c);
+    },
+    satisfied: (c) => aadhaarFullyRead(c) || documentSatisfied(c, 'aadhaar_back'),
   },
 
   {

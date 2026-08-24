@@ -36,6 +36,7 @@ import {
   flagIdentityMismatch,
   markSlotFromOcr,
   mergeExtractedProfile,
+  recordAadhaarCoverage,
   resumeAfterDocument,
   uploadStillCurrent,
 } from '../conversation/engine.js';
@@ -914,11 +915,29 @@ function normaliseAadhaar(payload: any): OcrOutcome {
   if (overall === null) reasons.push('no page confidence reported');
   for (const w of payload?.warnings ?? []) reasons.push(String(w));
 
-  // What makes the upload usable: something that identifies the holder. A back
-  // side carries an address and the number but no name or date of birth, and it
-  // is a perfectly good upload — so either identifier is enough.
+  // What makes the upload usable, and it is not the same question as whether a
+  // person should look at it.
+  //
+  // The card carries four things anybody needs — name, date of birth, address
+  // and number. Three are on the front and the address is on the back, so
+  // having all four is also the proof that both sides have been read: from one
+  // PDF, from two images, or from a single photo of a card laid out flat.
+  //
+  // The bar for "stop asking" is `aadhaarAcceptConfidence`, deliberately much
+  // lower than `ocrReviewThreshold`. A card photographed on a phone in a
+  // hallway reads at around 0.6 and yields all four fields perfectly well; it
+  // was being refused and re-requested because one number was answering both
+  // questions. Below the accept bar, or missing an identifier entirely, it is
+  // genuinely unreadable and worth asking again.
   const identified = !!(card.name || card.aadhaar_number);
   const anyText = fields.some((f) => f.category === 'text' && f.value.trim().length > 0);
+  const readable = overall === null || overall >= TUNABLES.aadhaarAcceptConfidence;
+
+  /** Which of the four the card gave up. `sidesRead` reads this to decide the back page. */
+  const present = TUNABLES.aadhaarRequiredFields.filter(
+    (key) => String(card[key] ?? '').trim().length > 0,
+  );
+  const missing = TUNABLES.aadhaarRequiredFields.filter((key) => !present.includes(key));
 
   const problems: string[] = [];
   let verdict: CompletenessVerdict = 'ok';
@@ -933,9 +952,15 @@ function normaliseAadhaar(payload: any): OcrOutcome {
     problems.push('this does not look like an Aadhaar card');
     reasons.push('the Aadhaar extractor found no Aadhaar fields in a page that read clearly');
     verdict = 'wrong_document';
-  } else if (!identified || (overall !== null && overall < TUNABLES.ocrReviewThreshold)) {
+  } else if (!identified || !readable) {
     problems.push('the text was too unclear to read');
     verdict = 'unreadable';
+  } else if (missing.length) {
+    // Read well enough, and short of something. Almost always the address,
+    // which means the front was sent and the back was not — so this is not a
+    // bad photo and must not be reported as one. `aadhaar_back` is what asks
+    // for the other side, and it asks for the side rather than for the card.
+    reasons.push(`not on this side: ${missing.join(', ')}`);
   }
 
   return {
@@ -1364,6 +1389,11 @@ async function applySuccessfulExtraction(params: {
         outcome.raw,
       );
     }
+
+    // Which of the card's four core fields this upload gave up, merged with
+    // what earlier uploads gave. It is what decides whether the back page is
+    // asked for (§15) — see `recordAadhaarCoverage`.
+    await recordAadhaarCoverage(candidateId, docType, outcome.fields);
 
     await runIdentityComparison(candidateId, docType);
 

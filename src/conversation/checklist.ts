@@ -55,6 +55,23 @@ export function isIncomplete(slot: DocumentSlot | undefined): boolean {
   return slot?.status === 'incomplete';
 }
 
+/**
+ * Whether the Aadhaar has given up everything anybody needs off it (§15).
+ *
+ * Name, date of birth, address and number — three on the front and one on the
+ * back, so having all four is also the proof that both sides have been read,
+ * however many files that took. `recordAadhaarCoverage` in the engine keeps the
+ * set; this is the question two flow steps and the engine all ask of it, and a
+ * rule written three times is a rule that drifts twice.
+ *
+ * Here rather than in `flow.ts` because the engine needs it too, and flow
+ * importing the engine would be a cycle.
+ */
+export function aadhaarFullyRead(candidate: CandidateDoc): boolean {
+  const read = candidate.profile?.aadhaarFieldsRead ?? [];
+  return TUNABLES.aadhaarRequiredFields.every((key) => read.includes(key));
+}
+
 export function exhausted(slot: DocumentSlot | undefined): boolean {
   return (slot?.askedCount ?? 0) >= TUNABLES.maxAsksPerDocument;
 }
@@ -85,7 +102,19 @@ export function attributeInboundDocument(
     if (expected) return expected;
   }
 
-  return reachable[0]!.id;
+  // Nothing named it and the open question is not a document step. The first
+  // slot still WAITING is the honest guess, and it is a very different guess
+  // from the first slot in the list.
+  //
+  // This is the bug that had a passport acknowledged as a CV. "Do you have a
+  // valid passport?" is a choice step, not a document step, and a candidate who
+  // answers it by sending the passport rather than tapping Yes used to have the
+  // file attributed to `reachable[0]` — which is the CV, whatever the
+  // conversation was actually about. It was then sent to the resume extractor,
+  // which is the wrong endpoint for a passport, and the candidate was told
+  // "CV received".
+  const outstanding = reachable.find((req) => !isResolved(withMissingSlots(candidate.documents)[req.id]));
+  return (outstanding ?? reachable[0]!).id;
 }
 
 /**
@@ -100,9 +129,19 @@ function documentsInBranch(candidate: CandidateDoc): DocumentRequirement[] {
   return DOCUMENTS.filter((d) => (d.branch ?? 'candidate') === branch);
 }
 
-/** The slot a `document` step is asking for, derived from its id. */
+/**
+ * The slot a step is asking about, derived from its id.
+ *
+ * Two shapes: the document step itself (`passport_upload`, or `cv`, which is
+ * named for its slot), and the question that precedes it. "Do you have a valid
+ * passport?" is `passport_status`, and a file arriving there is a passport —
+ * the candidate answered with the document instead of the button, which is a
+ * perfectly reasonable thing to do and used to file their passport as a CV.
+ */
 function documentForStep(stepId: string): string | undefined {
-  const direct = DOCUMENTS.find((d) => stepId === d.id || stepId === `${d.id}_upload`);
+  const direct = DOCUMENTS.find(
+    (d) => stepId === d.id || stepId === `${d.id}_upload` || stepId === `${d.id}_status`,
+  );
   return direct?.id;
 }
 

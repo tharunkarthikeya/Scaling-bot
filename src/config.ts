@@ -34,10 +34,15 @@ const schema = z.object({
    * The ATS database a finished conversation is copied into.
    *
    * A second database on the same deployment, not a second server, so it needs
-   * no connection string of its own. Blank it to turn the export off entirely,
-   * which is what a test or a local run that has no ATS to write to wants.
+   * no connection string of its own.
+   *
+   * Not `blankable`, deliberately: that helper turns an empty value into an
+   * absent one, and an absent one here takes the default — so blanking it would
+   * have switched the export back on rather than off. Set it to an empty string
+   * and `atsConfigured()` reads it as off, which is what a local run with no ATS
+   * to write to wants.
    */
-  RESUME_ATS_DB: blankable(z.string().min(1).optional().default('resume_ats')),
+  RESUME_ATS_DB: z.string().default('resume_ats'),
 
   /* ---------------------------------------------------------------- */
   /* Redis - what makes more than one instance safe                     */

@@ -1062,6 +1062,26 @@ export const OPTION_EXPIRED: Localised = {
   ml: 'ആ ഓപ്ഷൻ മുൻപത്തെ ഒരു ചോദ്യത്തിന്റേതായിരുന്നു, അത് ഇപ്പോൾ ഇല്ല. ഇപ്പോൾ നമ്മൾ എവിടെയാണെന്ന് ഇതാ.',
 };
 
+/**
+ * A reply that was read but does not answer the question in front of it.
+ *
+ * Sent from the second attempt onward, in place of repeating "I could not use
+ * that as an answer" — the same sentence twice reads as the bot not listening,
+ * and this one at least says which of the two things went wrong.
+ *
+ * It never offers a person. A candidate who mistypes a city or answers in a
+ * shape the classifier could not place has not asked for staff and does not
+ * want them; they want the question again, so the question comes again. The
+ * only routes to a human are asking for one and the safeguarding triggers.
+ */
+export const ANSWER_NOT_RIGHT: Localised = {
+  en: 'That does not answer this question. Please read it once more and reply.',
+  ta: 'இது இந்தக் கேள்விக்கான பதிலாக இல்லை. கேள்வியை மீண்டும் ஒருமுறை படித்துப் பதிலளிக்கவும்.',
+  hi: 'यह इस सवाल का जवाब नहीं है। कृपया सवाल एक बार और पढ़कर जवाब दें।',
+  te: 'ఇది ఈ ప్రశ్నకు సమాధానం కాదు. ప్రశ్నను ఒకసారి చదివి సమాధానం చెప్పండి.',
+  ml: 'ഇത് ഈ ചോദ്യത്തിനുള്ള ഉത്തരമല്ല. ചോദ്യം ഒന്നുകൂടി വായിച്ച് മറുപടി പറയൂ.',
+};
+
 export const UNCLEAR: Localised = {
   en: 'Sorry, I could not use that as an answer. Please reply to the question below.',
   ta: 'மன்னிக்கவும், அதைப் பதிலாகப் பயன்படுத்த முடியவில்லை. கீழே உள்ள கேள்விக்குப் பதிலளிக்கவும்.',

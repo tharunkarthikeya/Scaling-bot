@@ -131,6 +131,34 @@ export const DOCUMENTS: DocumentRequirement[] = [
     sensitive: true,
   },
   {
+    /**
+     * The other side of a candidate's Aadhaar, asked for only when it is
+     * actually missing.
+     *
+     * A card sent as a PDF, as two images together, or as one photo of both
+     * sides laid out gives up all four fields at once, and asking for "the back
+     * page" then is asking for something already on file (§1). What decides it
+     * is `aadhaarFieldsRead` on the profile — the union of what every Aadhaar
+     * upload has yielded — and not the number of files.
+     *
+     * Filed as its own kind rather than a second upload in the `aadhaar` slot,
+     * because a slot is answered once: a second upload there would have looked
+     * like a replacement for the first, and §22 keeps both.
+     */
+    id: 'aadhaar_back',
+    label: {
+      en: 'back of the Aadhaar card',
+      ta: 'ஆதார் அட்டையின் பின்புறம்',
+      hi: 'आधार कार्ड का पिछला हिस्सा',
+      te: 'ఆధార్ కార్డు వెనుక వైపు',
+      ml: 'ആധാർ കാർഡിന്റെ പുറകുവശം',
+    },
+    required: false,
+    keywords: ['aadhaar back', 'aadhar back', 'back side', 'backside', 'ஆதார் பின்புறம்', 'आधार पीछे'],
+    ocr: 'aadhaar',
+    sensitive: true,
+  },
+  {
     id: 'pan',
     label: {
       en: 'PAN card',
@@ -383,6 +411,29 @@ export const TUNABLES = {
   maxTrackingIdAttempts: 2,
   /** OCR field confidence below this routes the document to human review. */
   ocrReviewThreshold: 0.85,
+  /**
+   * Confidence at which an Aadhaar is usable, as distinct from unremarkable.
+   *
+   * Two different questions were being answered by one number. "Should a person
+   * check this?" is `ocrReviewThreshold`, and 0.85 is right for it. "Did we read
+   * enough to stop asking?" is this one, and 0.85 was far too high for it — a
+   * card photographed on a phone in a hallway routinely reads at 0.6, yields a
+   * perfectly good name, date of birth, address and number, and was being
+   * re-requested anyway.
+   *
+   * Above this, with the four fields below in hand, the slot is done. It may
+   * still be flagged for review, and that is the point: a review is a task for
+   * staff, not a reason to ask the candidate for the same card again (§14).
+   */
+  aadhaarAcceptConfidence: 0.5,
+  /**
+   * What an Aadhaar has to yield before the bot stops asking for it.
+   *
+   * The four things anybody actually needs off the card. `address` is on the
+   * back and the other three are on the front, which is what makes this also
+   * the test for whether the back page still has to be asked for.
+   */
+  aadhaarRequiredFields: ['name', 'date_of_birth', 'address', 'aadhaar_number'] as const,
   /** Flag a passport expiring within this many months for staff attention (§12). */
   passportExpiryWarningMonths: 12,
   /**

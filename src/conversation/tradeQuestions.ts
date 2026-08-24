@@ -49,8 +49,17 @@ export type { GeneratedQuestion };
 
 import { callModel, ModelUnavailableError, modelClient } from './model.js';
 
-/** Most questions any candidate is asked about their trade. */
-export const MAX_GENERATED_QUESTIONS = 4;
+/**
+ * Most questions any candidate is asked about their trade.
+ *
+ * Two. It was four, and four is too many: by the time somebody has answered a
+ * CV, their name, where they live, what they do and what they want, two more
+ * questions about their trade is interest and four is an interrogation. The two
+ * that matter are the two the prompt is told to pick — what separates a strong
+ * worker from a weak one in *this* job — and the third and fourth were always
+ * the weakest of the four.
+ */
+export const MAX_GENERATED_QUESTIONS = 2;
 
 /**
  * Subjects a generated question may never touch.
@@ -147,25 +156,26 @@ Step two: which of these separate one worker from another IN THIS JOB —
   the kind of workplace or industry they have done it in
   the kind of work they have done, as distinct from how long
 
-Step three: ask about the two to four that matter most here. Not the same ones
-every time — what decides everything in one job is irrelevant in the next. A
-licence class is the whole question for a driver and meaningless for a
-designer. Which software they use decides an accountant's level and tells you
-nothing about a mason. A speciality matters enormously to a nurse and barely at
-all to a general helper.
+Step three: ask about the TWO that matter most here. Exactly two, never more.
+Not the same two every time — what decides everything in one job is irrelevant
+in the next. A licence class is the whole question for a driver and meaningless
+for a designer. Which software they use decides an accountant's level and tells
+you nothing about a mason. A speciality matters enormously to a nurse and barely
+at all to a general helper.
+
+Two is a hard limit, and choosing them is the work. If three things seem to
+matter, the third is the one you drop.
 
 The same method, applied to different work:
 
-  electrician        what kind of wiring, what licence they hold, what systems
-                     and equipment they have worked on
-  accountant         what accounting qualification, which software, whether
-                     they work in audit, tax, payroll or accounts
-  graphic designer   what design training, which software, what kind of work —
-                     print, branding, packaging, digital
-  plumber            what plumbing training, what systems and materials, what
-                     kind of sites, whether they hold a certificate
-  physiotherapist    whether they are registered, which speciality, what
-                     setting — hospital, clinic, home visits
+  electrician        what kind of wiring, and whether they hold a licence
+  accountant         which software, and whether they work in audit, tax or
+                     payroll
+  graphic designer   which software, and what kind of work — print, branding,
+                     packaging, digital
+  plumber            what systems and materials, and whether they hold a
+                     certificate
+  physiotherapist    whether they are registered, and which speciality
 
 Never assume. Do not ask which licence they hold — ask whether they hold one.
 Do not ask what their speciality is as though they have one — ask whether they
@@ -219,6 +229,7 @@ const QUESTIONS_TOOL: Anthropic.Tool = {
     properties: {
       questions: {
         type: 'array',
+        maxItems: 2,
         items: {
           type: 'object',
           properties: {

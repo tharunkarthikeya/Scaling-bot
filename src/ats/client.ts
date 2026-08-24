@@ -41,12 +41,21 @@ export const ATS_COLLECTIONS = {
   /** One per person: a candidate, or somebody who asked to speak to staff. */
   candidates: 'candidates',
   /** One per Aadhaar upload, with what the extractor read off it. */
-  aadhaarRecords: 'aadhar_records',
+  aadhaarRecords: 'aadhaar_records',
   /** One per passport upload, likewise. */
   passportRecords: 'passport_records',
   /** One per person: their whole conversation, every sitting in order. */
   messages: 'messages',
 
+  /**
+   * The business contacts themselves, alongside whatever else sources clients.
+   *
+   * Their own row rather than a `candidates` one: an agent sourcing workers is
+   * not somebody applying for a job, and a recruiter's candidate list is the
+   * one place they must never appear. `type` says which kind of sourcing client
+   * they are, and `source` says how they reached us.
+   */
+  sourcingClients: 'sourcing_clients',
   /** A business contact's company paperwork. Never sent to an extractor. */
   b2bCompanyDocuments: 'b2b_company_documents',
   /** One per business contact: their whole conversation. */
@@ -157,6 +166,7 @@ export async function ensureAtsCollections(): Promise<void> {
 async function indexFor(db: Db, name: string): Promise<void> {
   const keys: Record<string, Record<string, 1>> = {
     [ATS_COLLECTIONS.candidates]: { waId: 1, source: 1 },
+    [ATS_COLLECTIONS.sourcingClients]: { waId: 1, source: 1 },
     [ATS_COLLECTIONS.messages]: { waId: 1 },
     [ATS_COLLECTIONS.aadhaarRecords]: { uploadId: 1 },
     [ATS_COLLECTIONS.passportRecords]: { uploadId: 1 },

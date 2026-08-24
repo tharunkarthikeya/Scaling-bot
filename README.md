@@ -502,8 +502,9 @@ records it put there and which arrived some other way.
 |---|---|
 | `candidates` | One row per person — a registration, or somebody who asked to speak to staff. Their answers, flattened. |
 | `messages` | One row per person: the whole conversation, every sitting in order. |
-| `aadhar_records` | One row per Aadhaar upload, with what the extractor read off it. |
+| `aadhaar_records` | One row per Aadhaar upload, with what the extractor read off it. |
 | `passport_records` | One row per passport upload, likewise. |
+| `sourcing_clients` | One row per business contact, `type: 'b2b agents'`. Not a candidate row — see below. |
 | `b2b_company_documents` | A business contact's company paperwork — registration certificate, MSME certificate, whatever they sent. **No OCR.** |
 | `b2b_messages` | One row per business contact: their whole conversation. |
 | `b2b_agent_aadhar` | The agent's own Aadhaar, both sides, with what was read off them. |
@@ -529,14 +530,20 @@ second is not the candidate's problem.
 
 | | `candidates` | `messages` | documents |
 |---|---|---|---|
-| **Apply** | ✓ | ✓ | `aadhar_records`, `passport_records` |
-| **Talk to staff** | ✓ | ✓ | `aadhar_records`, `passport_records` |
-| **B2B** | — | `b2b_messages` | `b2b_company_documents`, `b2b_agent_aadhar` |
+| **Apply** | ✓ | ✓ | `aadhaar_records`, `passport_records` |
+| **Talk to staff** | ✓ | ✓ | `aadhaar_records`, `passport_records` |
+| **B2B** | `sourcing_clients` | `b2b_messages` | `b2b_company_documents`, `b2b_agent_aadhar` |
 
 A staff enquiry is filed with the candidates deliberately: they gave the same
 name and the same documents, and a recruiter opening the record should not have
 to know which menu brought them in. `enquiry` on the row says which it was. A
-business contact has no candidate row, here or in the bot's own database.
+business contact has no candidate row, here or in the bot's own database — they
+go to `sourcing_clients` with `type: 'b2b agents'` and `source: 'whatsapp'`,
+because an agent sourcing workers is not somebody applying for a job and a
+recruiter's candidate list is the one place they must never appear. A separate
+collection rather than a flag on a candidate row, because a flag is something a
+query can forget to filter on. If the ATS spells that type differently, it is
+one constant in `ats/export.ts`.
 
 Every version of a document is exported and nothing is ever removed (§22), so a
 reader wanting "their Aadhaar" filters on **`isCurrent: true`** rather than

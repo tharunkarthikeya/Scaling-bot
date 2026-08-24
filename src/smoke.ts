@@ -116,7 +116,7 @@ import {
 } from './conversation/copy.js';
 import { CANDIDATE_ID_PREFIX, ENQUIRY_ID_PREFIX } from './db/models.js';
 import { ATS_COLLECTIONS } from './ats/client.js';
-import { atsDocumentRoutes, atsRouteFor } from './ats/export.js';
+import { atsDocumentRoutes, atsRouteFor, b2bClientType } from './ats/export.js';
 import { inspectUpload, normaliseExtractionForTests, resumeCompleteness } from './ocr/veris.js';
 import {
   JobQueueFullError,
@@ -618,7 +618,7 @@ await check('the country question is asked after the personal details (§10)', (
 
   // After the personal section, because it is a preference rather than a branch
   // point now: nothing below it changes shape depending on the answer.
-  for (const personal of ['full_name', 'location', 'dob', 'education']) {
+  for (const personal of ['full_name', 'location', 'education']) {
     assert.ok(
       ids.indexOf(personal) < ids.indexOf('country_preference'),
       `"${personal}" must be asked before the country question`,
@@ -1081,7 +1081,18 @@ await check('splits an address into the fields matching filters on (§6)', () =>
   assert.equal(split?.state, 'Tamil Nadu');
   assert.equal(split?.city, 'Chennai');
   assert.equal(split?.country, 'India');
-  assert.equal(splitAddress('somewhere unspecified'), undefined);
+
+  // No state named, which is most CVs — people write the town and the postcode
+  // and stop. This used to return nothing, so a candidate was asked which city
+  // they live in while it was printed on the CV they had just sent (§1).
+  const noState = splitAddress('45 Bypass Road, Madurai 625001');
+  assert.equal(noState?.city, 'Madurai');
+  assert.equal(noState?.state, undefined);
+
+  // Still nothing where there is nothing to find: a door number is not a town,
+  // and filing one as somebody's city is worse than asking them for it.
+  assert.equal(splitAddress('12/4'), undefined);
+  assert.equal(splitAddress('3rd Floor'), undefined);
 });
 
 await check('a CV fills in the questions it answers, and no more', () => {
@@ -1297,15 +1308,21 @@ await check('with no CV, every question is asked, in order', () => {
   const { order } = walkFlow(noCv);
 
   // The whole of §6 is asked when nothing has been supplied for it.
-  for (const id of ['full_name', 'location', 'dob', 'education']) {
+  for (const id of ['full_name', 'location', 'education']) {
     assert.ok(order.includes(id), `${id} was not asked`);
   }
   assert.ok(
     order.indexOf('full_name') < order.indexOf('location'),
     'name must come before location',
   );
-  assert.ok(order.indexOf('location') < order.indexOf('dob'), 'location must come before dob');
-  assert.ok(order.indexOf('dob') < order.indexOf('education'), 'dob must come before education');
+  assert.ok(
+    order.indexOf('location') < order.indexOf('education'),
+    'location must come before education',
+  );
+  // And nobody is asked for a date of birth: it is on the Aadhaar and on the
+  // passport, both of which are read, and a date typed from memory is the least
+  // reliable thing on a record.
+  assert.equal(stepById('dob'), undefined, 'the date of birth question is gone');
 });
 
 await check('a CV with gaps is asked only for the gaps, still in order', () => {
@@ -1327,7 +1344,11 @@ await check('a CV with gaps is asked only for the gaps, still in order', () => {
   const personal = order.filter((id) => stepById(id)?.section === 'personal');
 
   // The gap is asked; what the CV supplied is not.
-  assert.deepEqual(personal, ['dob'], `expected only dob to be asked, got ${personal.join(', ')}`);
+  assert.deepEqual(
+    personal,
+    [],
+    `the CV answered every personal question, got ${personal.join(', ')}`,
+  );
 
   // And skipping does not disturb the order of everything that remains.
   for (let i = 1; i < indexes.length; i++) {
@@ -2084,7 +2105,7 @@ await check('the flow never returns a question that has an answer', () => {
 
   // Every answered step reports itself satisfied, and the scheduler walks past
   // all of them to the first one that is not.
-  for (const id of ['full_name', 'location', 'dob', 'education', 'education_course']) {
+  for (const id of ['full_name', 'location', 'education', 'education_course']) {
     assert.equal(stepById(id)!.satisfied(c), true, id);
   }
   assert.equal(nextStep(c)?.id, 'main_trade');
@@ -2133,12 +2154,12 @@ await check('an edit reopens exactly the section it was asked for', () => {
   // outside the section the candidate chose.
   const cleared = fieldsToClear('personal');
   assert.ok(cleared.includes('fullName'));
-  assert.ok(cleared.includes('dateOfBirth'));
+  assert.ok(cleared.includes('currentCity'));
   assert.ok(!cleared.includes('primaryTrade'), 'an edit of personal details reached the trade');
 
   const edited = candidate({
     profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding' },
-    editQueue: ['full_name', 'dob', 'education'],
+    editQueue: ['full_name', 'education'],
   });
   assert.equal(stepById('full_name')!.satisfied(edited), false);
   assert.equal(nextStep(edited)?.id, 'full_name');
@@ -2377,7 +2398,7 @@ await check('the CV is asked before every section it can answer (§1, §5)', () 
   // resume extractor can fill, and filling it is only useful if the CV arrives
   // first — afterwards the candidate has already been asked by hand.
   const ids = STEPS.map((step) => step.id);
-  for (const answerable of ['full_name', 'dob', 'education', 'main_trade', 'total_experience']) {
+  for (const answerable of ['full_name', 'education', 'main_trade', 'total_experience']) {
     assert.ok(ids.indexOf('cv') < ids.indexOf(answerable), `the CV must precede "${answerable}"`);
   }
 
@@ -2404,7 +2425,7 @@ await check('what a document says is never asked as a question (§1, §5)', () =
   Object.assign(c.profile, patch);
 
   assert.equal(stepById('full_name')!.satisfied(c), true, 'name still being asked');
-  assert.equal(stepById('dob')!.satisfied(c), true, 'date of birth still being asked');
+  assert.equal(stepById('dob'), undefined, 'the date of birth question is gone');
   // A passport that arrived unprompted, or inside a CV, answers the question
   // about whether they have one.
   assert.equal(stepById('passport_status')!.satisfied(c), true);
@@ -2628,7 +2649,12 @@ await check('a cleaner is not asked for a CV; a welder is (§5)', () => {
     if (id === 'cv') throw new Error('a low-skill applicant must not be asked for a CV');
     if (id === 'availability') cleaner.profile.availability = 'immediate';
     else if (id === 'passport_status') cleaner.profile.passportStatus = 'no';
-    else if (id === 'aadhaar_upload') cleaner.documents.aadhaar!.status = 'ocr_done';
+    else if (id === 'aadhaar_upload') {
+      cleaner.documents.aadhaar!.status = 'ocr_done';
+      // Read in full — a PDF, or both sides in one photo. The back is not asked
+      // for, which is the whole point of `aadhaar_back_upload`'s guard (§15).
+      cleaner.profile.aadhaarFieldsRead = [...TUNABLES.aadhaarRequiredFields];
+    }
     else if (id === 'pan_upload') cleaner.documents.pan!.status = 'received';
     else if (id === 'confirm') cleaner.stage = 'REGISTRATION_COMPLETED';
     else throw new Error(`unexpected question for a low-skill applicant: ${id}`);
@@ -2842,7 +2868,7 @@ await check('a staff enquiry is asked seven things, in order (§24)', () => {
   );
 
   // None of registration is in it — no consent, no CV, no trade, no job.
-  for (const id of ['consent', 'cv', 'main_trade', 'job_preference', 'availability', 'dob']) {
+  for (const id of ['consent', 'cv', 'main_trade', 'job_preference', 'availability']) {
     assert.ok(!STAFF_STEPS.some((s) => s.id === id), `"${id}" does not belong in the intake`);
   }
 });
@@ -2937,9 +2963,10 @@ console.log('\nthe ats export (resume_ats)');
 await check('every collection asked for is named, and named once', () => {
   assert.deepEqual(ATS_COLLECTIONS, {
     candidates: 'candidates',
-    aadhaarRecords: 'aadhar_records',
+    aadhaarRecords: 'aadhaar_records',
     passportRecords: 'passport_records',
     messages: 'messages',
+    sourcingClients: 'sourcing_clients',
     b2bCompanyDocuments: 'b2b_company_documents',
     b2bMessages: 'b2b_messages',
     b2bAgentAadhaar: 'b2b_agent_aadhar',
@@ -2950,10 +2977,23 @@ await check('every collection asked for is named, and named once', () => {
   assert.equal(new Set(names).size, names.length);
 });
 
+await check('a business contact is a sourcing client, never a candidate', () => {
+  // The row says what kind of sourcing client they are, and how they reached
+  // us. Both are written on every one the bot creates.
+  assert.equal(b2bClientType(), 'b2b agents');
+
+  // And they must never land in the candidate list. That is the whole reason
+  // they have a collection of their own rather than a `candidates` row with a
+  // flag on it — a flag is something a query can forget to filter on.
+  assert.notEqual(ATS_COLLECTIONS.sourcingClients, ATS_COLLECTIONS.candidates);
+});
+
 await check('each document kind goes to its own collection, and reads or does not', () => {
   const routes = atsDocumentRoutes();
 
-  assert.deepEqual(routes.aadhaar, { collection: 'aadhar_records', ocr: true });
+  assert.deepEqual(routes.aadhaar, { collection: 'aadhaar_records', ocr: true });
+  // Both sides of one card go to the same place.
+  assert.deepEqual(routes.aadhaar_back, { collection: 'aadhaar_records', ocr: true });
   assert.deepEqual(routes.passport, { collection: 'passport_records', ocr: true });
 
   // Both sides of the agent's card, filed together.
@@ -3086,7 +3126,7 @@ await check('continue keeps every answer already given', () => {
   assert.equal(c.profile.dateOfBirth, '1994-03-11');
   assert.equal(c.profile.currentCity, 'Chennai');
 
-  for (const id of ['full_name', 'location', 'dob']) {
+  for (const id of ['full_name', 'location']) {
     assert.equal(stepById(id)!.satisfied(c), true, `${id} was forgotten`);
   }
 });
@@ -3121,7 +3161,7 @@ await check('continue does not re-ask anything already answered', () => {
   c.currentStep = undefined;
 
   const { order } = walkFlow(c);
-  for (const answered of ['full_name', 'location', 'dob']) {
+  for (const answered of ['full_name', 'location']) {
     assert.ok(!order.includes(answered), `continue re-asked "${answered}"`);
   }
   // And the CV, which is on file (§1, §22).
@@ -3189,7 +3229,7 @@ await check('restart re-walks from the top and asks only what is missing', () =>
   }
 
   // Nothing already answered is put again.
-  for (const answered of ['entry', 'language', 'consent', 'cv', 'full_name', 'location', 'dob']) {
+  for (const answered of ['entry', 'language', 'consent', 'cv', 'full_name', 'location']) {
     assert.ok(!order.includes(answered), `restart re-asked "${answered}"`);
   }
   assert.equal(order[0], 'education', 'restart must resume at the first unanswered step');
@@ -3402,7 +3442,16 @@ await check('only the CV, the passport and the Aadhaar go to an extractor', () =
   // identifier the bot has no question for, and running them through an
   // extractor is an exposure with nothing on the other side of it.
   const read = DOCUMENTS.filter((d) => d.ocr !== 'none').map((d) => d.id).sort();
-  assert.deepEqual(read, ['aadhaar', 'b2b_aadhaar_back', 'b2b_aadhaar_front', 'cv', 'passport']);
+  assert.deepEqual(read, [
+    'aadhaar',
+    // The other side of the same card, read by the same extractor. Asked for
+    // only when the front did not already carry the whole card (§15).
+    'aadhaar_back',
+    'b2b_aadhaar_back',
+    'b2b_aadhaar_front',
+    'cv',
+    'passport',
+  ]);
 
   const stored = ['pan', 'driving_licence', 'certificate', 'company_registration'];
   for (const id of stored) {

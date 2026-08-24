@@ -48,6 +48,7 @@ import {
   type ConversationStage,
   type FieldMeta,
   type MessageDoc,
+  type OcrField,
 } from '../db/models.js';
 import {
   downloadMedia,
@@ -73,7 +74,12 @@ import {
   type FlowStep,
   type Section,
 } from './flow.js';
-import { attributeInboundDocument, initialSlots, withMissingSlots } from './checklist.js';
+import {
+  aadhaarFullyRead,
+  attributeInboundDocument,
+  initialSlots,
+  withMissingSlots,
+} from './checklist.js';
 import { extractFromCv, normaliseDate, profileFromIdentityDocument } from './cv.js';
 import { captureAttachment, ingestionForMessage } from '../ingestion/whatsapp.js';
 import { detectGlobalCommand, interpret } from './interpret.js';
@@ -1687,18 +1693,6 @@ async function handleSpecialStep(
       }
       return false;
 
-    case 'dob': {
-      // §27 — an automated overseas-work registration is not the right thing to
-      // run with a minor. It stops, and a person takes it from here.
-      const age = ageFrom(answer.value);
-      if (age !== undefined && age < TUNABLES.minimumAge) {
-        await tell(candidate, copy.AGE_HANDOFF);
-        await handOffToStaff(candidate, `stated date of birth gives an age of ${age}`);
-        return true;
-      }
-      return false;
-    }
-
     case 'confirm':
       if (chosen === 'correct') {
         // The same question ends two different things. A staff enquiry has no
@@ -2951,13 +2945,25 @@ export async function handleInboundMessage(payload: {
     }
 
     case 'unclear': {
+      // Counted, logged, and never escalated.
+      //
+      // Two unreadable replies used to end the automated conversation and hand
+      // the candidate to a member of staff. That is the wrong trade: somebody
+      // mistyping a city name, or answering in a way the classifier could not
+      // place, has not asked for a person and does not want one — they want the
+      // question again. So the question comes again, for as long as it takes.
+      //
+      // The count is kept because it is worth seeing in the logs: a step that
+      // is misread by everybody is a step whose wording is wrong, and this is
+      // the only number that would show it.
       const count = (candidate.unclearCount ?? 0) + 1;
       await setState(candidate, { unclearCount: count });
 
       if (count >= TUNABLES.maxAsksPerStep) {
-        await tell(candidate, copy.STUCK);
-        await handOffToStaff(candidate, `could not understand ${count} replies at "${step.id}"`);
-        return;
+        logger.warn(
+          { waId: candidate.waId, step: step.id, count },
+          'a reply could not be read; re-asking rather than handing over',
+        );
       }
 
       // The classifier could not fit the reply into an answer. That is not the
@@ -2993,7 +2999,14 @@ export async function handleInboundMessage(payload: {
         await renderRetry(
           step,
           candidate,
-          replied.kind === 'answered' ? replied.text : copy.UNCLEAR,
+          replied.kind === 'answered'
+            ? replied.text
+            : // The same message twice reads as the bot not listening. From the
+              // second miss it says plainly that the answer was not right for
+              // this question, which is more use than apologising again.
+              count >= TUNABLES.maxAsksPerStep
+              ? copy.ANSWER_NOT_RIGHT
+              : copy.UNCLEAR,
         ),
         step.id,
       );
@@ -3044,17 +3057,16 @@ export async function handleInboundMessage(payload: {
   // yields only a country — and no amount of re-asking fixes it. Counted like a
   // reply we could not read, so the conversation reaches a person instead.
   if ((!step.when || step.when(candidate)) && !step.satisfied(candidate)) {
+    // Understood, but it did not answer the question — `total_experience` given
+    // "about six" with no band, `location` yielding only a country. Asked
+    // again, and again, rather than handed to a person: the candidate is
+    // engaged and trying, and taking the conversation away from them at that
+    // moment is the opposite of helping.
     const count = (candidate.unclearCount ?? 0) + 1;
     await setState(candidate, { unclearCount: count });
 
-    if (count >= TUNABLES.maxAsksPerStep) {
-      await tell(candidate, copy.STUCK);
-      await handOffToStaff(candidate, `"${step.id}" still unanswered after ${count} replies`);
-      return;
-    }
-
     logger.warn({ waId: candidate.waId, step: step.id, count }, 'answer left the step unsatisfied');
-    await reply(candidate, await renderRetry(step, candidate, copy.UNCLEAR), step.id);
+    await reply(candidate, await renderRetry(step, candidate, copy.ANSWER_NOT_RIGHT), step.id);
     return;
   }
 
@@ -3210,6 +3222,55 @@ export async function markSlotFromOcr(
 }
 
 /**
+ * Records which of the Aadhaar's four core fields an upload gave up (§15).
+ *
+ * The union across every Aadhaar this candidate has sent, because a front and a
+ * back are two files and one card. What it decides is whether the back page is
+ * asked for at all: a card sent as a PDF, as two images at once, or as one photo
+ * of both sides yields all four in a single upload, and asking for "the other
+ * side" then is asking for something already on file (§1).
+ *
+ * Written straight rather than through `buildProfileWrite`. That function weighs
+ * provenance and refuses a weaker source, which is exactly right for a name and
+ * exactly wrong for a set that has to grow as more of the card is read.
+ */
+export async function recordAadhaarCoverage(
+  candidateId: ObjectId,
+  docType: string,
+  fields: OcrField[],
+): Promise<void> {
+  if (!AADHAAR_KINDS.has(docType)) return;
+
+  const candidate = await findConversationById(candidateId);
+  if (!candidate) return;
+
+  const read = new Set(candidate.profile?.aadhaarFieldsRead ?? []);
+  const before = read.size;
+
+  for (const key of TUNABLES.aadhaarRequiredFields) {
+    const found = fields.find((f) => f.key === key && f.value.trim().length > 0);
+    if (found) read.add(key);
+  }
+
+  if (read.size === before) return;
+
+  const merged = [...read];
+  await recordsFor(candidate.enquiry).updateOne(
+    { _id: candidateId },
+    { $set: { 'profile.aadhaarFieldsRead': merged, updatedAt: new Date() } },
+  );
+
+  logger.info(
+    { waId: candidate.waId, docType, read: merged },
+    'aadhaar fields read so far',
+  );
+}
+
+/** Every slot an Aadhaar can arrive in, across both branches. */
+const AADHAAR_KINDS = new Set(['aadhaar', 'aadhaar_back', 'b2b_aadhaar_front', 'b2b_aadhaar_back']);
+
+
+/**
  * Merges what a document yielded into the profile (§5).
  *
  * Everything written here is marked as coming from the document and unverified.
@@ -3243,6 +3304,46 @@ export async function mergeExtractedProfile(
     { waId: candidate.waId, source, fields: Object.keys(patch).length },
     'profile updated from an extracted document',
   );
+
+  // §27 — an automated overseas-work registration is not the right thing to run
+  // with a minor, and this is now the only place a date of birth comes from.
+  //
+  // The flow stopped asking for one: it is on the Aadhaar and it is on the
+  // passport, both of which are read, and a date typed from memory is the least
+  // reliable thing on a record. That moved the age check here with it. Checked
+  // against what was written rather than what was extracted, so a date the
+  // profile refused — a weaker source than one already on file — cannot trigger
+  // it.
+  const written = write.set['profile.dateOfBirth'];
+  if (typeof written === 'string') await stopIfUnderAge(candidate, written, source);
+}
+
+/**
+ * Ends the conversation where an extracted date of birth makes the candidate a
+ * minor (§27).
+ *
+ * Said once. `ageFlagged` marks it, because a candidate who sends an Aadhaar and
+ * then a passport has two documents carrying the same date, and being told twice
+ * that a person will be in touch reads as the bot having lost the thread.
+ */
+async function stopIfUnderAge(
+  candidate: CandidateDoc,
+  dateOfBirth: string,
+  source: 'cv' | 'document',
+): Promise<void> {
+  if (candidate.stage === 'HUMAN_HANDOFF' || candidate.ageFlagged) return;
+
+  const age = ageFrom(dateOfBirth);
+  if (age === undefined || age >= TUNABLES.minimumAge) return;
+
+  await setState(candidate, { ageFlagged: true });
+  logger.warn(
+    { waId: candidate.waId, age, source },
+    'the date of birth read off a document gives an age below the minimum',
+  );
+
+  await tell(candidate, copy.AGE_HANDOFF);
+  await handOffToStaff(candidate, `${source} gives a date of birth with an age of ${age}`);
 }
 
 /**

@@ -188,5 +188,6 @@ export function validateCopy(): void {
   checkInteractive('resume prompt', copy.RESUME_PROMPT);
   checkInteractive('reminder', copy.REMINDER);
   checkInteractive('expired option', copy.OPTION_EXPIRED);
+  checkInteractive('answer did not fit the question', copy.ANSWER_NOT_RIGHT);
   checkInteractive('"Other" menu prompt', copy.OTHER_PROMPT);
 }

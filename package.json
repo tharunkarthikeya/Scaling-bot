@@ -11,6 +11,7 @@
     "dev:local": "tsx src/dev-local.ts",
     "tunnel": "tsx src/tunnel.ts",
     "inspect": "tsx src/inspect.ts",
+    "inspect:ats": "tsx src/inspect-ats.ts",
     "reset": "tsx src/reset.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",

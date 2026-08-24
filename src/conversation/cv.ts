@@ -442,24 +442,56 @@ export function splitAddress(
 ): { city?: string; state?: string; country?: string } | undefined {
   if (!address) return undefined;
 
-  const state = STATES.find((s) => new RegExp(`\\b${s}\\b`, 'i').test(address));
-  if (!state) return undefined;
-
-  // Whatever sits immediately before the state is the city, in the address
-  // formats CVs use. Postcodes and door numbers are dropped.
+  // Door numbers, postcodes and the word "India" are not places anybody filters
+  // on. Everything left is a candidate for the city.
   const parts = address
     .split(/[,\n]/)
     .map((part) => part.replace(/\b\d{6}\b/g, '').trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((part) => !/^india$/i.test(part));
 
-  const stateIndex = parts.findIndex((part) => new RegExp(state, 'i').test(part));
-  const city = stateIndex > 0 ? parts[stateIndex - 1] : undefined;
+  const state = STATES.find((s) => new RegExp(`\\b${s}\\b`, 'i').test(address));
 
-  return {
-    city: city && city.length <= 40 ? city : undefined,
-    state,
-    country: 'India',
-  };
+  if (state) {
+    // Whatever sits immediately before the state is the city, in the address
+    // formats CVs use.
+    const stateIndex = parts.findIndex((part) => new RegExp(state, 'i').test(part));
+    const city = stateIndex > 0 ? parts[stateIndex - 1] : undefined;
+
+    return {
+      city: city && city.length <= 40 ? city : undefined,
+      state,
+      country: 'India',
+    };
+  }
+
+  // No state named, which is most CVs: people write "Madurai - 625001" and
+  // stop. This used to return nothing at all, so the flow asked a candidate
+  // which city they live in while it was printed on the CV they had just sent
+  // (§1, §6). Addresses run smallest to largest, so the last line that reads
+  // like a place name is the town.
+  const city = [...parts].reverse().find(isPlaceName);
+
+  return city ? { city, country: 'India' } : undefined;
+}
+
+/**
+ * Whether an address line could be a town rather than a door number or a street.
+ *
+ * Deliberately strict. Filing "3rd Floor" as somebody's city is worse than
+ * asking them for it, which is what happens when this finds nothing.
+ */
+function isPlaceName(part: string): boolean {
+  const text = part.trim();
+  if (text.length < 3 || text.length > 40) return false;
+
+  // A door number, a plot, a flat, a floor, a street with a number in it.
+  if (/\d/.test(text)) return false;
+  if (/\b(?:street|road|nagar|colony|floor|flat|door|no|plot|near|opp|behind)\b/i.test(text)) {
+    return false;
+  }
+
+  return /^[\p{L}\s.'-]+$/u.test(text);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -569,11 +601,20 @@ export function extractFromCv(ocrFields: OcrField[], ownPhone?: string): CvExtra
     patch.hasOverseasExperience = true;
   }
 
+  // The extractor's own city field wins where it has one; the address is parsed
+  // only when it does not. Either way this answers the location question, and a
+  // question the CV answered is a question the flow never asks (§1, §6).
+  const namedCity = first(f, 'city') ?? first(f, 'current_city') ?? first(f, 'location');
   const address = splitAddress(first(f, 'address'));
-  if (address?.state) {
-    patch.currentState = address.state;
-    if (address.city) patch.currentCity = address.city;
-    patch.currentCountry = address.country;
+
+  if (namedCity && namedCity.trim().length > 1) {
+    patch.currentCity = namedCity.trim().slice(0, 40);
+    patch.currentCountry = 'India';
+  }
+  if (address) {
+    if (address.state) patch.currentState = address.state;
+    if (address.city && !patch.currentCity) patch.currentCity = address.city;
+    patch.currentCountry = address.country ?? patch.currentCountry;
   }
 
   const skills = first(f, 'skills');

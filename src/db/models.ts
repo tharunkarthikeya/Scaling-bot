@@ -289,6 +289,19 @@ export interface CandidateProfile {
   /* passport (§12) */
   passportStatus?: string;
   /**
+   * Which of the Aadhaar's four core fields have been read, across every upload.
+   *
+   * The union, deliberately: a front and a back are two files and one card, and
+   * what matters is whether the card as a whole has given up its name, date of
+   * birth, address and number. It is what decides whether the back page is
+   * asked for at all — see `aadhaar_back` in `conversation/rules.ts`.
+   *
+   * Bookkeeping rather than candidate data, so it is written directly instead of
+   * through `buildProfileWrite` — there is no provenance to weigh, and a second
+   * upload must be able to add to it.
+   */
+  aadhaarFieldsRead?: string[];
+  /**
    * MM/YYYY, read off the passport by the extractor.
    *
    * No longer typed by the candidate: the flow asks whether they hold a passport
@@ -482,6 +495,16 @@ export interface CandidateDoc {
   unclearCount?: number;
 
   humanHandoff?: { reason: string; at: Date; returnedAt?: Date };
+
+  /**
+   * Set once an extracted date of birth has been found to be under age (§27).
+   *
+   * The flow no longer asks for a date of birth — it is read off the Aadhaar and
+   * off the passport — so the check runs on every document that carries one.
+   * This is what keeps it to one message: two documents with the same date are
+   * one candidate, not two findings.
+   */
+  ageFlagged?: boolean;
 
   /**
    * How this candidate's handover to the recruitment CRM is going.
