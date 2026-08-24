@@ -7,3 +7,9 @@ node_modules/
 /.mongo-data/
 *.log
 .DS_Store
+
+.env
+.env.*
+
+.env
+.env.*
