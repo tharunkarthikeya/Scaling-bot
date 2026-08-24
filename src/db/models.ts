@@ -4,6 +4,7 @@ import { logger } from '../logger.js';
 import { DOCUMENTS, TUNABLES } from '../conversation/rules.js';
 import { ingestionRows } from '../ingestion/ledger.js';
 import type { Language } from '../conversation/language.js';
+import type { FlowVariant } from '../conversation/lines.js';
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Registration state (protocol §21)
@@ -252,6 +253,28 @@ export interface CandidateProfile {
   generalWorkWillingness?: string;
   generalJobs?: string[];
   trainingWillingness?: string;
+  /**
+   * How much a CV would add for the job they want (`conversation/jobLevel.ts`).
+   *
+   * Written only on the Singapore/Malaysia line, once the job preferences are
+   * answered, and read by exactly one thing: whether the CV step is asked. It
+   * is a property of the *job*, not an assessment of the candidate, and it is
+   * deliberately not sent to the CRM — a recruiter reading a profile has the
+   * job title itself, which is better evidence than our guess about it.
+   *
+   * Stored rather than recomputed so the CV question does not flicker between
+   * turns, and so staff can see why a candidate was or was not asked.
+   */
+  jobLevel?: 'low_skill' | 'skilled' | 'unknown';
+  /**
+   * The job `jobLevel` was computed for, so a change re-computes it.
+   *
+   * The same pairing `tradeQuestionsFor` has with `tradeQuestions`, and for the
+   * same reason: the stored pair is what stops the classification running on
+   * every turn, and storing the level without the job it belongs to would make
+   * an edit of the job preferences invisible to it.
+   */
+  jobLevelFor?: string;
 
   /* country preference (§10) */
   countryPreference?: string;
@@ -347,6 +370,30 @@ export interface CandidateDoc {
 
   /** Which of the three opening options they chose (§2). */
   enquiry?: 'apply' | 'b2b' | 'track';
+
+  /**
+   * Which of the agency's numbers this conversation belongs to.
+   *
+   * Meta's `phone_number_id` for the line the first message arrived on. Kept
+   * because a reply has to leave from the number the candidate wrote to, and
+   * the reminder and idle-session sweeps send outside any inbound context and
+   * would otherwise have nothing to send from. Absent on every record written
+   * before there was a second number, which `sendingNumberFor` reads as the
+   * main one.
+   */
+  phoneNumberId?: string;
+
+  /**
+   * Which list of questions this conversation walks (`conversation/lines.ts`).
+   *
+   * Derived from `phoneNumberId` when the record is created, and then left
+   * alone. Recomputing it per turn would let an environment change move a
+   * candidate mid-registration onto a flow that asks different questions, and
+   * re-ask or skip whichever ones the two lists disagree about.
+   *
+   * Absent means the default flow, which is what every existing record means.
+   */
+  flowVariant?: FlowVariant;
 
   /**
    * The decision staff have recorded on the application. Absent until

@@ -79,6 +79,19 @@ const schema = z.object({
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
   WHATSAPP_ACCESS_TOKEN: z.string().min(1),
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
+  /**
+   * The second WhatsApp number, which runs the Singapore/Malaysia flow.
+   *
+   * Optional, and absent means there is no second line: `variantForLine` then
+   * maps every inbound message to the default flow and nothing about the
+   * existing conversation changes. Set it to the `phone_number_id` Meta reports
+   * for that number in the webhook envelope — not the display number, which is
+   * a different value and will silently match nothing.
+   *
+   * One access token covers both numbers when they sit under the same WABA;
+   * they are separate numbers on one app, not separate apps.
+   */
+  WHATSAPP_PHONE_NUMBER_ID_SGMY: blankable(z.string().min(1).optional()),
   WHATSAPP_WABA_ID: blankable(z.string().min(1).optional()),
   WHATSAPP_GRAPH_API_VERSION: z.string().default('v25.0'),
 

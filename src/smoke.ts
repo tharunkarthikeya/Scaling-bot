@@ -47,16 +47,23 @@ import {
 import { attributeInboundDocument, initialSlots, requirementFor } from './conversation/checklist.js';
 import { assertOcrRoutingIsSafe, DOCUMENTS, NEVER_OCR } from './conversation/rules.js';
 import {
+  desiredJobForLevel,
   disambiguationChoices,
+  labelFor,
   fieldsToClear,
   inferTradeAnswers,
   inferTradePacks,
   occupationForQuestions,
   nextStep,
+  SGMY_COUNTRY_CHOICES,
+  SGMY_STEPS,
   stepById,
+  stepsInSection,
   STEPS,
   TRADE_CHOICES,
 } from './conversation/flow.js';
+import { cvWorthAsking, levelFromTitle } from './conversation/jobLevel.js';
+import { variantForLine } from './conversation/lines.js';
 import { validateCopy } from './conversation/validate.js';
 import { InProcessQueue } from './queue/index.js';
 import {
@@ -452,9 +459,21 @@ await check('the CV is the first thing asked after consent (§5)', () => {
   const c = candidate({ profile: { lookingForOverseasJob: true } });
   assert.equal(nextStep(c)?.id, 'cv');
 
-  // Unconditionally. There is no longer a destination to key a policy on, so
-  // nothing can decide a candidate does not need one.
-  assert.equal(stepById('cv')!.when, undefined, 'the CV step must not be conditional');
+  // Unconditionally, on this line. There is no longer a destination to key a
+  // policy on, so nothing can decide a default-line candidate does not need one.
+  //
+  // The step does carry a `when` now, because the Singapore/Malaysia line asks
+  // for the CV later and only for some jobs — so what is pinned here is the
+  // behaviour rather than the absence of the guard. A guard that started
+  // returning false for a default candidate would be a CV silently stopped
+  // being collected, which nothing else in the system would notice.
+  const guard = stepById('cv')!.when!;
+  assert.equal(guard(c), true, 'the CV must be asked of every default-line candidate');
+  assert.equal(
+    guard(candidate({ profile: { lookingForOverseasJob: true, jobLevel: 'low_skill' } })),
+    true,
+    'a job level must not gate the CV on the default line',
+  );
 });
 
 await check('skips a question the CV already answered (§1, §5)', () => {
@@ -2430,6 +2449,316 @@ await check('answering the job once answers it everywhere', () => {
   assert.equal(typed.profile.desiredOccupation, 'Warehouse packer');
   assert.equal(typed.profile.jobCategory, 'other');
   assert.equal(stepById('desired_job')!.satisfied(typed), true);
+});
+
+console.log('\nthe second line: Singapore/Malaysia (conversation/lines.ts)');
+
+/** A candidate on the second number, consented and asked nothing else. */
+function sgmyCandidate(profile: Record<string, unknown> = {}): CandidateDoc {
+  return candidate({
+    stage: 'NEW',
+    flowVariant: 'sgmy',
+    phoneNumberId: 'SECOND-LINE',
+    profile: { lookingForOverseasJob: true, ...profile },
+  });
+}
+
+/** Walks a flow from where it is, answering nothing, and returns the ids in order. */
+function questionOrder(c: CandidateDoc, satisfy: (id: string) => void): string[] {
+  const asked: string[] = [];
+  for (let guard = 0; guard < 200; guard++) {
+    const step = nextStep(c);
+    if (!step) break;
+    asked.push(step.id);
+    satisfy(step.id);
+  }
+  return asked;
+}
+
+await check('an unknown number, and no second number configured, is the default flow', () => {
+  // The state every existing deployment is in: WHATSAPP_PHONE_NUMBER_ID_SGMY
+  // unset, so nothing can reach the second flow by accident.
+  assert.equal(variantForLine(undefined), 'default');
+  assert.equal(variantForLine(''), 'default');
+  assert.equal(variantForLine(config.WHATSAPP_PHONE_NUMBER_ID), 'default');
+  assert.equal(variantForLine('a-number-nobody-configured'), 'default');
+});
+
+await check('the webhook says which number a message arrived on', () => {
+  const { messages: parsed } = parseWebhook({
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              metadata: { phone_number_id: 'SECOND-LINE' },
+              contacts: [{ wa_id: '919000000000', profile: { name: 'Asha' } }],
+              messages: [
+                {
+                  id: 'wamid.LINE',
+                  from: '919000000000',
+                  timestamp: '1700000000',
+                  type: 'text',
+                  text: { body: 'hello' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0]!.phoneNumberId, 'SECOND-LINE');
+});
+
+await check('the second line never asks for a CV before the job is known (§5)', () => {
+  const c = sgmyCandidate();
+
+  // Consent, then straight to the personal details. Not the CV.
+  assert.equal(nextStep(c)?.id, 'full_name');
+
+  const ids = SGMY_STEPS.map((step) => step.id);
+  const at = (id: string) => {
+    const i = ids.indexOf(id);
+    assert.ok(i !== -1, `"${id}" is missing from the second flow`);
+    return i;
+  };
+
+  assert.ok(at('consent') < at('full_name'), 'consent still comes first');
+  assert.ok(at('full_name') < at('cv'), 'the personal details come before the CV here');
+  assert.ok(at('job_preference') < at('cv'), 'the CV waits until the job is known');
+  assert.ok(at('cv') < at('availability'), 'and is asked before when they can join');
+  assert.ok(at('cv') < at('passport_status'), 'and before the documents');
+  assert.ok(at('availability') < at('confirm'), 'the rest of the flow is unchanged');
+});
+
+await check('the second line offers two countries and nothing else (§10)', () => {
+  assert.deepEqual(
+    SGMY_COUNTRY_CHOICES.map((choice) => choice.id),
+    ['singapore', 'malaysia'],
+  );
+
+  const step = stepById('country_preference_sgmy')!;
+  assert.equal(step.section, 'country');
+  assert.equal(step.choices!.length, 2, 'exactly two destinations, so buttons rather than a list');
+
+  // The default line's question, and the free-text follow-up behind its
+  // "Select countries" row, are not in this flow at all.
+  const ids = SGMY_STEPS.map((s2) => s2.id);
+  assert.ok(!ids.includes('country_preference'), 'the five-country question must not be offered');
+  assert.ok(!ids.includes('selected_countries'), 'there is nothing to select from');
+  assert.ok(ids.includes('country_strictness'), 'whether they hold out for one is still asked');
+
+  // Both write the same field, so a record reads the same way whichever line
+  // wrote it, and the CRM sees one `countryPreference`.
+  const c = sgmyCandidate();
+  Object.assign(c.profile, step.apply!({ ids: ['singapore'], raw: 'Singapore' }, c));
+  assert.equal(c.profile.countryPreference, 'singapore');
+  assert.equal(step.satisfied(c), true);
+
+  // And the confirmation summary can name it back. `renderConfirmation` looks
+  // the stored id up against the *default* line's step id, so this resolves
+  // through `labelFor`'s bare-id fallback — which only works because the label
+  // map is built across both flows.
+  assert.equal(labelFor('singapore', 'country_preference')?.en, 'Singapore');
+  assert.equal(labelFor('malaysia', 'country_preference')?.ta, 'மலேசியா');
+});
+
+await check('the default line is untouched by any of it', () => {
+  const c = candidate({ stage: 'NEW', profile: { lookingForOverseasJob: true } });
+  assert.equal(nextStep(c)?.id, 'cv', 'the CV is still the first thing asked after consent');
+
+  const ids = STEPS.map((step) => step.id);
+  assert.ok(ids.includes('country_preference'), 'the five-country question is still there');
+  assert.ok(ids.includes('selected_countries'));
+  assert.ok(
+    !ids.includes('country_preference_sgmy'),
+    'the two-country question must not leak onto the default line',
+  );
+
+  // A default candidate carrying a job level — which nothing writes for them —
+  // must still be asked for a CV.
+  const withLevel = candidate({
+    stage: 'NEW',
+    profile: { lookingForOverseasJob: true, jobLevel: 'low_skill' },
+  });
+  assert.equal(nextStep(withLevel)?.id, 'cv');
+});
+
+await check('a cleaner is not asked for a CV; a welder is (§5)', () => {
+  // Everything up to the job preferences is answered, so the next question is
+  // the one this line puts the CV behind.
+  const answered = {
+    fullName: 'Asha Kumari',
+    currentCity: 'Madurai',
+    currentState: 'Tamil Nadu',
+    currentCountry: 'India',
+    dateOfBirth: '1994-04-02',
+    education: 'class_10',
+    countryPreference: 'singapore',
+    countryStrictness: 'prefer',
+    primaryTrade: 'cleaning_housekeeping',
+    totalExperienceBand: '2_5',
+    jobCategory: 'cleaning_housekeeping',
+    workTypePreference: 'current_trade',
+    relatedAcceptance: 'related_ok',
+    trainingWillingness: 'yes',
+  };
+
+  const cleaner = sgmyCandidate({ ...answered, jobLevel: 'low_skill' });
+  const cleanerAsked = questionOrder(cleaner, (id) => {
+    if (id === 'cv') throw new Error('a low-skill applicant must not be asked for a CV');
+    if (id === 'availability') cleaner.profile.availability = 'immediate';
+    else if (id === 'passport_status') cleaner.profile.passportStatus = 'no';
+    else if (id === 'aadhaar_upload') cleaner.documents.aadhaar!.status = 'ocr_done';
+    else if (id === 'pan_upload') cleaner.documents.pan!.status = 'received';
+    else if (id === 'confirm') cleaner.stage = 'REGISTRATION_COMPLETED';
+    else throw new Error(`unexpected question for a low-skill applicant: ${id}`);
+  });
+  assert.deepEqual(cleanerAsked, [
+    'availability',
+    'passport_status',
+    'aadhaar_upload',
+    'pan_upload',
+    'confirm',
+  ]);
+
+  // The same candidate, one field different: the CV is asked, and asked first.
+  const welder = sgmyCandidate({ ...answered, jobLevel: 'skilled' });
+  assert.equal(nextStep(welder)?.id, 'cv');
+
+  // We could not tell. Asking costs one question that can be declined in a tap;
+  // not asking loses a document nobody finds out was available.
+  const unknown = sgmyCandidate({ ...answered, jobLevel: 'unknown' });
+  assert.equal(nextStep(unknown)?.id, 'cv');
+
+  // Not classified at all — the model was unreachable when the level was due.
+  // Same answer, for the same reason.
+  const undecided = sgmyCandidate(answered);
+  assert.equal(nextStep(undecided)?.id, 'cv');
+});
+
+await check('the common job titles are settled without a model call', () => {
+  for (const job of [
+    'cleaner',
+    'housekeeping',
+    'general helper',
+    'packing job',
+    'loader',
+    'kitchen helper',
+    'construction labour',
+    'any general work',
+  ]) {
+    assert.equal(levelFromTitle(job), 'low_skill', job);
+  }
+
+  for (const job of [
+    'welder',
+    'electrician',
+    'pipe fitter',
+    'cnc operator',
+    'crane operator',
+    'staff nurse',
+    'accountant',
+    'safety officer',
+    'site supervisor',
+  ]) {
+    assert.equal(levelFromTitle(job), 'skilled', job);
+  }
+
+  // The trap the ordering exists for: a helper attached to a trade is someone
+  // learning that trade, and often the one candidate in the group holding a
+  // certificate worth sending.
+  assert.equal(levelFromTitle('welder helper'), 'skilled');
+  assert.equal(levelFromTitle('electrician assistant'), 'skilled');
+
+  // Anything it cannot place goes to the model rather than being guessed at.
+  assert.equal(levelFromTitle('poultry farm work'), undefined);
+  assert.equal(levelFromTitle(''), undefined);
+
+  // Only `low_skill` skips the CV. Every other answer, including the absence of
+  // one, asks.
+  assert.equal(cvWorthAsking('low_skill'), false);
+  assert.equal(cvWorthAsking('skilled'), true);
+  assert.equal(cvWorthAsking('unknown'), true);
+  assert.equal(cvWorthAsking(undefined), true);
+});
+
+await check('the job classified is the one they are applying for, not the one they left', () => {
+  // Their own words win outright.
+  const named = sgmyCandidate({
+    workTypePreference: 'different',
+    desiredOccupation: 'tower crane operator',
+  });
+  assert.equal(desiredJobForLevel(named), 'tower crane operator');
+
+  // But nothing at all before the job preference is answered — the job on the
+  // record until then is the one they are leaving, not the one they want.
+  const tooEarly = sgmyCandidate({
+    primaryTrade: 'fabrication_welding',
+    currentOccupation: 'welder',
+  });
+  assert.equal(desiredJobForLevel(tooEarly), undefined);
+
+  // "Any general work" is itself the answer: the question names packing,
+  // helping, cleaning and construction, so choosing it says what the job is
+  // whatever trade they came from.
+  const general = sgmyCandidate({
+    primaryTrade: 'fabrication_welding',
+    currentOccupation: 'welder',
+    workTypePreference: 'general',
+  });
+  assert.equal(desiredJobForLevel(general), 'any general work');
+  assert.equal(levelFromTitle(desiredJobForLevel(general)!), 'low_skill');
+
+  // More of what they already do: their current trade, in their own words.
+  const same = sgmyCandidate({
+    primaryTrade: 'electrical_mechanical',
+    currentOccupation: 'plumber',
+    workTypePreference: 'current_trade',
+  });
+  assert.equal(desiredJobForLevel(same), 'plumber');
+
+  // Nothing said yet is nothing to classify — and the CV step sits behind these
+  // questions, so it is never reached in this state.
+  assert.equal(desiredJobForLevel(sgmyCandidate()), undefined);
+});
+
+await check("editing a section re-asks that line's own questions (§18, §22)", () => {
+  const onSecond = stepsInSection('country', 'sgmy').map((step) => step.id);
+  assert.deepEqual(onSecond, ['country_preference_sgmy', 'country_strictness']);
+
+  const onDefault = stepsInSection('country').map((step) => step.id);
+  assert.deepEqual(onDefault, ['country_preference', 'selected_countries', 'country_strictness']);
+
+  // Both forget the same fields, so an edit on either line leaves the record in
+  // the same shape.
+  assert.deepEqual(
+    [...fieldsToClear('country', 'sgmy')].sort(),
+    ['countryPreference', 'countryStrictness', 'selectedCountries'],
+  );
+});
+
+await check('both lines share every step they have in common', () => {
+  const shared = STEPS.filter((step) => SGMY_STEPS.includes(step));
+
+  // Same objects, not copies. It is what makes "a question added to a shared
+  // section appears on both lines" true rather than a thing to remember.
+  assert.ok(shared.length > 20, `expected the lines to share most steps, shared ${shared.length}`);
+  for (const id of ['entry', 'language', 'consent', 'cv', 'full_name', 'confirm']) {
+    assert.ok(
+      shared.some((step) => step.id === id),
+      `"${id}" should be the same step on both lines`,
+    );
+  }
+
+  // And the one question that is not shared is not shared in either direction.
+  assert.ok(!SGMY_STEPS.some((step) => step.id === 'country_preference'));
+  assert.ok(!STEPS.some((step) => step.id === 'country_preference_sgmy'));
 });
 
 console.log('\nwhat may be sent to an extractor');

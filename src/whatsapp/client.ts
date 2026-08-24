@@ -1,5 +1,6 @@
 import { config, graphBaseUrl } from '../config.js';
 import { logger } from '../logger.js';
+import { sendingNumberFor } from '../conversation/lines.js';
 import { createBudget } from './rateLimiter.js';
 
 /**
@@ -92,6 +93,20 @@ export interface SendResult {
   shadowed: boolean;
 }
 
+/**
+ * Which of the agency's numbers a message leaves from.
+ *
+ * Every send takes it, and every send defaults it to the main number, so a
+ * caller that does not know about the second line behaves exactly as it did.
+ * The default is applied by `sendingNumberFor` rather than here, so "blank
+ * means the main number" is one decision in one place.
+ *
+ * It matters beyond tidiness: the 24-hour customer service window belongs to the
+ * *pair* of numbers, so replying to a candidate from the number they did not
+ * write to is not merely confusing, it is a message Meta refuses.
+ */
+export type FromNumber = string | undefined;
+
 /** Splits on paragraph, then line, then hard-cuts — so we never post-truncate a reply. */
 export function chunkText(text: string, limit = MAX_TEXT_LENGTH): string[] {
   if (text.length <= limit) return [text];
@@ -114,7 +129,11 @@ export function chunkText(text: string, limit = MAX_TEXT_LENGTH): string[] {
   return chunks;
 }
 
-export async function sendText(to: string, text: string): Promise<SendResult[]> {
+export async function sendText(
+  to: string,
+  text: string,
+  from?: FromNumber,
+): Promise<SendResult[]> {
   const parts = chunkText(text);
   const results: SendResult[] = [];
 
@@ -128,7 +147,7 @@ export async function sendText(to: string, text: string): Promise<SendResult[]> 
     // One token per chunk, because Meta counts one message per chunk.
     await budgets.replies.acquire();
 
-    const json = await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    const json = await graphPost(`${sendingNumberFor(from)}/messages`, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to,
@@ -187,8 +206,12 @@ function clip(text: string, limit: number): string {
  * the options follow with a short prompt — the alternative is Meta rejecting the
  * message and the candidate receiving nothing.
  */
-export async function send(to: string, message: Outbound): Promise<SendResult[]> {
-  if (message.kind === 'text') return sendText(to, message.body);
+export async function send(
+  to: string,
+  message: Outbound,
+  from?: FromNumber,
+): Promise<SendResult[]> {
+  if (message.kind === 'text') return sendText(to, message.body, from);
 
   const results: SendResult[] = [];
   let body = message.body;
@@ -196,7 +219,7 @@ export async function send(to: string, message: Outbound): Promise<SendResult[]>
   if ([...body].length > INTERACTIVE_BODY_LIMIT) {
     const split = [...body].length - INTERACTIVE_BODY_LIMIT;
     logger.warn({ to, overBy: split }, 'interactive body too long; sending it as text first');
-    results.push(...(await sendText(to, body)));
+    results.push(...(await sendText(to, body, from)));
     body = message.kind === 'buttons' ? '👇' : '👇';
   }
 
@@ -239,7 +262,7 @@ export async function send(to: string, message: Outbound): Promise<SendResult[]>
 
   await budgets.replies.acquire();
 
-  const json = await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+  const json = await graphPost(`${sendingNumberFor(from)}/messages`, {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
     to,
@@ -255,7 +278,10 @@ export async function send(to: string, message: Outbound): Promise<SendResult[]>
  * Sends the approved re-engagement template. This is the only thing that may be
  * sent once the 24-hour window has closed.
  */
-export async function sendReengagementTemplate(to: string): Promise<SendResult> {
+export async function sendReengagementTemplate(
+  to: string,
+  from?: FromNumber,
+): Promise<SendResult> {
   const name = config.WHATSAPP_REENGAGEMENT_TEMPLATE;
   if (!name) throw new Error('WHATSAPP_REENGAGEMENT_TEMPLATE is not configured');
 
@@ -266,7 +292,7 @@ export async function sendReengagementTemplate(to: string): Promise<SendResult> 
 
   await budgets.replies.acquire();
 
-  const json = await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+  const json = await graphPost(`${sendingNumberFor(from)}/messages`, {
     messaging_product: 'whatsapp',
     to,
     type: 'template',
@@ -291,7 +317,7 @@ export async function sendReengagementTemplate(to: string): Promise<SendResult> 
  * A receipt that cannot be sent now is worth less than the memory of intending
  * to send it, so it is dropped and logged at debug.
  */
-export async function markAsRead(wamid: string): Promise<void> {
+export async function markAsRead(wamid: string, from?: FromNumber): Promise<void> {
   if (config.SHADOW_MODE) return;
 
   if (!(await budgets.receipts.tryAcquire())) {
@@ -300,7 +326,10 @@ export async function markAsRead(wamid: string): Promise<void> {
   }
 
   try {
-    await graphPost(`${config.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    // The receipt has to be posted to the number the message arrived on. Sent
+    // to the other one it is a message id that number has never seen, and Meta
+    // rejects it — a blue tick that never appears on the second line.
+    await graphPost(`${sendingNumberFor(from)}/messages`, {
       messaging_product: 'whatsapp',
       status: 'read',
       message_id: wamid,

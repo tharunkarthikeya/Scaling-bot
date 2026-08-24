@@ -38,6 +38,8 @@ import {
   type TradeQuestion,
 } from './trades.js';
 import { MAX_GENERATED_QUESTIONS } from './tradeQuestions.js';
+import { cvWorthAsking, type JobLevel } from './jobLevel.js';
+import type { FlowVariant } from './lines.js';
 import { taxonomyCountryName } from '../crm/taxonomy.js';
 import {
   availabilityBand,
@@ -575,6 +577,23 @@ const CV_STEP: FlowStep = {
   ],
   hiddenChoices: DOCUMENT_FALLBACKS,
   allowStaff: true,
+  /**
+   * Unconditional on the default line. Conditional on the Singapore/Malaysia
+   * one, and this is the only thing that differs about the step itself — it is
+   * the same object in both lists, asked at a different point in each.
+   *
+   * There the CV is not asked up front at all. It comes after the job
+   * preferences, and only for a job a CV says something about: someone applying
+   * to clean or to pack is not asked, someone applying to weld or to nurse is.
+   * `jobLevel` is written by `ensureJobLevel` in the engine before this is
+   * evaluated, from `jobLevel.ts`.
+   *
+   * An unset `jobLevel` asks. That is the deferred case — the model was
+   * unreachable when the level was due — and asking for a CV that can be
+   * declined in one tap is the recoverable half of that mistake.
+   */
+  when: (c) =>
+    c.flowVariant !== 'sgmy' || cvWorthAsking(p(c).jobLevel as JobLevel | undefined),
   satisfied: (c) => documentSatisfied(c, 'cv'),
 };
 
@@ -890,6 +909,58 @@ const COUNTRY_STEPS: FlowStep[] = [
     clears: ['countryStrictness'],
   },
 ];
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * §10  Where they want to work — the Singapore/Malaysia line
+ *
+ * The second number places into two countries and no others, so the question is
+ * the two of them and nothing else. Not "any country", which on this line would
+ * be a preference the agency cannot act on, and not "select countries", which
+ * invites a candidate to type somewhere nobody is hiring for.
+ *
+ * The ids are the CRM's own country ids, so `destinationCountryOf` resolves them
+ * to real country names for the submission — provided an admin has both in the
+ * CRM's country taxonomy. A country the bot offers but the CRM cannot name
+ * reaches it with no destination, which is a taxonomy edit and not a code
+ * change; `verify:crm` reports the list it actually has.
+ *
+ * `country_strictness` below is shared with the default line and asked here too:
+ * with two destinations on offer, whether a candidate holds out for one of them
+ * or would take either is exactly the thing a recruiter needs to know.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+export const SGMY_COUNTRY_CHOICES: Choice[] = [
+  {
+    id: 'singapore',
+    label: { en: 'Singapore', ta: 'சிங்கப்பூர்', hi: 'सिंगापुर', te: 'సింగపూర్', ml: 'സിംഗപ്പൂർ' },
+  },
+  {
+    id: 'malaysia',
+    label: { en: 'Malaysia', ta: 'மலேசியா', hi: 'मलेशिया', te: 'మలేషియా', ml: 'മലേഷ്യ' },
+  },
+];
+
+const SGMY_COUNTRY_STEP: FlowStep = {
+  // A distinct id, deliberately. It writes the same `countryPreference` field
+  // as the default question and reads the same way on the record, but it offers
+  // a different set of options — and `stepById` hands the engine the step whose
+  // `choices` the interpreter is offered. Sharing the id would offer a
+  // Singapore/Malaysia candidate the Gulf.
+  id: 'country_preference_sgmy',
+  section: 'country',
+  prompt: {
+    en: 'Where would you like to work?',
+    ta: 'எங்கு வேலை செய்ய விரும்புகிறீர்கள்?',
+    hi: 'आप कहाँ काम करना चाहेंगे?',
+    te: 'మీరు ఎక్కడ పని చేయాలనుకుంటున్నారు?',
+    ml: 'നിങ്ങൾക്ക് എവിടെയാണ് ജോലി ചെയ്യണ്ടത്?',
+  },
+  input: 'choice',
+  choices: SGMY_COUNTRY_CHOICES,
+  satisfied: (c) => has(p(c).countryPreference),
+  apply: (a) => ({ countryPreference: a.ids?.[0] }),
+  clears: ['countryPreference', 'selectedCountries', 'countryStrictness'],
+};
 
 const EXPERIENCE_STEPS: FlowStep[] = [
 
@@ -1590,6 +1661,53 @@ export function occupationForQuestions(c: CandidateDoc): string | undefined {
   return usable ? typed : label;
 }
 
+/**
+ * The job to classify for the CV question on the Singapore/Malaysia line (§5).
+ *
+ * The counterpart of `occupationForQuestions`, and a different question from it:
+ * that one asks what the candidate *has done*, this one asks what they are
+ * *applying for*. They are frequently not the same thing, and it is the second
+ * that decides whether a CV is worth asking for — a welder who has chosen
+ * general factory work is applying for general factory work.
+ *
+ * Four sources, in the order they are worth having:
+ *
+ *   1. `desiredOccupation` — what they typed when they named a job. Their own
+ *      words, which is what `jobLevel.ts` reads best.
+ *   2. The general-work answer, which *is* the classification: the question
+ *      names packing, helping, cleaning and construction, so choosing it says
+ *      the job is entry-level whatever their trade.
+ *   3. Their current trade, for someone who wants more of what they already do.
+ *   4. The category they tapped, for someone who said nothing else.
+ *
+ * Undefined means there is nothing to classify yet, and `ensureJobLevel` leaves
+ * the level unset — which asks for the CV.
+ */
+export function desiredJobForLevel(c: CandidateDoc): string | undefined {
+  // Nothing before the job preference is answered, and that is the whole point
+  // of where this sits: the classification is *of the job they are applying
+  // for*, and until that question is answered the only thing on the record is
+  // the job they are leaving. Classifying early would spend a call on the wrong
+  // job and then spend a second one correcting it.
+  const preference = p(c).workTypePreference as string | undefined;
+  if (!preference) return undefined;
+
+  const desired = (p(c).desiredOccupation ?? '').trim();
+  if (desired.length > 1) return desired;
+
+  // The option's own English label, because that is the sentence the candidate
+  // agreed to and it is already the plainest statement of what they want.
+  if (preference === 'general') return 'any general work';
+  if (preference === 'current_trade' || preference === 'related') {
+    return occupationForQuestions(c);
+  }
+
+  const category = p(c).jobCategory as string | undefined;
+  if (category && category !== 'other') return labelFor(category, 'job_category')?.en;
+
+  return occupationForQuestions(c);
+}
+
 /** The generated question a slot is currently serving, for the renderer. */
 export function generatedQuestionFor(
   stepId: string,
@@ -1766,8 +1884,106 @@ export const STEPS: FlowStep[] = [
   CONFIRM_STEP,
 ];
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * The second line
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * The preference questions, split at the section boundary.
+ *
+ * Derived from `PREFERENCE_STEPS` rather than listed again, so a question added
+ * to the default line lands in the same place on the second one. The split is
+ * where the CV goes on that line: after what they want to do, before when they
+ * can start.
+ */
+const JOB_PREFERENCE_STEPS = PREFERENCE_STEPS.filter((s) => s.section === 'job_preference');
+const AVAILABILITY_STEPS = PREFERENCE_STEPS.filter((s) => s.section === 'availability');
+
+/**
+ * The Singapore/Malaysia flow, in order.
+ *
+ * Apply -> consent -> personal -> country (two of them) -> experience -> trade
+ * -> job preferences -> **CV, if the job is one a CV speaks to** -> availability
+ * -> documents -> confirm.
+ *
+ * Three differences from `STEPS`, and nothing else:
+ *
+ *   1. No CV after consent. The step is not merely moved: for a candidate
+ *      applying to clean or to pack it is never asked at all.
+ *   2. Two destinations. `SGMY_COUNTRY_STEP` replaces `country_preference` and
+ *      `selected_countries` — there is nothing to select from and no "any".
+ *   3. The CV, where a CV is worth having, sits after the job preferences,
+ *      because that is the first point at which the job they want is known.
+ *
+ * What that third one costs, said out loud: on the default line the CV is
+ * collected before the personal and experience sections *because* the resume
+ * extractor answers them, and `nextStep` then walks past every question it
+ * filled (§1, §5). Collected here it cannot do that — the candidate has
+ * already been asked those questions by hand. The CV on this line is a document
+ * for a recruiter to read, not a shortcut through the flow. That is the trade
+ * this line makes in exchange for never asking a cleaner for a CV.
+ *
+ * Everything else is the same objects in the same order: the same opening menu,
+ * the same B2B branch, the same trade packs, the same documents, the same
+ * confirmation. A question added to a shared section appears on both lines.
+ */
+export const SGMY_STEPS: FlowStep[] = [
+  ...START_STEPS,
+  ...B2B_STEPS,
+  ...PERSONAL_STEPS,
+  SGMY_COUNTRY_STEP,
+  // Shared with the default line: with two countries on offer, whether they
+  // hold out for one of them is still worth asking.
+  ...COUNTRY_STEPS.filter((s) => s.id === 'country_strictness'),
+  ...EXPERIENCE_STEPS,
+  ...ALL_TRADE_STEPS,
+  ...JOB_PREFERENCE_STEPS,
+  CV_STEP,
+  ...AVAILABILITY_STEPS,
+  ...DOCUMENT_STEPS,
+  CONFIRM_STEP,
+];
+
+/** Every flow list, for the boot-time checks and the id registry. */
+export const FLOWS: Record<FlowVariant, FlowStep[]> = {
+  default: STEPS,
+  sgmy: SGMY_STEPS,
+};
+
+/** The list a variant walks. `nextStep` picks the B2B branch out of it separately. */
+export function stepsForVariant(variant: FlowVariant | undefined): FlowStep[] {
+  return variant === 'sgmy' ? SGMY_STEPS : STEPS;
+}
+
+/**
+ * The list this conversation walks.
+ *
+ * Two decisions in one place: which branch — a business contact is walked
+ * through their own four questions and none of registration's — and which
+ * line, meaning the number they wrote to. Everything that schedules a question
+ * goes through this, so a flow is never chosen twice and never chosen
+ * differently in two places.
+ */
+export function stepsFor(c: CandidateDoc): FlowStep[] {
+  if (c.enquiry === 'b2b') return B2B_STEPS;
+  return stepsForVariant(c.flowVariant);
+}
+
+/**
+ * Every step in either flow, by id.
+ *
+ * A map rather than a scan, and across both lists rather than one: the engine
+ * looks a step up from `currentStep`, which is a stored string that says
+ * nothing about which line wrote it. Shared steps are the same object in both
+ * lists, so only a question unique to one line adds an entry of its own.
+ */
+const STEP_BY_ID = new Map<string, FlowStep>();
+for (const step of [...STEPS, ...SGMY_STEPS]) {
+  if (!STEP_BY_ID.has(step.id)) STEP_BY_ID.set(step.id, step);
+}
+
 export function stepById(id: string): FlowStep | undefined {
-  return STEPS.find((s) => s.id === id);
+  return STEP_BY_ID.get(id);
 }
 
 /**
@@ -1787,9 +2003,10 @@ export function nextStep(c: CandidateDoc): FlowStep | undefined {
   if ((c.editQueue ?? []).length) return CONFIRM_STEP;
 
   // A business contact is walked through their own four questions and none of
-  // registration's. Branching here rather than guarding every step below is what
-  // keeps the two flows from having to know about each other.
-  for (const step of c.enquiry === 'b2b' ? B2B_STEPS : STEPS) {
+  // registration's, and a candidate is walked through the list belonging to the
+  // number they wrote to. Branching here rather than guarding every step below
+  // is what keeps the flows from having to know about each other.
+  for (const step of stepsFor(c)) {
     if (step.when && !step.when(c)) continue;
     if (step.satisfied(c)) continue;
     return step;
@@ -1797,14 +2014,22 @@ export function nextStep(c: CandidateDoc): FlowStep | undefined {
   return undefined;
 }
 
-/** Steps belonging to a section, for the edit and update menus (§18, §22). */
-export function stepsInSection(section: Section): FlowStep[] {
-  return STEPS.filter((s) => s.section === section);
+/**
+ * Steps belonging to a section, for the edit and update menus (§18, §22).
+ *
+ * Variant-aware, because the two lines do not hold the same questions in the
+ * `country` section: editing it on the Singapore/Malaysia line has to re-ask
+ * that line's two-country question rather than the default line's five. The
+ * parameter defaults to the default line, so an existing caller means what it
+ * always did.
+ */
+export function stepsInSection(section: Section, variant?: FlowVariant): FlowStep[] {
+  return stepsForVariant(variant).filter((s) => s.section === section);
 }
 
 /** Profile fields an edit of this section must forget before re-asking. */
-export function fieldsToClear(section: Section): string[] {
-  return [...new Set(stepsInSection(section).flatMap((s) => s.clears ?? []))];
+export function fieldsToClear(section: Section, variant?: FlowVariant): string[] {
+  return [...new Set(stepsInSection(section, variant).flatMap((s) => s.clears ?? []))];
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1815,7 +2040,10 @@ export function fieldsToClear(section: Section): string[] {
  * ───────────────────────────────────────────────────────────────────────────*/
 
 const LABELS = new Map<string, Localised>();
-for (const step of STEPS) {
+// Both lists. The confirmation summary reads a stored option id back into a
+// label, and a candidate on the second line has "singapore" on their record --
+// a label that exists only in that line's country question.
+for (const step of [...STEPS, ...SGMY_STEPS]) {
   for (const choice of [...(step.choices ?? []), ...(step.hiddenChoices ?? [])]) {
     LABELS.set(`${step.id}:${choice.id}`, choice.label);
     if (!LABELS.has(choice.id)) LABELS.set(choice.id, choice.label);
@@ -1841,16 +2069,40 @@ export { render };
  * otherwise.
  */
 export function assertFlowIsWellFormed(): void {
-  const seen = new Set<string>();
-  for (const step of STEPS) {
-    if (seen.has(step.id)) throw new Error(`duplicate flow step id: ${step.id}`);
-    seen.add(step.id);
+  // Every flow, checked on its own. Ids are unique *within* a list and shared
+  // *between* them by design — a step in both is the same object, so the two
+  // can never drift apart. Checking the concatenation instead would report
+  // every shared step as a duplicate.
+  for (const [variant, steps] of Object.entries(FLOWS)) {
+    const seen = new Set<string>();
 
-    if (step.document && !DOCUMENTS.some((d) => d.id === step.document)) {
-      throw new Error(`step ${step.id} asks for unknown document "${step.document}"`);
+    for (const step of steps) {
+      if (seen.has(step.id)) {
+        throw new Error(`duplicate flow step id in the ${variant} flow: ${step.id}`);
+      }
+      seen.add(step.id);
+
+      if (step.document && !DOCUMENTS.some((d) => d.id === step.document)) {
+        throw new Error(`step ${step.id} asks for unknown document "${step.document}"`);
+      }
+      if (step.input === 'structured' && !step.fields?.length) {
+        throw new Error(`step ${step.id} is structured but declares no fields`);
+      }
+      if (STEP_BY_ID.get(step.id) !== step) {
+        // Two different objects under one id. The engine looks a step up by id
+        // and gets whichever was registered first, so the other one's options,
+        // guard and `apply` would silently never run.
+        throw new Error(
+          `step id "${step.id}" is used by two different steps; ` +
+            'give the one that differs an id of its own',
+        );
+      }
     }
-    if (step.input === 'structured' && !step.fields?.length) {
-      throw new Error(`step ${step.id} is structured but declares no fields`);
+
+    // The candidate has to be able to finish. A flow that cannot reach its
+    // confirmation is one nobody can complete.
+    if (!steps.includes(CONFIRM_STEP)) {
+      throw new Error(`the ${variant} flow has no confirmation step`);
     }
   }
 }

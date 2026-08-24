@@ -21,7 +21,7 @@ import {
   type Choice,
   type Localised,
 } from './language.js';
-import { assertFlowIsWellFormed, STEPS, type FlowStep } from './flow.js';
+import { assertFlowIsWellFormed, FLOWS, type FlowStep } from './flow.js';
 import { TRADE_PACKS, DISAMBIGUATIONS } from './trades.js';
 import { assertOcrRoutingIsSafe, DOCUMENTS } from './rules.js';
 
@@ -105,7 +105,19 @@ export function validateCopy(): void {
   // table is worth failing a deploy over. See `NEVER_OCR` in `rules.ts`.
   assertOcrRoutingIsSafe();
 
-  for (const step of STEPS) checkStep(step);
+  // Every flow, and every step in it. The lists share most of their steps, so
+  // most are checked twice — which costs nothing and is the only way a question
+  // that exists on one line only is checked at all. A button title one glyph
+  // over Meta's limit on the second number would otherwise be found by a
+  // candidate rather than by the deploy.
+  const checked = new Set<FlowStep>();
+  for (const steps of Object.values(FLOWS)) {
+    for (const step of steps) {
+      if (checked.has(step)) continue;
+      checked.add(step);
+      checkStep(step);
+    }
+  }
 
   // Menus are rendered by the same code path as steps, so they get the same
   // treatment — the interpreter never sees them, but the candidate does.

@@ -77,11 +77,13 @@ duplicate person.
 | Path | What it does |
 |---|---|
 | `src/conversation/rules.ts` | **Documents, thresholds, trigger lists, tunables, the interpreter prompt.** |
-| `src/conversation/flow.ts` | **Every question, in order, and what each answer means.** |
+| `src/conversation/flow.ts` | **Every question, in order, and what each answer means — for both numbers.** |
+| `src/conversation/lines.ts` | **Which number a conversation is on, and which flow that number runs.** |
 | `src/conversation/copy.ts` | Every other sentence a candidate can receive, in en/ta/hi. |
 | `src/conversation/trades.ts` | Trade-specific question packs (§8). Add a trade here and nowhere else. |
 | `src/conversation/tradeQuestions.ts` | **Questions written per candidate for a job no pack covers, and the filter around them.** |
 | `src/conversation/interpret.ts` | The only model call that reads a candidate: reply → option id. |
+| `src/conversation/jobLevel.ts` | Whether the job someone wants is one a CV speaks to. Second number only. |
 | `src/conversation/translate.ts` | Fixed copy in a language we do not ship. |
 | `src/conversation/faq.ts` | **What the bot may answer in its own words, and the guardrail around it.** |
 | `src/conversation/respond.ts` | Replies to a message that is about the open question, and to a file that is not the document asked for. |
@@ -195,6 +197,106 @@ never a wrong one.
 Most turns never reach a model at all. A tapped button already carries its
 option id; a typed reply matching an offered label in any of the three
 languages, or the number of an offered row, is resolved by comparison.
+
+## Two numbers, two flows
+
+The agency runs two WhatsApp numbers off one app, and they do not ask the same
+questions. Which flow a conversation gets is decided from the `phone_number_id`
+Meta puts in the webhook envelope, in `conversation/lines.ts`, and nowhere else:
+
+| Number | Flow | |
+|---|---|---|
+| `WHATSAPP_PHONE_NUMBER_ID` | `STEPS` | The flow this bot has always run. Unchanged. |
+| `WHATSAPP_PHONE_NUMBER_ID_SGMY` | `SGMY_STEPS` | Singapore and Malaysia. |
+
+**Leave the second variable unset and there is no second line.** Every message
+runs the default flow, which is the state every existing deployment is in — an
+unrecognised number, a blank one, and an envelope with no metadata at all all
+resolve to the default, because the default is the flow that is safe to run for
+anyone.
+
+### The Singapore/Malaysia flow
+
+```
+Apply
+  → Language
+  → Consent
+  → Personal details             ← no CV here
+  → Country preference           ← Singapore | Malaysia. Nothing else.
+  → Experience
+  → Trade-specific questions
+  → Job preferences
+  → CV                           ← only if the job is one a CV speaks to
+  → Documents
+  → Confirm
+  → Application ID
+```
+
+Three differences from the default flow, and nothing else. Every other question,
+the opening menu, the B2B branch, tracking, the documents, the edit and update
+menus, the idle-session prompt and the handoff to staff are the same code — the
+shared steps are the *same objects* in both lists, so a question added to a
+shared section appears on both numbers without anyone remembering to add it
+twice.
+
+**No CV up front.** The default flow asks for it immediately after consent
+because it is the only step that can answer other steps — the resume extractor
+fills the name, date of birth, education, trade and experience, and `nextStep`
+then walks past every question it filled (§1, §5). This flow gives that up. Its
+CV is collected after the personal and experience sections have already been put
+to the candidate by hand, so it is a document for a recruiter to read rather
+than a shortcut through the flow. That is the price of not asking a cleaner for
+a résumé, and it is worth stating rather than discovering.
+
+**Two destinations.** `country_preference_sgmy` replaces the five-row question
+and the free-text follow-up behind its "Select countries" row — there is nothing
+to select from and no "any country", which on this line would be a preference
+nobody can act on. It writes the same `countryPreference` field as the default
+question, so a record reads the same way whichever number wrote it. The ids are
+`singapore` and `malaysia`; `destination_country` reaches the CRM only if an
+admin has both in the CRM's country taxonomy, which `verify:taxonomy` reports.
+
+**The CV is asked of some candidates and not others.** After the job
+preferences — the first point at which the job they *want* is known, as distinct
+from the one they are leaving — `jobLevel.ts` classifies that job:
+
+| | |
+|---|---|
+| `low_skill` | Cleaning, helping, packing, loading, portering, general labour, kitchen work. **No CV asked.** |
+| `skilled` | Trades, operators, drivers, technicians, healthcare, office and technical roles, anything supervisory. **CV asked.** |
+| `unknown` | Too vague to place. **CV asked.** |
+
+Most candidates never reach a model for it: two phrase lists settle the common
+titles by comparison, the way `interpret.ts` resolves a tapped button. The lists
+are phrases rather than words for the reason `tradeQuestions.ts` gives at
+length — and skilled is tested first, because a "welder helper" is someone
+learning a trade and often the one person in the group holding a certificate
+worth sending.
+
+**Every failure path asks for the CV.** No tool call, a value that is not one of
+the three, a model outage — all of them end with the question being put. A CV
+question can be declined in one tap; a CV never asked for is a document nobody
+finds out was available. The classification is stored beside the job it was
+computed for, so it costs one call per candidate and re-runs only when an edit
+changes the job.
+
+The level says how much a **résumé** adds for a **job**. It is not an assessment
+of the candidate, it is never shown to them, and it is not sent to the CRM — a
+recruiter reading a profile has the job title itself, which is better evidence
+than our guess about it.
+
+### What a second number costs elsewhere
+
+Replies, read receipts and the re-engagement template are all posted to the
+number the conversation belongs to, which is stored on the record as
+`phoneNumberId` — the 24-hour window belongs to the pair, so a reply sent from
+the other number is not merely confusing, it is one Meta refuses. The sweeps
+need it for the same reason: they send outside any inbound context and would
+otherwise have nothing to send from.
+
+A conversation is stamped with its line and its flow when its record is created
+and keeps both. `npm run doctor` checks that the token can see both numbers, and
+that they are not the same id.
 
 ## The opening menu
 
@@ -519,6 +621,24 @@ These are deliberate — flagging rather than hiding them:
   conversation. If candidates are reaching staff without asking to, that
   classification is where to look first, and the wording that governs it is in
   `INTERPRETER_PROMPT`.
+- **The second number is not driven end to end.** `npm run smoke` pins its
+  question order, its two-country question, both sides of the CV decision and
+  the routing; `npm run harness` still drives the default line only. The
+  envelope it posts carries `phone_number_id`, so pointing a driven number at
+  the second line is a parameter rather than a rewrite.
+- **One record per number, not per person.** The record is keyed on `waId`, so
+  somebody who writes to both numbers has one conversation, on whichever line
+  they wrote to first. The other number's flow is not offered to them and their
+  replies keep coming from the first. It is logged when it happens.
+- **The Singapore/Malaysia CV answers nothing.** Collected after the personal
+  and experience sections, it cannot skip the questions it fills on the default
+  line — see **Two numbers, two flows** above. If that saving matters more than
+  not asking a cleaner for a résumé, move `CV_STEP` back up `SGMY_STEPS`; the
+  step itself is shared and needs no change.
+- **`singapore` and `malaysia` must exist in the CRM's country taxonomy** for
+  `destination_country` to reach it. The bot offers them either way; the CRM
+  simply receives no destination until an admin adds them. `npm run
+  verify:taxonomy` prints the list it actually has.
 - **Storage is a local volume.** Fine on a mounted Dokploy volume; move to
   S3/R2 before this holds real volume. The `storage/` interface is the seam.
 - **The candidate lock is per-process.** Single instance only until it is moved
@@ -564,5 +684,6 @@ Requests deliberately send no `thinking` or `effort` parameter, so the same code
 runs on Haiku and on Opus without changes — `effort` errors on Haiku 4.5. If you
 move to `claude-opus-5` for better handling of messy multilingual replies, it is
 a one-line env change.
-#   S c a l i n g - b o t  
+#   S c a l i n g - b o t 
+ 
  

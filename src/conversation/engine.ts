@@ -61,6 +61,7 @@ import {
   fieldsToClear,
   inferTradeAnswers,
   inferTradePacks,
+  desiredJobForLevel,
   occupationForQuestions,
   nextStep,
   stepById,
@@ -88,6 +89,8 @@ import { detectLanguage, type Choice, type Language, type Localised } from './la
 import { DOCUMENTS, requirementFor, TUNABLES } from './rules.js';
 import { packById, type TradeQuestion } from './trades.js';
 import { questionsForOccupation } from './tradeQuestions.js';
+import { classifyJobLevel } from './jobLevel.js';
+import { variantForLine, warnOnLineChange } from './lines.js';
 import { transcribe } from './audio.js';
 
 /** Meta's customer service window. Outside it, only approved templates may be sent. */
@@ -147,12 +150,19 @@ function blankCandidate(params: {
   waId: string;
   phone: string;
   profileName?: string;
+  phoneNumberId?: string;
 }): CandidateDoc {
   const now = new Date();
   return {
     waId: params.waId,
     phone: params.phone,
     profileName: params.profileName,
+    // Which number they wrote to, and the flow that number runs. Decided once,
+    // here, and never again — see `conversation/lines.ts` for why a variant
+    // that could change under a candidate mid-registration would be worse than
+    // one that is occasionally out of date.
+    phoneNumberId: params.phoneNumberId,
+    flowVariant: variantForLine(params.phoneNumberId),
     stage: 'NEW',
     status: 'new_enquiry',
     profile: {},
@@ -168,6 +178,8 @@ export async function getOrCreateCandidate(params: {
   waId: string;
   phone: string;
   profileName?: string;
+  /** The number it arrived on. Only ever read when the record is created. */
+  phoneNumberId?: string;
 }): Promise<{ candidate: CandidateDoc; created: boolean }> {
   // Both stores. A business contact's record has moved out of `candidates`, and
   // looking only there would create a second one for a number already on file.
@@ -181,6 +193,14 @@ export async function getOrCreateCandidate(params: {
       );
       existing.profileName = params.profileName;
     }
+    // One person, one record, one line. A message on the other number is
+    // answered on the line this conversation belongs to, and logged.
+    warnOnLineChange({
+      waId: existing.waId,
+      recorded: existing.phoneNumberId,
+      arrivedOn: params.phoneNumberId,
+    });
+
     // Backfill for records written before a field or document existed.
     existing.documents = withMissingSlots(existing.documents);
     existing.profile ??= {};
@@ -251,7 +271,10 @@ async function reply(candidate: CandidateDoc, outbound: Outbound, step?: string)
   if (!body) return;
 
   try {
-    const results = await send(candidate.phone, { ...outbound, body });
+    // From the number this conversation belongs to. Sending from the other one
+    // puts the reply in a thread the candidate never opened, under a number
+    // whose 24-hour window they never opened either.
+    const results = await send(candidate.phone, { ...outbound, body }, candidate.phoneNumberId);
     await persistOutbound(candidate, body, results, step);
   } catch (err) {
     if (err instanceof WhatsAppApiError && err.isOutsideWindow) {
@@ -428,6 +451,71 @@ async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
 }
 
 /**
+ * Works out how much a CV would add for the job this candidate wants (§5).
+ *
+ * Only on the Singapore/Malaysia line, where it decides one thing: whether the
+ * CV step is asked at all. Everywhere else it does nothing, because everywhere
+ * else the CV is asked of everyone and there is nothing to decide.
+ *
+ * Runs before `nextStep`, for the same reason `ensureTradeQuestions` does: the
+ * scheduler is a synchronous walk over stored state, so anything a step's guard
+ * needs has to be on the record by the time it is consulted.
+ *
+ * Computed once and stored. Recomputing per turn would spend a model call on
+ * every message and could change its mind mid-conversation, which on this line
+ * means a CV question that appears and disappears. It is recomputed only when
+ * the job it was computed for changes — an edit of the job preferences, which
+ * clears `desiredOccupation` and friends, produces a different job here and a
+ * fresh classification.
+ */
+async function ensureJobLevel(candidate: CandidateDoc): Promise<void> {
+  if (candidate.flowVariant !== 'sgmy') return;
+  if (candidate.enquiry === 'b2b') return;
+
+  const job = desiredJobForLevel(candidate);
+  // Nothing to classify yet — the job preferences are still ahead of us. The
+  // CV step sits behind them in this flow, so it cannot be reached first.
+  if (!job) return;
+  if (candidate.profile?.jobLevelFor === job) return;
+
+  let level;
+  try {
+    level = await classifyJobLevel({ job });
+  } catch (err) {
+    // Unreachable, not undecided. Writing `unknown` here would store it beside
+    // the job it was computed for, and the pair is what stops this running
+    // again — so a two-second outage would settle the question permanently on
+    // a non-answer. Left unset, which asks for the CV, and retried next turn.
+    if (err instanceof ModelUnavailableError) {
+      logger.warn(
+        { waId: candidate.waId, job },
+        'job level deferred: the model was unavailable, nothing recorded',
+      );
+      return;
+    }
+    throw err;
+  }
+
+  await recordsFor(candidate.enquiry).updateOne(
+    { _id: candidate._id },
+    {
+      $set: {
+        'profile.jobLevel': level,
+        'profile.jobLevelFor': job,
+        updatedAt: new Date(),
+      },
+    },
+  );
+  candidate.profile.jobLevel = level;
+  candidate.profile.jobLevelFor = job;
+
+  logger.info(
+    { waId: candidate.waId, job, level, cvAsked: level !== 'low_skill' },
+    'job level recorded for the Singapore/Malaysia CV question',
+  );
+}
+
+/**
  * Asks the first question that applies and is not already answered.
  *
  * `lead` prefixes it in the same message, for callers that have something to
@@ -451,6 +539,10 @@ async function askNextQuestion(
   }
 
   await ensureTradeQuestions(candidate);
+
+  // Whether this candidate is asked for a CV at all, on the line where that is
+  // a question. A no-op on the default line.
+  await ensureJobLevel(candidate);
 
   // And the answers those questions already have, from the same evidence (§1).
   // Recorded with their source, so a recruiter can see the candidate never said
@@ -1514,7 +1606,10 @@ const SECTION_BY_MENU_CHOICE: Record<string, Section> = {
  */
 async function startEdit(candidate: CandidateDoc, section: Section): Promise<void> {
   const unset: Record<string, ''> = {};
-  for (const field of fieldsToClear(section)) {
+  // This line's questions, not the other one's. The `country` section holds a
+  // different question on each, and queueing the wrong one would ask a
+  // Singapore/Malaysia candidate to choose between the Gulf and Europe.
+  for (const field of fieldsToClear(section, candidate.flowVariant)) {
     unset[`profile.${field}`] = '';
     delete candidate.profile[field];
   }
@@ -1524,7 +1619,7 @@ async function startEdit(candidate: CandidateDoc, section: Section): Promise<voi
   }
 
   await setState(candidate, {
-    editQueue: stepsInSection(section).map((s) => s.id),
+    editQueue: stepsInSection(section, candidate.flowVariant).map((s) => s.id),
     unclearCount: 0,
   });
   await askNextQuestion(candidate);
@@ -2033,6 +2128,8 @@ export async function handleInboundMessage(payload: {
   waId: string;
   wamid: string;
   profileName?: string;
+  /** Which of the agency's numbers it arrived on (`conversation/lines.ts`). */
+  phoneNumberId?: string;
 }): Promise<void> {
   const msg = await findTurn(payload.wamid, 'inbound');
   if (!msg) {
@@ -2044,6 +2141,7 @@ export async function handleInboundMessage(payload: {
     waId: payload.waId,
     phone: msg.waId,
     profileName: payload.profileName,
+    phoneNumberId: payload.phoneNumberId,
   });
 
   // Read before it is overwritten: the gap since their last message is what
@@ -3104,7 +3202,7 @@ export async function sendReminders(limit = 50): Promise<number> {
         });
       } else {
         // Outside the window, only an approved template may be sent (§27).
-        await sendReengagementTemplate(candidate.phone);
+        await sendReengagementTemplate(candidate.phone, candidate.phoneNumberId);
         await appendTurn({
           waId: candidate.waId,
           direction: 'outbound',

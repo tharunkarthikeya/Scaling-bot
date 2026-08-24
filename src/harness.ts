@@ -145,7 +145,7 @@ const baseUrl = typeof address === 'object' && address ? `http://127.0.0.1:${add
 
 let seq = 0;
 
-function envelope(message: Record<string, unknown>, waId = WA_ID) {
+function envelope(message: Record<string, unknown>, waId = WA_ID, line?: string) {
   return {
     object: 'whatsapp_business_account',
     entry: [
@@ -156,6 +156,11 @@ function envelope(message: Record<string, unknown>, waId = WA_ID) {
             field: 'messages',
             value: {
               messaging_product: 'whatsapp',
+              // Which number it arrived on, as Meta sends it. The default is the
+              // main one, which is the flow this harness drives. Passing the
+              // second number here is what would drive the Singapore/Malaysia
+              // flow instead — see `conversation/lines.ts`.
+              metadata: { phone_number_id: line ?? config.WHATSAPP_PHONE_NUMBER_ID },
               contacts: [{ wa_id: waId, profile: { name: 'Asha Kumari' } }],
               messages: [message],
             },
@@ -166,8 +171,12 @@ function envelope(message: Record<string, unknown>, waId = WA_ID) {
   };
 }
 
-async function postWebhook(message: Record<string, unknown>, waId = WA_ID): Promise<number> {
-  const raw = Buffer.from(JSON.stringify(envelope(message, waId)));
+async function postWebhook(
+  message: Record<string, unknown>,
+  waId = WA_ID,
+  line?: string,
+): Promise<number> {
+  const raw = Buffer.from(JSON.stringify(envelope(message, waId, line)));
   const signature =
     'sha256=' + crypto.createHmac('sha256', config.WHATSAPP_APP_SECRET).update(raw).digest('hex');
 

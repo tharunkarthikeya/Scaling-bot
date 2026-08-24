@@ -7,7 +7,20 @@ import { record } from '../metrics/record.js';
 
 export interface JobPayloads {
   /** One inbound WhatsApp message, already deduped and persisted. */
-  inbound_message: { waId: string; wamid: string; profileName?: string };
+  inbound_message: {
+    waId: string;
+    wamid: string;
+    profileName?: string;
+    /**
+     * Which of the agency's numbers it arrived on (`conversation/lines.ts`).
+     *
+     * Carried on the job rather than re-read from the stored turn because it
+     * decides which flow a *new* conversation gets, and that decision is made
+     * before there is a record to read it from. Absent on a job enqueued
+     * before this field existed, which means the main number.
+     */
+    phoneNumberId?: string;
+  };
   /** One stored document ready for OCR. OCR is slow (120s), so it never runs inline. */
   ocr: { waId: string; docType: string; uploadId: string };
   /**

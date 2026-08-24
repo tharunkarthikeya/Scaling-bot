@@ -204,27 +204,62 @@ async function graphGet(pathname: string): Promise<{ ok: boolean; status: number
   return { ok: res.ok, status: res.status, body };
 }
 
-try {
-  const r = await graphGet(
-    `${config.WHATSAPP_PHONE_NUMBER_ID}?fields=display_phone_number,verified_name,quality_rating`,
+// Both numbers, where a second one is configured. A second line that is set to
+// an id the token cannot see is a flow nobody can reach and a candidate whose
+// replies fail to send — and it would otherwise show up only in production, on
+// the first message to that number.
+const lines: Array<{ label: string; id: string; variable: string }> = [
+  {
+    label: 'whatsapp number',
+    id: config.WHATSAPP_PHONE_NUMBER_ID,
+    variable: 'WHATSAPP_PHONE_NUMBER_ID',
+  },
+  ...(config.WHATSAPP_PHONE_NUMBER_ID_SGMY
+    ? [
+        {
+          label: 'whatsapp number (Singapore/Malaysia line)',
+          id: config.WHATSAPP_PHONE_NUMBER_ID_SGMY,
+          variable: 'WHATSAPP_PHONE_NUMBER_ID_SGMY',
+        },
+      ]
+    : []),
+];
+
+if (lines.length === 1) {
+  record('ok', 'whatsapp lines', 'one number; WHATSAPP_PHONE_NUMBER_ID_SGMY is not set');
+} else if (lines[0]!.id === lines[1]!.id) {
+  record(
+    'fail',
+    'whatsapp lines',
+    'both numbers are the same id',
+    'WHATSAPP_PHONE_NUMBER_ID_SGMY must be the *other* number. Set to the same ' +
+      'id, every candidate would be routed to the Singapore/Malaysia flow.',
   );
-  if (r.ok) {
-    record(
-      'ok',
-      'whatsapp number',
-      `${r.body.display_phone_number ?? '?'} (${r.body.verified_name ?? '?'}) quality=${r.body.quality_rating ?? '?'}`,
+}
+
+for (const line of lines) {
+  try {
+    const r = await graphGet(
+      `${line.id}?fields=display_phone_number,verified_name,quality_rating`,
     );
-  } else {
-    record(
-      'fail',
-      'whatsapp number',
-      `${r.status} ${r.body?.error?.message ?? ''}`,
-      'WHATSAPP_ACCESS_TOKEN may be expired, or WHATSAPP_PHONE_NUMBER_ID is wrong. ' +
-        'A temporary token from the dashboard expires in 24 hours — use a System User token.',
-    );
+    if (r.ok) {
+      record(
+        'ok',
+        line.label,
+        `${r.body.display_phone_number ?? '?'} (${r.body.verified_name ?? '?'}) quality=${r.body.quality_rating ?? '?'}`,
+      );
+    } else {
+      record(
+        'fail',
+        line.label,
+        `${r.status} ${r.body?.error?.message ?? ''}`,
+        `WHATSAPP_ACCESS_TOKEN may be expired, or ${line.variable} is wrong. ` +
+          'A temporary token from the dashboard expires in 24 hours — use a System User token.',
+      );
+    }
+  } catch (err) {
+    record('fail', line.label, short(err));
   }
-} catch (err) {
-  record('fail', 'whatsapp number', short(err));
 }
 
 /* 7. Is Meta actually subscribed to send us anything? --------------------- */

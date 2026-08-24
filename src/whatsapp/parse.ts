@@ -29,6 +29,15 @@ export interface InboundMessage {
   };
   /** Present when the candidate replied to a specific earlier message. */
   contextWamid?: string;
+  /**
+   * Which of the agency's numbers this arrived on, as Meta identifies it.
+   *
+   * The business has more than one, and they do not run the same flow — see
+   * `conversation/lines.ts`. It is read off the envelope rather than inferred,
+   * because it is the only thing in the payload that says which number the
+   * candidate actually wrote to.
+   */
+  phoneNumberId?: string;
 }
 
 export interface InboundStatus {
@@ -59,6 +68,13 @@ export function parseWebhook(body: unknown): ParsedWebhook {
       if (change.field !== 'messages') continue;
       const value = change.value as AnyRecord;
 
+      // Present on every real delivery; absent only from a hand-rolled payload.
+      // `variantForLine` treats absence as the default line, so a missing one
+      // costs nothing.
+      const phoneNumberId = value.metadata?.phone_number_id
+        ? String(value.metadata.phone_number_id)
+        : undefined;
+
       const contacts = new Map<string, { name?: string }>();
       for (const contact of value.contacts ?? []) {
         contacts.set(contact.wa_id, { name: contact.profile?.name });
@@ -74,6 +90,7 @@ export function parseWebhook(body: unknown): ParsedWebhook {
           timestamp: new Date(Number(msg.timestamp) * 1000),
           type: 'other',
           contextWamid: msg.context?.id,
+          phoneNumberId,
         };
 
         if (msg.type === 'text') {

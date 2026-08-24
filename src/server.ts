@@ -219,9 +219,13 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         waId: msg.waId,
         wamid: msg.wamid,
         profileName: msg.profileName,
+        // Which number they wrote to. The worker needs it to decide the flow
+        // for a first-time contact, and to reply from the right number.
+        phoneNumberId: msg.phoneNumberId,
       });
 
-      void markAsRead(msg.wamid);
+      // Posted back to the number it arrived on, or the tick never appears.
+      void markAsRead(msg.wamid, msg.phoneNumberId);
     }
 
     for (const status of statuses) {
