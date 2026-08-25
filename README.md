@@ -516,6 +516,46 @@ indexes, because a unique index dropped onto a populated collection fails on the
 first duplicate and takes the deploy with it. A collection created here gets a
 non-unique index on its natural key and nothing more.
 
+**`aadhar_records` was the old name for `aadhaar_records`.** An earlier build
+spelled it with one `a`. Correcting the spelling did not move the rows, because
+`ensureAtsCollections` never renames — so that deploy left two Aadhaar
+collections standing in `resume_ats`, one in use and one a dead end holding real
+uploads. The one-off that folds them back together:
+
+```bash
+npm run migrate:aadhaar             # what would move — nothing is written
+npm run migrate:aadhaar -- --apply  # move it, then drop the old collection
+```
+
+It upserts each old row into `aadhaar_records` on the export's own natural key
+with `$setOnInsert`, so a row the current build has already written for that
+upload wins and is left alone. A row the bot wrote is stamped `source:
+'whatsapp'` on the way across; a row carrying some other source is copied over
+untouched and counted separately, because it is not ours to relabel. The old
+collection is dropped only after every one of its rows has been found again in
+the new one — a count that does not add up leaves both standing and exits
+non-zero. Safe to run twice: a second run finds nothing and says so.
+
+`b2b_agent_aadhar` is **not** this and is spelled with one `a` on purpose. It
+holds a different document — the agent's own card, not a candidate's.
+
+**Where an Aadhaar actually lands is checked against a running database.**
+
+```bash
+npm run e2e:ats
+```
+
+`smoke` asserts the routing table *says* `aadhaar_records`, and that stayed green
+through the whole period the two collections coexisted — the name was right and
+the rows were somewhere else. So `e2e:ats` boots an in-process MongoDB, runs the
+real `ensureAtsCollections` and the real `exportToAts`, sends both sides of a
+card through as a candidate would, and reads `resume_ats` back: the rows are in
+`aadhaar_records`, every one says `source: 'whatsapp'`, versions are kept without
+duplicates, a B2B agent's card goes to `b2b_agent_aadhar` instead, and
+`aadhar_records` is never created. It also puts the old name back by hand and
+checks that boot **warns and leaves it alone** rather than dropping it — a deploy
+that silently deletes a populated collection is worse than the duplicate.
+
 **Nothing is overwritten blind.** Every write is an upsert on a natural key — the
 WhatsApp id for a person, the upload id for a document — so a retry, a redeploy,
 or a document that arrived late updates one row rather than adding another. The

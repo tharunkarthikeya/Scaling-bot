@@ -115,7 +115,7 @@ import {
   RETURNING_CHOICES,
 } from './conversation/copy.js';
 import { CANDIDATE_ID_PREFIX, ENQUIRY_ID_PREFIX } from './db/models.js';
-import { ATS_COLLECTIONS } from './ats/client.js';
+import { ATS_COLLECTIONS, LEGACY_AADHAAR_COLLECTION } from './ats/client.js';
 import { atsDocumentRoutes, atsRouteFor, b2bClientType } from './ats/export.js';
 import { inspectUpload, normaliseExtractionForTests, resumeCompleteness } from './ocr/veris.js';
 import {
@@ -2975,6 +2975,44 @@ await check('every collection asked for is named, and named once', () => {
   // A name typed twice is a collection created empty beside the one in use.
   const names = Object.values(ATS_COLLECTIONS);
   assert.equal(new Set(names).size, names.length);
+});
+
+await check('the candidate Aadhaar collection is spelled with two a-s, everywhere', () => {
+  // An earlier build wrote it to `aadhar_records`, with one. Correcting the
+  // name did not move the rows — `ensureAtsCollections` never renames, by
+  // design — so that deploy left two Aadhaar collections standing in
+  // `resume_ats` and a one-off had to fold one into the other
+  // (`npm run migrate:aadhaar`). The price of the typo coming back is running
+  // that migration a second time, which is why this is asserted rather than
+  // trusted.
+  assert.equal(ATS_COLLECTIONS.aadhaarRecords, 'aadhaar_records');
+
+  // And the old name is a destination for nothing. It is still named, because
+  // the migration has to look for it and boot has to warn about it, but a build
+  // that writes there again is the same bug a second time.
+  assert.equal(LEGACY_AADHAAR_COLLECTION, 'aadhar_records');
+  assert.ok(!Object.values(ATS_COLLECTIONS).includes(LEGACY_AADHAAR_COLLECTION as never));
+  assert.ok(
+    !Object.values(atsDocumentRoutes()).some((r) => r.collection === LEGACY_AADHAAR_COLLECTION),
+  );
+
+  // Both sides of the card, and every future kind starting `aadhaar`, land in
+  // that one collection. A route pointing somewhere else is the same split
+  // arriving through the routing table instead of the name list.
+  const routed = Object.entries(atsDocumentRoutes())
+    .filter(([kind]) => kind.startsWith('aadhaar'))
+    .map(([, route]) => route.collection);
+  assert.ok(routed.length >= 2);
+  for (const name of routed) assert.equal(name, ATS_COLLECTIONS.aadhaarRecords);
+
+  // `b2b_agent_aadhar` is the one collection spelled with a single `a`, and it
+  // is spelled that way on purpose: a different document — the agent's own
+  // card, not a candidate's — with rows already filed under that name. Renaming
+  // it would split it in two exactly as happened above.
+  assert.deepEqual(
+    Object.values(ATS_COLLECTIONS).filter((n) => n.includes('adha')),
+    ['aadhaar_records', 'b2b_agent_aadhar'],
+  );
 });
 
 await check('a business contact is a sourcing client, never a candidate', () => {

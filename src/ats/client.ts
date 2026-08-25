@@ -66,6 +66,21 @@ export const ATS_COLLECTIONS = {
 
 export type AtsCollection = (typeof ATS_COLLECTIONS)[keyof typeof ATS_COLLECTIONS];
 
+/**
+ * What `aadhaar_records` used to be called, when it was spelled with one `a`.
+ *
+ * An earlier build wrote candidate Aadhaar rows here. Correcting the spelling
+ * did not move them — this file never renames, see below — so the deploy left
+ * two Aadhaar collections in `resume_ats`, one in use and one holding real
+ * uploads that nothing read. They were folded back together by
+ * `ats/migrate-aadhaar.ts` and the old collection was dropped.
+ *
+ * Named here, in the same place as the collections in use, for two reasons: the
+ * migration needs a name to look for, and `ensureAtsCollections` needs one to
+ * warn about. Nothing creates it and nothing writes to it.
+ */
+export const LEGACY_AADHAAR_COLLECTION = 'aadhar_records';
+
 /** Whether an ATS is configured at all. Blank `RESUME_ATS_DB` turns this off. */
 export function atsConfigured(): boolean {
   return !!config.RESUME_ATS_DB;
@@ -146,6 +161,28 @@ export async function ensureAtsCollections(): Promise<void> {
 
     // Only on what we just made. See the note above.
     for (const name of created) await indexFor(db, name);
+
+    // The old misspelling should not be here. It was migrated into
+    // `aadhaar_records` and dropped, nothing in this codebase names it as a
+    // destination, and `created` above can never contain it. If it is back,
+    // something is filing Aadhaar rows where no one reads them — most likely an
+    // older image still running against this database.
+    //
+    // Said out loud and not acted on. Rule 1 holds even for a collection this
+    // bot made: dropping one at boot is how a deploy destroys data nobody
+    // agreed to lose. `npm run migrate:aadhaar` is the thing that removes it,
+    // deliberately, with a dry run in front of it.
+    if (existing.has(LEGACY_AADHAAR_COLLECTION)) {
+      logger.warn(
+        {
+          db: config.RESUME_ATS_DB,
+          collection: LEGACY_AADHAAR_COLLECTION,
+          writeInstead: ATS_COLLECTIONS.aadhaarRecords,
+        },
+        'the old misspelled Aadhaar collection is back in the ats — ' +
+          'check nothing is running an older build, then run `npm run migrate:aadhaar`',
+      );
+    }
 
     logger.info(
       { db: config.RESUME_ATS_DB, created, alreadyThere: kept },

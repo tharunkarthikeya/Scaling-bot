@@ -206,6 +206,27 @@ Every line should read `ok`. It checks, in order: shadow mode, MongoDB
 connectivity and writability, storage, the Anthropic key, the OCR service, the
 WhatsApp token and number, and whether Meta has an app subscribed.
 
+### The one-off Aadhaar migration
+
+Run once per deployment, from the same container. An earlier build spelled the
+collection `aadhar_records`; correcting it left both names standing in
+`resume_ats`, one in use and one holding real uploads.
+
+```bash
+npm run migrate:aadhaar:prod             # what would move — nothing is written
+npm run migrate:aadhaar:prod -- --apply  # move it, then drop the old collection
+```
+
+Read the dry run first. `--apply` upserts each old row into `aadhaar_records`
+without overwriting anything already there, stamps `source: 'whatsapp'` on the
+rows the bot wrote, and drops `aadhar_records` only after every row has been
+found again in the new collection. Running it a second time finds nothing and
+says so. `README.md` has the detail.
+
+If `aadhar_records` ever reappears in `resume_ats`, boot logs a warning naming it
+— check nothing is running an older image before running the migration again.
+Boot never drops it on its own.
+
 ---
 
 ## Quick triage — "the bot isn't replying"

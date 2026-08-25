@@ -13,6 +13,8 @@
     "inspect": "tsx src/inspect.ts",
     "inspect:ats": "tsx src/inspect-ats.ts",
     "reset": "tsx src/reset.ts",
+    "migrate:aadhaar": "tsx src/ats/migrate-aadhaar.ts",
+    "migrate:aadhaar:prod": "node dist/ats/migrate-aadhaar.js",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "smoke": "tsx src/smoke.ts",
@@ -37,6 +39,7 @@
     "verify:crm": "tsx src/verify-crm.ts",
     "e2e:crm": "tsx src/e2e-crm.ts",
     "verify:taxonomy": "tsx src/verify-taxonomy.ts",
+    "e2e:ats": "tsx src/e2e-ats.ts",
     "doctor:prod": "node dist/doctor.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
