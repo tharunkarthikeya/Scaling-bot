@@ -4,12 +4,15 @@ import { logger } from '../logger.js';
 import {
   addUpload,
   claimExtraction,
+  currentUpload,
   documentsFor,
   documentStoreFor,
   dueExtractions,
   findUpload,
   flattenUploads,
+  markUploadRefiled,
   releaseExtraction,
+  restoreCurrentUpload,
   updateUpload,
   type DocumentUpload,
   type DueExtraction,
@@ -38,6 +41,7 @@ import {
   mergeExtractedProfile,
   recordAadhaarCoverage,
   resumeAfterDocument,
+  resyncSlotFromUploads,
   uploadStillCurrent,
 } from '../conversation/engine.js';
 import {
@@ -941,6 +945,7 @@ function normaliseAadhaar(payload: any): OcrOutcome {
 
   const problems: string[] = [];
   let verdict: CompletenessVerdict = 'ok';
+  let looksLike: string | undefined;
 
   if (!identified && !anyText) {
     problems.push('nothing could be read from the image');
@@ -952,6 +957,10 @@ function normaliseAadhaar(payload: any): OcrOutcome {
     problems.push('this does not look like an Aadhaar card');
     reasons.push('the Aadhaar extractor found no Aadhaar fields in a page that read clearly');
     verdict = 'wrong_document';
+    // What it is instead, where the markers can say. Without this the upload
+    // can only be re-asked for; with it, an Aadhaar slot holding somebody's
+    // passport hands the passport to the slot that wanted one.
+    looksLike = identifyFromMarkers(payload, fields);
   } else if (!identified || !readable) {
     problems.push('the text was too unclear to read');
     verdict = 'unreadable';
@@ -969,7 +978,12 @@ function normaliseAadhaar(payload: any): OcrOutcome {
     confidence: overall,
     needsReview: reasons.length > 0,
     reviewReasons: reasons,
-    completeness: { complete: problems.length === 0, verdict, problems },
+    completeness: {
+      complete: problems.length === 0,
+      verdict,
+      problems,
+      ...(looksLike ? { looksLike } : {}),
+    },
   };
 }
 
@@ -1121,6 +1135,103 @@ async function runIdentityComparison(candidateId: ObjectId, docType: string): Pr
 }
 
 /**
+ * Moves an upload that turned out to be a different document into its own slot.
+ *
+ * This is the burst case, and it is the commonest way a candidate is asked for
+ * something they have already sent. Somebody being helpful sends their CV,
+ * their passport and their Aadhaar one after another in a few seconds. Nothing
+ * names them — a photo from a gallery has no useful filename and people do not
+ * caption things — so `attributeInboundDocument` has only the open question to
+ * go on, and files all three against it, each superseding the last. The bot
+ * then asks for a passport and an Aadhaar that are already on its own disk.
+ *
+ * The extractor is the thing that can tell them apart, so the correction
+ * happens here, once it has. What moves is a *reference*: the new upload
+ * carries the same `storageKey`, so there is one file on disk with two records
+ * pointing at it, and §22's history in the original slot is left intact.
+ *
+ * Deliberately narrow, in three ways:
+ *
+ *   - only on a confident `wrong_document` verdict, never on a poor read. Blur
+ *     destroys exactly the markers this rests on, and moving a badly
+ *     photographed CV into the passport slot would be worse than leaving it.
+ *   - only into a slot that is empty. A passport the candidate sent properly is
+ *     never superseded by one recovered from somebody's mis-tap.
+ *   - never for a B2B contact, whose two Aadhaar slots are asked for one at a
+ *     time and whose files are already unambiguous.
+ *
+ * Returns the slot it moved to, so the caller knows not to tell the candidate
+ * they sent the wrong thing — they did not, they sent three right things at
+ * once.
+ */
+async function refileMisattributedUpload(params: {
+  waId: string;
+  candidateId: ObjectId;
+  docType: string;
+  uploadId: ObjectId;
+  doc: DocumentUpload;
+  outcome: OcrOutcome;
+}): Promise<string | undefined> {
+  const { waId, candidateId, docType, uploadId, doc, outcome } = params;
+
+  if (outcome.completeness.verdict !== 'wrong_document') return undefined;
+
+  const target = outcome.completeness.looksLike;
+  if (!target) return undefined;
+
+  const requirement = requirementFor(target);
+  // A slot the candidate branch does not have, or the one it is already in —
+  // an Aadhaar read out of `aadhaar_back` is not misfiled.
+  if (!requirement || (requirement.branch ?? 'candidate') !== 'candidate') return undefined;
+  if (identityKind(target) === identityKind(docType)) return undefined;
+
+  // Somebody sent this properly. Theirs stands.
+  if (await currentUpload(waId, target)) {
+    logger.info(
+      { waId, docType, target },
+      'an upload reads as another document the candidate has already sent; leaving it where it is',
+    );
+    return undefined;
+  }
+
+  const willOcr = requirement.ocr !== 'none';
+
+  const movedId = await addUpload({
+    waId,
+    candidateId,
+    docType: target,
+    upload: {
+      mediaId: doc.mediaId,
+      storageKey: doc.storageKey,
+      mimeType: doc.mimeType,
+      byteSize: doc.byteSize,
+      sha256: doc.sha256,
+      ...(doc.wamid ? { wamid: doc.wamid } : {}),
+      originalFilename: doc.originalFilename,
+      caption: `re-filed from the ${docType} slot; the extractor read it as a ${target}`,
+      ocr: { status: willOcr ? 'queued' : 'skipped' },
+    },
+  });
+
+  // Out of the slot it was never in, and back to whatever it was covering up.
+  await markUploadRefiled(waId, docType, uploadId, target);
+  await restoreCurrentUpload(waId, docType);
+  await resyncSlotFromUploads(candidateId, docType);
+
+  await markSlotFromOcr(candidateId, target, willOcr ? 'ocr_queued' : 'ocr_done');
+  if (willOcr) {
+    await queue.enqueue('ocr', { waId, docType: target, uploadId: movedId.toHexString() });
+  }
+
+  logger.info(
+    { waId, from: docType, to: target, uploadId: uploadId.toHexString() },
+    'an upload was filed against the open question and read as another document; moved',
+  );
+
+  return target;
+}
+
+/**
  * Files the passport a candidate attached to their CV as a passport as well.
  *
  * People send one PDF: CV first, passport pages scanned in behind it. Read only
@@ -1142,7 +1253,7 @@ async function runIdentityComparison(candidateId: ObjectId, docType: string): Pr
  *   - only when the passport slot is empty, so a passport the candidate sent
  *     properly is never superseded by one scraped out of a CV.
  */
-async function filePassportFoundInCv(
+async function fileIdentityFoundInCv(
   waId: string,
   candidateId: ObjectId,
   cv: {
@@ -1157,35 +1268,83 @@ async function filePassportFoundInCv(
   fields: OcrField[],
   payload: unknown,
 ): Promise<void> {
-  if (identifyFromMarkers(payload, fields) !== 'passport') return;
+  for (const docType of identityBehindCv(payload, fields)) {
+    const record = await documentsFor(waId, docType);
+    const section = (record as Record<string, { uploads?: DocumentUpload[] } | undefined> | null)?.[
+      docType
+    ];
+    const already = (section?.uploads ?? []).some((u) => !u.supersededAt && !u.refiledTo);
+    if (already) continue;
 
-  const record = await documentsFor(waId, 'passport');
-  const already = (record?.passport?.uploads ?? []).some((u) => !u.supersededAt);
-  if (already) return;
+    const uploadId = await addUpload({
+      waId,
+      candidateId,
+      docType,
+      upload: {
+        mediaId: cv.mediaId,
+        storageKey: cv.storageKey,
+        mimeType: cv.mimeType,
+        byteSize: cv.byteSize,
+        sha256: cv.sha256,
+        ...(cv.wamid ? { wamid: cv.wamid } : {}),
+        caption: `${docType} pages found inside the CV`,
+        ocr: { status: 'queued' },
+      },
+    });
 
-  const uploadId = await addUpload({
-    waId,
-    candidateId,
-    docType: 'passport',
-    upload: {
-      mediaId: cv.mediaId,
-      storageKey: cv.storageKey,
-      mimeType: cv.mimeType,
-      byteSize: cv.byteSize,
-      sha256: cv.sha256,
-      ...(cv.wamid ? { wamid: cv.wamid } : {}),
-      caption: 'passport pages found inside the CV',
-      ocr: { status: 'queued' },
-    },
-  });
+    await markSlotFromOcr(candidateId, docType, 'ocr_queued');
+    await queue.enqueue('ocr', { waId, docType, uploadId: uploadId.toHexString() });
 
-  await markSlotFromOcr(candidateId, 'passport', 'ocr_queued');
-  await queue.enqueue('ocr', { waId, docType: 'passport', uploadId: uploadId.toHexString() });
+    logger.info(
+      { waId, docType, storageKey: cv.storageKey },
+      'identity pages found inside a CV; filed and queued for their own extractor',
+    );
+  }
+}
 
-  logger.info(
-    { waId, storageKey: cv.storageKey },
-    'passport pages found inside a CV; filed and queued for the passport extractor',
+/**
+ * Which identity documents are scanned in behind this CV.
+ *
+ * Stricter than `identifyFromMarkers`, and it has to be. That function answers
+ * "what is this file?" about a file that yielded nothing, where a single weak
+ * marker is the best evidence available. This one asks a different question —
+ * "is there a second document inside a file that read perfectly well as a CV?"
+ * — and the answer is usually no, so a weak marker here is a false positive
+ * that files an ordinary CV as somebody's Aadhaar card.
+ *
+ * The Aadhaar test is the one that needs the care. Its number marker is twelve
+ * digits in three groups, which a CV can produce by accident out of a row of
+ * years or a pair of phone numbers, so a number alone is not enough: the card's
+ * own name has to appear as well. A scanned Aadhaar always carries both — the
+ * word is printed across it in two scripts.
+ *
+ * Passports keep the existing test unchanged. Its markers are an MRZ line, a
+ * passport number in its own format, and the issue/expiry pairing, none of
+ * which an ordinary CV produces by accident — and the passport-behind-the-CV
+ * case is common enough that loosening or tightening it now would be changing
+ * behaviour nobody asked to change.
+ */
+export function identityBehindCv(payload: unknown, fields: OcrField[]): string[] {
+  let haystack = textOf(fields);
+  try {
+    haystack += ' ' + JSON.stringify(payload ?? {});
+  } catch {
+    // A payload that will not serialise tells us nothing; the fields still might.
+  }
+
+  if (haystack.trim().length < MIN_TEXT_TO_JUDGE) return [];
+
+  const found: string[] = [];
+
+  if (DOCUMENT_MARKERS.passport!.some((marker) => marker.test(haystack))) found.push('passport');
+
+  const namesAadhaar = /aadhaar|aadhar|adhaar|uidai|unique\s+identification|आधार|ஆதார்/i.test(
+    haystack,
   );
+  const carriesUid = /\b\d{4}\s?\d{4}\s?\d{4}\b/.test(haystack);
+  if (namesAadhaar && carriesUid) found.push('aadhaar');
+
+  return found;
 }
 
 export async function processOcrJob(payload: {
@@ -1286,7 +1445,14 @@ async function applySuccessfulExtraction(params: {
   uploadId: ObjectId;
   candidateId: ObjectId;
   extractor: Extractor;
-  doc: { storageKey: string; mediaId: string; mimeType: string; byteSize: number; sha256: string; wamid?: string };
+  /**
+   * The upload as stored, not just the fields the extraction needed.
+   *
+   * Every caller reads it with `findUpload` and has the whole row anyway, and
+   * re-filing a misattributed upload needs the parts a narrower type left out —
+   * its original filename, and the id it is known by.
+   */
+  doc: DocumentUpload;
   outcome: OcrOutcome;
   startedAt?: Date;
 }): Promise<void> {
@@ -1329,6 +1495,39 @@ async function applySuccessfulExtraction(params: {
   // finishes last overwrites `currentStep`. The visible symptom is questions
   // arriving out of order and an answer recorded against the wrong one.
   await withCandidateLock(waId, async () => {
+    // Before anything else, and deliberately before the staleness check below:
+    // an upload that is not the document this slot holds was never a version of
+    // it, so whether something has superseded it here is beside the point. That
+    // ordering is the whole fix for a burst — the passport in the middle of
+    // CV/passport/Aadhaar is superseded by the Aadhaar within seconds, and
+    // checking staleness first would discard the one verdict that could have
+    // told us where it belonged.
+    const movedTo = await refileMisattributedUpload({
+      waId,
+      candidateId,
+      docType,
+      uploadId,
+      doc,
+      outcome,
+    });
+
+    if (movedTo) {
+      // Nothing is said. The candidate sent the right documents in the wrong
+      // order for our questions, which is not a mistake they should hear about
+      // — and the extraction now queued against the slot it really belongs to
+      // is what will acknowledge it, with a verdict rather than a guess.
+      //
+      // A slot with no extractor has nothing coming, so it speaks for itself.
+      if (requirementFor(movedTo)?.ocr === 'none') {
+        await resumeAfterDocument(candidateId, movedTo, {
+          complete: true,
+          verdict: 'ok',
+          problems: [],
+        });
+      }
+      return;
+    }
+
     // Two photos sent seconds apart both land in the slot the bot last asked
     // for, the second superseding the first, and both are read. Only the
     // verdict on the file the slot actually holds may write anything.
@@ -1374,7 +1573,7 @@ async function applySuccessfulExtraction(params: {
     // read again as a passport it is two, and §12 stops asking for something
     // already on file.
     if (docType === 'cv') {
-      await filePassportFoundInCv(
+      await fileIdentityFoundInCv(
         waId,
         candidateId,
         {

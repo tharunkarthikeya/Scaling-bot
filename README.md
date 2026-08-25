@@ -96,6 +96,9 @@ duplicate person.
 | `src/ocr/veris.ts` | Veris OCR client, upload inspection, and queue handler. |
 | `src/storage/` | File storage (local volume today, swappable for S3/R2). |
 | `src/db/models.ts` | Collections, indexes, the dedupe claim, and the session and document helpers everything else reads through. |
+| `src/crm/mapping.ts` | **Our record → the CRM's, field by field. An allow-list, not a passthrough.** |
+| `src/crm/snapshot.ts` | **The CV, the identity documents and the job answers, in the shapes the CRM stores.** |
+| `src/crm/sync.ts` | Delivering a candidate — both the finished handover and the snapshots that precede it. |
 | `src/server.ts` | Fastify routes: webhook, CRM reads, and the one CRM write. |
 
 ## How a message flows
@@ -489,6 +492,54 @@ curl -X PATCH https://<host>/api/candidates/<waId>/application \
 candidate — they are told when they ask. Pushing an outcome unprompted is a
 decision for staff, not a side effect of a CRM edit.
 
+## What the CRM is told, and when
+
+A registration reaches the CRM **as it is answered**, not only when it is
+finished. Someone who stops halfway is still someone worth ringing, and under
+the old arrangement they did not exist over there at all.
+
+Every answered question and every arrived document schedules a delivery.
+Deliveries inside one window collapse into a single submission carrying all of
+them, so a candidate tapping through six buttons produces one submission rather
+than six. `CRM_PARTIAL_SYNC_DEBOUNCE_MS` is that window, and therefore the CRM's
+worst-case lag behind the conversation. `CRM_PARTIAL_SYNC=false` turns it off
+and restores the old behaviour: nothing until the candidate confirms.
+
+Every delivery goes to `POST /candidates` under the same idempotency key, so the
+CRM sees one candidate being filled in rather than a dozen. What travels:
+
+| Section | What is in it |
+|---|---|
+| `profile` | The flat summary: name, phone, residence, destination, job category, experience band, passport number and expiry. |
+| `registration` | How far the conversation has got, and which documents are still to be asked for. `complete` is false until the candidate confirms. |
+| `cv` | The CV as the extractor read it — employers, dates, education, certificates, licences — in the same shape the CRM's email pipeline produces. |
+| `identity` | The Aadhaar and the passport, as their own extractors read them, filed by the CRM in its own identity collections. |
+| `job` | The job, the course and trade, the country and how strictly it is meant, when they can start — and every question that produced those answers. |
+
+Three rules run through it.
+
+**Consent is the floor.** Nothing is sent about anybody who has not given it
+(§4), whichever way `CRM_PARTIAL_SYNC` is set, and a partial is never sent for
+somebody who has answered nothing at all — a phone number with no answers is a
+missed call, not a candidate.
+
+**Questions travel with their answers.** A recruiter reading "3 to 5" needs to
+know what was asked, and §8's generated questions exist only on the candidate's
+own record — the CRM has never seen the text. Answers travel as the labels the
+candidate was shown, never as our option ids: `within_15` is a key in this
+repository and nothing at all over there.
+
+**Aadhaar and PAN stay off the candidate profile.** They are sent, but as
+identity documents, which the CRM files in their own collections and masks for
+everybody but an administrator. The reads that populate a recruiter's list
+project the candidate document wholesale, and a number stored there is a number
+that reaches a browser the first time somebody adds a column.
+
+Nothing here can fail a turn. A delivery that does not land is a log line and a
+note on the record; the next answer schedules another one carrying everything
+this one was carrying. Only the final handover — the one at completion — records
+its outcome, reopens the CV step on `CV_REQUIRED`, and is retried by the queue.
+
 ## The ATS export (`resume_ats`)
 
 A finished conversation is copied into `resume_ats`, a second database on this
@@ -689,6 +740,35 @@ for a clearer photo. Nothing is written to the profile from a file filed as
 something it is not, and the upload itself is kept either way. §5's rule that a
 CV is never re-requested for being *hard to read* is unchanged — this is about
 files that are not CVs.
+
+**A document sent early is moved, not re-asked for.** The other half of the same
+problem, and the commonest complaint about the bot: somebody being helpful sends
+their CV, their passport and their Aadhaar in one burst. Nothing names them —
+a photo from a gallery has no useful filename and people do not caption things —
+so all three land in whatever question was open, each superseding the last, and
+the bot then asks for two documents it is already holding.
+
+The extractor is the thing that can tell them apart, so the correction happens
+after it: an upload whose verdict is `wrong_document` and whose markers name a
+slot that is *empty* is re-filed there and queued for the right extractor, and
+the slot it came out of is restored to whatever it was covering up. The moved
+row carries the same `storageKey`, so there is one file on disk with two records
+pointing at it and §22's history is untouched. The candidate is told nothing —
+they did not make a mistake, they sent three right things at once.
+
+Two guards keep it narrow. It never moves into a slot that already holds
+something, so a passport the candidate sent properly is never superseded by one
+recovered from a mis-tap. And it runs *before* the staleness check rather than
+after: the passport in the middle of a burst is superseded within seconds, and
+checking staleness first would discard the one verdict that could have said
+where it belonged.
+
+The related case is a CV with the cards scanned in behind it — one PDF, the
+résumé first. Read only by the résumé extractor those pages are wasted, so
+`identityBehindCv` looks for a passport or an Aadhaar in what came back and
+files the same bytes a second time against the right slot. The Aadhaar test
+deliberately demands both the card's name and a twelve-digit number: the number
+alone is something an ordinary CV produces by accident out of a row of years.
 
 **OCR routes per document kind.** Veris exposes three extractors, each with its
 own route, form field, and response shape — `passport` (MRZ + check digits),

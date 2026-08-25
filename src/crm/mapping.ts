@@ -21,7 +21,13 @@
  */
 
 import type { CandidateDoc } from '../db/models.js';
-import { destinationCountryOf } from '../conversation/flow.js';
+import { destinationCountryOf, stepsFor } from '../conversation/flow.js';
+import type {
+  CrmCvSection,
+  CrmIdentitySection,
+  CrmJobSection,
+  CrmSnapshot,
+} from './snapshot.js';
 
 /** The profile shape `POST /candidates` accepts. Their names, not ours. */
 export interface CrmProfile {
@@ -63,6 +69,39 @@ export interface CrmResumePayload {
   content_base64: string;
 }
 
+/**
+ * Where the conversation has got to.
+ *
+ * Sent because a registration now reaches the CRM while it is still happening,
+ * and a recruiter opening a half-filled record has to be able to tell that from
+ * a finished one. Without it, "no passport on file" reads as "this candidate
+ * has no passport" when it means "we have not asked yet".
+ *
+ * `complete` is the field the CRM acts on. A partial submission is not held to
+ * the CV policy — refusing to file someone because they have not yet reached
+ * the question that would have produced the document is not a rule, it is a
+ * race — and it is not allocated to a recruiter until the candidate has
+ * finished.
+ */
+export interface CrmRegistrationState {
+  complete: boolean;
+  /** Our own stage name, for the audit trail rather than for a decision. */
+  stage: string;
+  /** The bot's candidate status (§26). */
+  status: string;
+  /** The Application ID the candidate was given, once they have one (§19). */
+  application_id?: string;
+  /** The language the conversation is being held in. */
+  language?: string;
+  /** When consent was recorded (§4). Absent means nothing may be stored yet. */
+  consent_at?: string;
+  started_at?: string;
+  updated_at?: string;
+  completed_at?: string;
+  /** Which questions are still outstanding, so the panel can say what is missing. */
+  outstanding_documents?: string[];
+}
+
 export interface CrmCandidatePayload {
   source: 'whatsapp';
   profile: CrmProfile;
@@ -70,6 +109,15 @@ export interface CrmCandidatePayload {
   /** What we believe. The CRM decides for itself and may disagree. */
   cv_required_claim?: boolean;
   resume?: CrmResumePayload;
+
+  /** Where the conversation has got to. Absent on a payload built before this existed. */
+  registration?: CrmRegistrationState;
+  /** The CV as the extractor read it, in the CRM's own résumé shape. */
+  cv?: CrmCvSection;
+  /** The Aadhaar and the passport, for the CRM's identity records. */
+  identity?: CrmIdentitySection;
+  /** What the conversation established about the work. */
+  job?: CrmJobSection;
 }
 
 /**
@@ -124,6 +172,16 @@ function list(values: unknown): string[] | undefined {
 export function toCrmPayload(
   candidate: CandidateDoc,
   phoneNumberId: string,
+  /**
+   * The CV, identity and job sections, where the caller has read them.
+   *
+   * Optional because building them costs a database read and two callers do not
+   * want one: `verify:crm`, which is checking the mapping rather than a real
+   * candidate, and anything constructing a payload from a record it already
+   * holds in full. An absent snapshot sends the profile alone, which is what
+   * this function did before those sections existed.
+   */
+  snapshot?: CrmSnapshot,
 ): CrmCandidatePayload {
   const p = candidate.profile ?? {};
 
@@ -182,5 +240,66 @@ export function toCrmPayload(
     profile,
     idempotency_key: idempotencyKeyFor(candidate, phoneNumberId),
     ...(typeof p.cvRequired === 'boolean' ? { cv_required_claim: p.cvRequired } : {}),
+    registration: registrationStateOf(candidate),
+    ...(snapshot?.cv ? { cv: snapshot.cv } : {}),
+    ...(snapshot?.identity ? { identity: snapshot.identity } : {}),
+    ...(snapshot?.job ? { job: snapshot.job } : {}),
   };
+}
+
+/**
+ * How far through the conversation this candidate is.
+ *
+ * Derived rather than stored: `stage` is the conversation's own state machine
+ * and "complete" is one value of it, so keeping a second flag beside it would
+ * be two facts that can disagree.
+ */
+export function registrationStateOf(candidate: CandidateDoc): CrmRegistrationState {
+  const outstanding = documentsStillToAskFor(candidate);
+
+  const state: CrmRegistrationState = {
+    complete: candidate.stage === 'REGISTRATION_COMPLETED',
+    stage: candidate.stage,
+    status: candidate.status,
+    application_id: trimmed(candidate.candidateId),
+    language: trimmed(candidate.language),
+    consent_at: candidate.consent?.given ? candidate.consent.at?.toISOString() : undefined,
+    started_at: candidate.createdAt?.toISOString(),
+    updated_at: candidate.updatedAt?.toISOString(),
+    completed_at: candidate.completedAt?.toISOString(),
+    outstanding_documents: outstanding.length ? outstanding : undefined,
+  };
+
+  for (const key of Object.keys(state) as Array<keyof CrmRegistrationState>) {
+    if (state[key] === undefined) delete state[key];
+  }
+  return state;
+}
+
+/**
+ * The documents this conversation is still going to ask for.
+ *
+ * Asked of the flow rather than of the checklist, and the difference is the
+ * whole value of the field. The checklist holds a slot for every kind of
+ * document the system knows about — a B2B contact's company registration
+ * certificate, a loose certificate that only exists so an unprompted upload has
+ * somewhere to go — and none of those will ever be put to this candidate. A
+ * recruiter reading "still to come: company registration certificate" against a
+ * welder would reasonably conclude the bot was broken.
+ *
+ * So: the document steps this candidate's own flow contains, that apply to
+ * them, and that they have not answered. Which is exactly the list of things
+ * the bot has left to ask.
+ */
+function documentsStillToAskFor(candidate: CandidateDoc): string[] {
+  const outstanding: string[] = [];
+
+  for (const step of stepsFor(candidate)) {
+    if (step.input !== 'document' || !step.document) continue;
+    if (step.when && !step.when(candidate)) continue;
+    if (step.satisfied(candidate)) continue;
+    if (!outstanding.includes(step.document)) outstanding.push(step.document);
+  }
+
+  return outstanding;
 }

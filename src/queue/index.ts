@@ -29,7 +29,20 @@ export interface JobPayloads {
    * Queued after the candidate has confirmed, so a CRM outage delays a delivery
    * rather than failing a registration the candidate has already completed.
    */
-  crm_sync: { waId: string };
+  crm_sync: {
+    waId: string;
+    /**
+     * A snapshot of a registration still in progress, rather than a finished one.
+     *
+     * Both go to the same endpoint under the same idempotency key, so the CRM
+     * sees one candidate being filled in rather than two. What the flag changes
+     * is what a failure means: a partial delivery that does not land is retried
+     * quietly and never reopens a step or marks the candidate `failed`, because
+     * nothing about the conversation depends on it yet. The final sync is the
+     * one whose outcome is recorded.
+     */
+    partial?: boolean;
+  };
   /**
    * Copying a finished conversation into the ATS database (`ats/export.ts`).
    *
@@ -44,8 +57,46 @@ export type JobName = keyof JobPayloads;
 
 export type JobHandler<K extends JobName> = (payload: JobPayloads[K]) => Promise<void>;
 
+/**
+ * How a job is placed, for the callers that need more than "run this soon".
+ *
+ * Both fields exist for one caller — the partial CRM sync, which fires on every
+ * answered question and would otherwise post a candidate's profile a dozen times
+ * a minute. `key` collapses the duplicates and `delayMs` gives them time to
+ * arrive, so a burst of answers becomes one delivery carrying all of them.
+ */
+export interface EnqueueOptions {
+  /**
+   * A job already queued under this key is not queued again.
+   *
+   * The key must move forward on its own — a time bucket, not a bare candidate
+   * id — because a completed job's id is retained for an hour and a second job
+   * claiming it inside that hour is silently dropped. See `coalesceKey`.
+   */
+  key?: string;
+  /** How long to hold the job before it may run. */
+  delayMs?: number;
+}
+
+/**
+ * A key that collapses everything happening to one candidate inside one window.
+ *
+ * The bucket is what makes it safe to reuse: BullMQ keeps a completed job's id
+ * for an hour and refuses a new job that claims it, so a key of just the
+ * candidate's id would coalesce the first burst and then silently drop every
+ * delivery for the next hour. A bucket that advances with the clock cannot
+ * collide with a job that has already run.
+ */
+export function coalesceKey(name: JobName, waId: string, windowMs: number, now = Date.now()): string {
+  return `${name}:${waId}:${Math.floor(now / Math.max(1, windowMs))}`;
+}
+
 export interface JobQueue {
-  enqueue<K extends JobName>(name: K, payload: JobPayloads[K]): Promise<void>;
+  enqueue<K extends JobName>(
+    name: K,
+    payload: JobPayloads[K],
+    options?: EnqueueOptions,
+  ): Promise<void>;
   register<K extends JobName>(name: K, handler: JobHandler<K>, concurrency?: number): void;
   start(): Promise<void>;
   close(): Promise<void>;
@@ -199,8 +250,16 @@ export class RedisQueue implements JobQueue {
     this.queueFor(name);
   }
 
-  async enqueue<K extends JobName>(name: K, payload: JobPayloads[K]): Promise<void> {
-    await this.queueFor(name).add(name, payload, DEFAULT_JOB_OPTIONS);
+  async enqueue<K extends JobName>(
+    name: K,
+    payload: JobPayloads[K],
+    options: EnqueueOptions = {},
+  ): Promise<void> {
+    await this.queueFor(name).add(name, payload, {
+      ...DEFAULT_JOB_OPTIONS,
+      ...(options.key ? { jobId: options.key } : {}),
+      ...(options.delayMs ? { delay: options.delayMs } : {}),
+    });
   }
 
   register<K extends JobName>(name: K, handler: JobHandler<K>, concurrency = 4): void {
@@ -245,6 +304,13 @@ interface PendingJob {
    * order they were enqueued. Derived from the candidate's `waId`.
    */
   key?: string;
+  /**
+   * The caller's coalescing key, where it gave one. A job already waiting under
+   * it is not queued a second time — the Redis queue does the same thing with
+   * `jobId`, and the two backends have to agree about it or a burst of answers
+   * produces one CRM delivery in production and twenty in a test.
+   */
+  coalesce?: string;
 }
 
 /**
@@ -309,6 +375,10 @@ class JobPool {
   }
 
   push(job: PendingJob): void {
+    // Already waiting under the same key: the queued job will read the record
+    // as it stands when it runs, so a second one would deliver the same thing
+    // twice.
+    if (job.coalesce && this.waiting.some((queued) => queued.coalesce === job.coalesce)) return;
     this.waiting.push(job);
     this.pump();
   }
@@ -362,14 +432,46 @@ class JobPool {
 
 export class InProcessQueue implements JobQueue {
   private readonly pools = new Map<JobName, JobPool>();
+  /** Coalescing keys whose delay has been set and has not yet fired. */
+  private readonly delayed = new Set<string>();
 
-  async enqueue<K extends JobName>(name: K, payload: JobPayloads[K]): Promise<void> {
+  async enqueue<K extends JobName>(
+    name: K,
+    payload: JobPayloads[K],
+    options: EnqueueOptions = {},
+  ): Promise<void> {
     const pool = this.pools.get(name);
     if (!pool) {
       logger.warn({ job: name }, 'no handler registered; job dropped');
       return;
     }
-    pool.push({ payload, key: orderingKeyFor(payload) });
+
+    const job: PendingJob = {
+      payload,
+      key: orderingKeyFor(payload),
+      ...(options.key ? { coalesce: options.key } : {}),
+    };
+
+    // A delay this queue honours by waiting rather than by scheduling: there is
+    // no Redis to hold a delayed set, and a job pushed now would run before the
+    // burst it is meant to collect has finished arriving.
+    //
+    // The key is claimed the moment the timer is set, not when it fires, so a
+    // burst inside the window produces one timer rather than one per answer.
+    // The timer is unref'd: a pending debounce must not hold a process open
+    // past the work it was waiting for.
+    if (options.delayMs && options.delayMs > 0) {
+      if (job.coalesce && this.delayed.has(job.coalesce)) return;
+      if (job.coalesce) this.delayed.add(job.coalesce);
+      const timer = setTimeout(() => {
+        if (job.coalesce) this.delayed.delete(job.coalesce);
+        pool.push(job);
+      }, options.delayMs);
+      if (typeof timer.unref === 'function') timer.unref();
+      return;
+    }
+
+    pool.push(job);
   }
 
   /**

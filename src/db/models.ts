@@ -530,6 +530,27 @@ export interface CandidateDoc {
     lastError?: string;
     lastAttemptAt?: Date;
     syncedAt?: Date;
+    /**
+     * The last time a registration still in progress was delivered.
+     *
+     * Kept apart from `syncedAt` and from `status`, which both belong to the
+     * final handover: a partial is a courtesy to the recruiter watching the
+     * desk, and a candidate whose partials are landing has still not been
+     * delivered. Reading a partial as a delivery would have `reconcileCrmSync`
+     * stop chasing a registration that never completed.
+     */
+    partialSyncedAt?: Date;
+    /** Why the last partial did not land. Never a reason to stop the conversation. */
+    partialError?: string;
+    /**
+     * The digest of the CV the CRM has been given.
+     *
+     * A partial sync runs on every answered question, and the CV bytes are the
+     * expensive part of the submission. This is what stops the same file going
+     * over the wire twenty times — and, when the candidate replaces their CV,
+     * what notices that the new one has not been sent.
+     */
+    resumeSha256?: string;
   };
 
   /**
@@ -766,6 +787,16 @@ export interface DocumentUpload {
   wamid?: string;
   /** Set when a later upload replaced this one. Old versions are kept (§22). */
   supersededAt?: Date;
+  /**
+   * The slot this upload turned out to belong to, once an extractor said so.
+   *
+   * Set on the copy left behind in the wrong slot. It is not a replacement —
+   * nothing replaced it, it was never this kind of document — so it is excluded
+   * from the version history the slot restores from. Without the distinction,
+   * an Aadhaar that was briefly filed as a CV would be restored as the
+   * candidate's current CV the moment the real one was moved out from under it.
+   */
+  refiledTo?: string;
   ocr?: UploadOcr;
   createdAt: Date;
   updatedAt: Date;
@@ -801,6 +832,15 @@ export interface CandidateDocumentsDoc {
   cv?: DocumentSection;
   passport?: DocumentSection;
   aadhaar?: DocumentSection;
+  /**
+   * The other side of a candidate's Aadhaar.
+   *
+   * Its own section rather than a second upload in `aadhaar`, because a section
+   * holds one document's versions and the two sides are one card in two files —
+   * filing the back as a new version of the front would mark the front
+   * superseded and lose the fields only it carries.
+   */
+  aadhaar_back?: DocumentSection;
   pan?: DocumentSection;
   driving_licence?: DocumentSection;
   certificate?: DocumentSection;
@@ -1296,6 +1336,108 @@ export async function addUpload(params: {
   );
 
   return uploadId;
+}
+
+/**
+ * Marks an upload as having belonged to a different slot all along.
+ *
+ * The row stays where it is — §22 keeps every upload — and stops counting as a
+ * version of this kind of document. `restoreCurrentUpload` then puts back
+ * whatever this one was covering up.
+ */
+export async function markUploadRefiled(
+  waId: string,
+  docType: string,
+  uploadId: ObjectId,
+  target: string,
+): Promise<void> {
+  const section = sectionFor(docType);
+  const now = new Date();
+
+  await documentStoreFor(docType).updateOne(
+    { waId, [`${section}.uploads.0`]: { $exists: true } },
+    {
+      $set: {
+        updatedAt: now,
+        [`${section}.uploads.$[u].refiledTo`]: target,
+        [`${section}.uploads.$[u].supersededAt`]: now,
+        [`${section}.uploads.$[u].updatedAt`]: now,
+      },
+    },
+    { arrayFilters: [{ 'u.uploadId': uploadId }] },
+  );
+}
+
+/**
+ * Makes the newest upload that really belongs to this slot the current one again.
+ *
+ * Needed because a slot is filled in the order files arrive, and files do not
+ * arrive one per question. Somebody who sends their CV, their passport and their
+ * Aadhaar in one burst — which is what people do when they are being helpful —
+ * has all three filed against whatever question was open, each superseding the
+ * last. Once the extractors have said what the second and third actually were
+ * and they have been moved, the first is still sitting there marked as an old
+ * version of a document that was never replaced.
+ *
+ * Returns the upload that is now current, or undefined when everything in the
+ * section turned out to belong somewhere else — in which case the slot is empty
+ * again and the flow will ask for it.
+ */
+export async function restoreCurrentUpload(
+  waId: string,
+  docType: string,
+): Promise<DocumentUpload | undefined> {
+  const section = sectionFor(docType);
+  const store = documentStoreFor(docType);
+
+  const record = await store.findOne(
+    { waId },
+    { projection: { [`${section}.uploads`]: 1 } },
+  );
+
+  const uploads =
+    (record as unknown as Record<string, DocumentSection | undefined> | null)?.[section]?.uploads ??
+    [];
+
+  // Anything moved out is not a version of this document and can never be
+  // restored as one.
+  const own = uploads.filter((upload) => !upload.refiledTo);
+  const current = own[own.length - 1];
+  if (!current) return undefined;
+
+  // Already current. The common case by far — nothing was moved out from over
+  // it — and worth not writing for.
+  if (!current.supersededAt) return current;
+
+  const now = new Date();
+  await store.updateOne(
+    { waId, [`${section}.uploads.0`]: { $exists: true } },
+    {
+      $unset: { [`${section}.uploads.$[u].supersededAt`]: '' },
+      $set: { updatedAt: now, [`${section}.uploads.$[u].updatedAt`]: now },
+    },
+    { arrayFilters: [{ 'u.uploadId': current.uploadId }] },
+  );
+
+  return { ...current, supersededAt: undefined };
+}
+
+/** The current upload in a section — the last one nothing has replaced. */
+export async function currentUpload(
+  waId: string,
+  docType: string,
+): Promise<DocumentUpload | undefined> {
+  const section = sectionFor(docType);
+  const record = await documentStoreFor(docType).findOne(
+    { waId },
+    { projection: { [`${section}.uploads`]: 1 } },
+  );
+
+  const uploads =
+    (record as unknown as Record<string, DocumentSection | undefined> | null)?.[section]?.uploads ??
+    [];
+
+  return [...uploads].reverse().find((upload) => !upload.supersededAt && !upload.refiledTo);
 }
 
 /* ------------------------------------------------------------------ */

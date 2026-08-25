@@ -29,6 +29,7 @@ import {
   supersedeAllUploads,
   b2bEnquiries,
   candidates,
+  currentUpload,
   closeOpenSession,
   refileConversation,
   findConversation,
@@ -46,7 +47,9 @@ import {
   type CandidateDoc,
   type CandidateStatus,
   type ConversationStage,
+  type DocumentStatus,
   type FieldMeta,
+  type UploadOcr,
   type MessageDoc,
   type OcrField,
 } from '../db/models.js';
@@ -58,7 +61,7 @@ import {
   type Outbound,
 } from '../whatsapp/client.js';
 import { saveFile } from '../storage/index.js';
-import { queue, withCandidateLock } from '../queue/index.js';
+import { coalesceKey, queue, withCandidateLock } from '../queue/index.js';
 import * as copy from './copy.js';
 import {
   sectionFieldsFor,
@@ -253,6 +256,60 @@ export async function getOrCreateCandidate(params: {
       }
     }
     throw err;
+  }
+}
+
+/**
+ * Tells the CRM what has just changed, once the answers stop arriving.
+ *
+ * Called wherever the record actually changes — an answer recorded, a document
+ * filed, an extraction merged — rather than at the end of a turn, because a
+ * turn has a dozen ways to end early and a hook on one of them syncs some
+ * changes and not others.
+ *
+ * Every call inside one window collapses into a single delivery (`coalesceKey`),
+ * so a candidate tapping through six buttons produces one submission carrying
+ * all six answers rather than six submissions carrying one each. The window is
+ * therefore the CRM's worst-case lag behind the conversation, and nothing else.
+ *
+ * Nothing here can fail a turn. The enqueue is awaited only far enough to hand
+ * the job over; a queue that will not take it is logged and the conversation
+ * carries on, because a candidate answering questions must never be held up by
+ * a second system's availability.
+ */
+async function scheduleCrmSync(candidate: CandidateDoc): Promise<void> {
+  if (!config.CRM_PARTIAL_SYNC) return;
+
+  // §4 — nothing personal travels before consent, and the CRM is not an
+  // exception to that. Checked here as well as in the worker: the cheapest
+  // place to not send something is before it is queued.
+  if (!candidate.consent?.given) return;
+
+  // A business contact is not a candidate (§2). A tracking or staff enquiry is
+  // not a registration.
+  if (candidate.enquiry && candidate.enquiry !== 'apply') return;
+
+  // Once the registration is finished, `completeRegistration` has queued the
+  // real handover and its outcome is the one that is recorded. A partial
+  // chasing it would deliver the same record under the same key and tell the
+  // CRM the conversation is still open.
+  if (candidate.stage === 'REGISTRATION_COMPLETED') return;
+
+  try {
+    await queue.enqueue(
+      'crm_sync',
+      { waId: candidate.waId, partial: true },
+      {
+        key: coalesceKey(
+          'crm_sync',
+          candidate.waId,
+          config.CRM_PARTIAL_SYNC_DEBOUNCE_MS,
+        ),
+        delayMs: config.CRM_PARTIAL_SYNC_DEBOUNCE_MS,
+      },
+    );
+  } catch (err) {
+    logger.warn({ err, waId: candidate.waId }, 'could not schedule a partial crm sync');
   }
 }
 
@@ -1464,6 +1521,12 @@ async function ingestDocument(candidate: CandidateDoc, msg: MessageDoc): Promise
 
   await setState(candidate, { documents: slots });
 
+  // The file is on disk and filed, so the CRM can be told about it now rather
+  // than after extraction. A recruiter seeing "CV received" while Veris is
+  // still reading it is the truth; waiting for the read would hide the arrival
+  // for as long as the queue is deep.
+  await scheduleCrmSync(candidate);
+
   if (willOcr) {
     // The job carries where the upload lives, not just which one it is: an
     // upload inside a section cannot be found by id alone.
@@ -1575,6 +1638,8 @@ async function recordAnswer(
       $push: { history: { $each: write.changes } },
     },
   );
+
+  await scheduleCrmSync(candidate);
 }
 
 async function markSlot(
@@ -1586,6 +1651,7 @@ async function markSlot(
   const slots = withMissingSlots(candidate.documents);
   slots[docType] = { ...slots[docType]!, status, note, updatedAt: new Date() };
   await setState(candidate, { documents: slots });
+  await scheduleCrmSync(candidate);
 }
 
 /** Removes a step from the edit queue once it has been answered. */
@@ -1816,6 +1882,12 @@ async function appendOtherAnswer(
       $push: { history: { $each: write.changes } },
     },
   );
+
+  // The candidate's own words for a trade no option covered — which is the
+  // most specific thing on their profile, and would otherwise be the one
+  // answer that never reached the CRM, because this is the only place that
+  // writes it.
+  await scheduleCrmSync(candidate);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -3222,6 +3294,75 @@ export async function markSlotFromOcr(
 }
 
 /**
+ * Puts a slot back in step with the uploads it actually holds.
+ *
+ * Called after an upload is moved out of a slot it never belonged in. The slot
+ * status was set from the file that has just left, so it says `ocr_done` about
+ * an extraction of somebody's Aadhaar under the résumé extractor — and the flow
+ * reads that as "the CV is on file" and never asks again.
+ *
+ * The status is derived from whatever upload is current now, rather than
+ * remembered, because the slot has just changed underneath and remembering is
+ * what got it wrong in the first place. An empty slot goes back to `pending`,
+ * which is what makes the question askable again.
+ */
+/**
+ * The status a slot should have, given the extraction state of the upload it
+ * holds.
+ *
+ * Its own function because it is derived in one place and asserted in another,
+ * and because the mapping is where this is most likely to go quietly wrong: a
+ * slot claiming `ocr_done` about a document that has left is a slot the flow
+ * reads as answered, and the question is never asked again.
+ *
+ * No upload means `pending`, which is what makes the question askable again —
+ * the point of re-deriving at all.
+ */
+export function slotStatusFor(ocr: UploadOcr | undefined): DocumentStatus {
+  if (!ocr) return 'pending';
+  if (ocr.status === 'queued' || ocr.status === 'running') return 'ocr_queued';
+  if (ocr.status === 'failed') return 'ocr_failed';
+  if (ocr.status === 'skipped') return 'received';
+  if (ocr.completeness && !ocr.completeness.complete) return 'incomplete';
+  if (ocr.needsReview) return 'needs_review';
+  return ocr.status === 'done' ? 'ocr_done' : 'received';
+}
+
+export async function resyncSlotFromUploads(
+  candidateId: ObjectId,
+  docType: string,
+): Promise<void> {
+  const candidate = await findConversationById(candidateId);
+  if (!candidate) return;
+
+  const upload = await currentUpload(candidate.waId, docType);
+  const slots = withMissingSlots(candidate.documents);
+  const slot = slots[docType]!;
+  const status = slotStatusFor(upload?.ocr);
+
+  await recordsFor(candidate.enquiry).updateOne(
+    { _id: candidateId },
+    {
+      $set: {
+        [`documents.${docType}`]: {
+          ...slot,
+          status,
+          documentId: upload?.uploadId,
+          // The note belonged to the file that has gone. Keeping it would have
+          // the candidate re-asked with a complaint about a document that is
+          // no longer in this slot.
+          note: undefined,
+          updatedAt: new Date(),
+        },
+        updatedAt: new Date(),
+      },
+    },
+  );
+
+  logger.info({ waId: candidate.waId, docType, status }, 'document slot re-derived from its uploads');
+}
+
+/**
  * Records which of the Aadhaar's four core fields an upload gave up (§15).
  *
  * The union across every Aadhaar this candidate has sent, because a front and a
@@ -3316,6 +3457,11 @@ export async function mergeExtractedProfile(
   // it.
   const written = write.set['profile.dateOfBirth'];
   if (typeof written === 'string') await stopIfUnderAge(candidate, written, source);
+
+  // Everything the document gave up is on the record now, so the CRM is told —
+  // this is the call that carries a CV's employers, its education history and a
+  // passport's expiry date across while the candidate is still answering.
+  await scheduleCrmSync(candidate);
 }
 
 /**

@@ -68,7 +68,7 @@ import {
 import { cvWorthAsking, levelFromTitle } from './conversation/jobLevel.js';
 import { variantForLine } from './conversation/lines.js';
 import { validateCopy } from './conversation/validate.js';
-import { InProcessQueue } from './queue/index.js';
+import { coalesceKey, InProcessQueue } from './queue/index.js';
 import {
   describeQuestion,
   detectGlobalCommand,
@@ -101,11 +101,13 @@ import {
   looksLikeApplicationId,
   normaliseApplicationId,
   restartPatch,
+  slotStatusFor,
   RESTART_UNSETS,
 } from './conversation/engine.js';
 import { OTHER_CHOICES, REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
 import * as copy from './conversation/copy.js';
 import { toCrmPayload } from './crm/mapping.js';
+import { cvSectionFrom, jobSectionOf } from './crm/snapshot.js';
 import { resetTaxonomy, setTaxonomyForTests } from './crm/taxonomy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
 import {
@@ -114,10 +116,19 @@ import {
   CONFIRM_CHOICES,
   RETURNING_CHOICES,
 } from './conversation/copy.js';
-import { CANDIDATE_ID_PREFIX, ENQUIRY_ID_PREFIX } from './db/models.js';
+import {
+  CANDIDATE_ID_PREFIX,
+  ENQUIRY_ID_PREFIX,
+  type DocumentUpload,
+} from './db/models.js';
 import { ATS_COLLECTIONS, LEGACY_AADHAAR_COLLECTION } from './ats/client.js';
 import { atsDocumentRoutes, atsRouteFor, b2bClientType } from './ats/export.js';
-import { inspectUpload, normaliseExtractionForTests, resumeCompleteness } from './ocr/veris.js';
+import {
+  identityBehindCv,
+  inspectUpload,
+  normaliseExtractionForTests,
+  resumeCompleteness,
+} from './ocr/veris.js';
 import {
   JobQueueFullError,
   isJobQueueFull,
@@ -4943,6 +4954,457 @@ await check('a Retry-After header is read when present and ignored when absent',
   assert.equal(retryAfterMsOf(withHeader), 3000);
   assert.equal(retryAfterMsOf(without), undefined);
   assert.equal(retryAfterMsOf(nonsense), undefined);
+});
+
+
+console.log('\na registration reaches the CRM while it is still being answered');
+
+/** A candidate part-way through, with enough said to be worth sending. */
+function midRegistration(overrides: Partial<CandidateDoc> = {}): CandidateDoc {
+  return candidate({
+    stage: 'JOB_PREFERENCE_PENDING',
+    profile: {
+      lookingForOverseasJob: true,
+      fullName: 'Ravi Kumar',
+      education: 'diploma',
+      educationCourse: 'Mechanical Engineering',
+      primaryTrade: 'fabrication_welding',
+      jobCategory: 'general_worker',
+      desiredOccupation: 'TIG welder',
+      totalExperienceBand: '2_5',
+      countryPreference: 'malaysia',
+      selectedCountries: ['malaysia', 'singapore'],
+      countryStrictness: 'strict',
+      availability: 'within_15',
+      tradePacks: ['welder'],
+      tradeAnswers: { welding_process: ['tig', 'mig'] },
+      tradeQuestions: [
+        { id: 'gen_1', prompt: 'Which machines have you operated?', options: [] },
+      ],
+    },
+    fieldMeta: {
+      desiredOccupation: { source: 'chat', raw: 'tig welder job', at: new Date() },
+    },
+    ...overrides,
+  });
+}
+
+await check('the payload says plainly that the registration is unfinished', () => {
+  const payload = toCrmPayload(midRegistration(), '111');
+  assert.equal(payload.registration?.complete, false);
+  assert.equal(payload.registration?.stage, 'JOB_PREFERENCE_PENDING');
+});
+
+await check('a finished registration says so, and carries its application id', () => {
+  const payload = toCrmPayload(readyForCrm(), '111');
+  assert.equal(payload.registration?.complete, true);
+  assert.equal(payload.registration?.application_id, 'ADR-00042');
+});
+
+await check('the documents still outstanding are named, not merely absent', () => {
+  // A blank on a half-filled record is a question nobody has asked yet. Saying
+  // which ones is the difference between that and "this candidate has no
+  // Aadhaar".
+  const outstanding = toCrmPayload(midRegistration(), '111').registration
+    ?.outstanding_documents;
+  assert.ok(outstanding?.includes('cv'));
+  assert.ok(outstanding?.includes('aadhaar'));
+});
+
+await check('only documents this candidate will actually be asked for are listed', () => {
+  // Derived from the flow, not from the checklist. The checklist holds a slot
+  // for every kind of document the system knows about, including a business
+  // contact's company registration certificate — and "still to come: company
+  // registration certificate" against a welder reads as a broken bot.
+  const outstanding =
+    toCrmPayload(midRegistration(), '111').registration?.outstanding_documents ?? [];
+  for (const never of [
+    'b2b_aadhaar_front',
+    'b2b_aadhaar_back',
+    'company_registration',
+    'certificate',
+    'driving_licence',
+  ]) {
+    assert.ok(!outstanding.includes(never), `"${never}" is never asked of a candidate`);
+  }
+});
+
+await check('a passport is listed once the candidate says they hold one', () => {
+  // And not before. The booklet is only asked for of somebody who has just said
+  // they have one, so naming it earlier would be a guess about a question that
+  // has not been put yet.
+  const before = midRegistration();
+  const after = midRegistration({
+    profile: { ...before.profile, passportStatus: 'yes' },
+  });
+
+  assert.ok(!toCrmPayload(before, '111').registration?.outstanding_documents?.includes('passport'));
+  assert.ok(toCrmPayload(after, '111').registration?.outstanding_documents?.includes('passport'));
+});
+
+console.log('\nthe job section — questions travel with their answers');
+
+await check('the job, the course and the trade are all sent', () => {
+  const job = jobSectionOf(midRegistration())!;
+  assert.equal(job.job, 'TIG welder');
+  assert.equal(job.job_category, 'general_worker');
+  assert.equal(job.course_or_trade?.course, 'Mechanical Engineering');
+  assert.equal(job.course_or_trade?.primary_trade, 'fabrication_welding');
+});
+
+await check('the country and how strictly it is meant are separate facts', () => {
+  const job = jobSectionOf(midRegistration())!;
+  assert.deepEqual(job.country?.selected, ['malaysia', 'singapore']);
+  assert.equal(job.country?.strictness, 'strict');
+  // Hoisted out of the answer: a recruiter must never have to parse a string to
+  // learn they may not shortlist this candidate elsewhere (§10).
+  assert.equal(job.country?.strict, true);
+});
+
+await check('a candidate who is open to anywhere is not marked strict', () => {
+  const job = jobSectionOf(midRegistration({
+    profile: { ...midRegistration().profile, countryStrictness: 'any' },
+  }))!;
+  assert.equal(job.country?.strict, false);
+});
+
+await check('when they can join is sent as its own answer', () => {
+  const job = jobSectionOf(midRegistration())!;
+  assert.ok(job.availability?.band);
+  assert.ok(job.questions?.some((q) => q.id === 'availability'));
+});
+
+await check('every answer carries the question that produced it', () => {
+  const job = jobSectionOf(midRegistration())!;
+  const asked = [...(job.questions ?? []), ...(job.course_or_trade?.questions ?? [])];
+  assert.ok(asked.length > 0, 'no questions were sent at all');
+  for (const entry of asked) {
+    assert.ok(entry.question.trim().length > 0, `${entry.id} was sent without its question`);
+    assert.ok(entry.answer.trim().length > 0, `${entry.id} was sent without an answer`);
+  }
+});
+
+await check('answers are sent as labels, never as our own option ids', () => {
+  const job = jobSectionOf(midRegistration())!;
+  const education = job.course_or_trade?.questions?.find((q) => q.id === 'education');
+  // "diploma" is a key in this repository and nothing at all in the CRM.
+  assert.equal(education?.answer, 'Diploma');
+});
+
+await check('the candidate’s own wording is kept beside the standardised answer', () => {
+  const job = jobSectionOf(midRegistration())!;
+  const desired = job.questions?.find((q) => q.id === 'desired_job');
+  assert.equal(desired?.raw, 'tig welder job');
+});
+
+await check('a specialist pack’s question travels with its own text', () => {
+  // The pack's questions live in `trades.ts` and their answers under the
+  // question's own id, so neither can be found from the step id alone — and a
+  // welder's processes are the most specific thing on their profile.
+  const job = jobSectionOf(midRegistration())!;
+  const asked = job.course_or_trade?.questions?.find(
+    (q) => q.id === 'trade:welder:welding_process',
+  );
+  assert.equal(asked?.question, 'Which welding processes do you know?');
+  assert.equal(asked?.answer, 'TIG, MIG');
+});
+
+await check('when they can join is sent as a label, never as our option id', () => {
+  // "within_15" is a key in this repository and nothing at all in the CRM.
+  const job = jobSectionOf(midRegistration())!;
+  assert.equal(job.availability?.band, 'Within 15 days');
+});
+
+await check('a question written for this one candidate travels with its text', () => {
+  // §8's generated questions exist nowhere but on this record — the CRM has
+  // never seen the text — so an answer arriving without it is a value nobody
+  // can interpret.
+  const c = midRegistration();
+  c.profile.tradeAnswers = { ...c.profile.tradeAnswers, gen_1: ['lathe', 'milling'] };
+  const job = jobSectionOf(c)!;
+  const generated = job.course_or_trade?.questions?.find((q) => q.id === 'trade_extra:0');
+  assert.equal(generated?.question, 'Which machines have you operated?');
+  assert.equal(generated?.answer, 'lathe, milling');
+});
+
+await check('a candidate who has answered nothing has no job section at all', () => {
+  // Absent means "not stated"; an empty object would mean "stated to be
+  // nothing", and on a partial sync that difference decides whether tomorrow's
+  // answer is allowed to fill it in.
+  assert.equal(jobSectionOf(candidate()), undefined);
+});
+
+console.log('\nthe CV, in the shape the CRM keeps résumés in');
+
+/** One CV upload, as it sits in the documents record after extraction. */
+function cvUpload(raw: unknown): DocumentUpload {
+  return {
+    uploadId: new ObjectId(),
+    mediaId: 'MEDIA1',
+    storageKey: 'cv/1',
+    mimeType: 'application/pdf',
+    byteSize: 1024,
+    sha256: 'sha-cv',
+    originalFilename: 'ravi-cv.pdf',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ocr: { status: 'done', extractor: 'resume', raw, finishedAt: new Date(), needsReview: true },
+  };
+}
+
+const RESUME_PAYLOAD = {
+  name: 'Ravi Kumar',
+  designation: 'Senior Welder',
+  industry: 'Construction & Engineering',
+  total_experience_years: 10.2,
+  total_experience_human: '10 years 3 months',
+  contact: {
+    emails: ['ravi@example.com'],
+    phones: ['+919876543210', '+914412345678'],
+    address: 'Chennai, Tamil Nadu',
+  },
+  personal_info: { date_of_birth: '1994-03-14', father_name: 'Ramesh Kumar' },
+  skills: ['SMAW', 'GTAW'],
+  machinery: ['TIG welding machine'],
+  certifications: [{ name: '6G welder certificate' }],
+  experience: [
+    { company: 'Larsen and Toubro', designation: 'Senior Welder', start_date: '2019-01' },
+    { company: 'Gulf Steel Works', title: 'Welder', country: 'UAE', is_overseas: true },
+  ],
+  education: [
+    {
+      institution: 'Government Polytechnic',
+      degree: 'Diploma in Mechanical Engineering',
+      passing_year: '2015',
+    },
+  ],
+};
+
+await check('the employment history is sent, not flattened into one field', () => {
+  const cv = cvSectionFrom(cvUpload(RESUME_PAYLOAD))!;
+  assert.deepEqual(
+    cv.work_experience?.map((row) => row.company),
+    ['Larsen and Toubro', 'Gulf Steel Works'],
+  );
+  assert.equal(cv.work_experience?.[1]?.is_overseas, true);
+});
+
+await check('the education history is sent as entries, not as one line', () => {
+  const cv = cvSectionFrom(cvUpload(RESUME_PAYLOAD))!;
+  assert.equal(cv.education?.[0]?.degree, 'Diploma in Mechanical Engineering');
+  assert.equal(cv.education?.[0]?.passing_year, '2015');
+});
+
+await check('certificates arrive whether the extractor gave strings or objects', () => {
+  // One document yields `["x"]` and the next `[{name: "x"}]`. A mapper that
+  // knows one spelling silently produces an empty list for half the candidates,
+  // which looks exactly like a candidate with no certificates.
+  const objects = cvSectionFrom(cvUpload(RESUME_PAYLOAD))!;
+  const strings = cvSectionFrom(
+    cvUpload({ ...RESUME_PAYLOAD, certifications: ['6G welder certificate'] }),
+  )!;
+  assert.deepEqual(objects.certifications, ['6G welder certificate']);
+  assert.deepEqual(strings.certifications, ['6G welder certificate']);
+});
+
+await check('the employment history is found under either of its spellings', () => {
+  const other = cvSectionFrom(
+    cvUpload({ ...RESUME_PAYLOAD, experience: undefined, work_experience: RESUME_PAYLOAD.experience }),
+  )!;
+  assert.equal(other.work_experience?.length, 2);
+});
+
+await check('machinery is sent as trade skills, apart from the general list', () => {
+  const cv = cvSectionFrom(cvUpload(RESUME_PAYLOAD))!;
+  assert.deepEqual(cv.trade_skills, ['TIG welding machine']);
+  assert.deepEqual(cv.skills, ['SMAW', 'GTAW']);
+});
+
+await check('the raw extraction travels, so a mapping mistake is recoverable', () => {
+  const cv = cvSectionFrom(cvUpload(RESUME_PAYLOAD))!;
+  assert.equal((cv.raw_ocr as { name?: string }).name, 'Ravi Kumar');
+});
+
+await check('a CV that could not be read is still reported as received', () => {
+  const cv = cvSectionFrom(cvUpload(undefined))!;
+  assert.equal(cv.filename, 'ravi-cv.pdf');
+  assert.equal(cv.work_experience, undefined);
+});
+
+await check('an unscored extraction never travels as a scored one', () => {
+  // The résumé extractor reports no confidence at all. A default of 0 — or of
+  // anything else — would read as a measurement nobody took.
+  const cv = cvSectionFrom(cvUpload(RESUME_PAYLOAD))!;
+  assert.equal(cv.confidence, undefined);
+});
+
+console.log('\nan upload filed against the wrong question is moved, not re-asked');
+
+await check('a burst of documents is what makes this happen at all', () => {
+  // Nothing names the files — a photo from a gallery has no useful filename and
+  // people do not caption things — so all three land in whatever slot was open.
+  const c = candidate({ currentStep: 'cv' });
+  for (const _ of ['cv', 'passport', 'aadhaar']) {
+    assert.equal(attributeInboundDocument(c, { expecting: 'cv' }), 'cv');
+  }
+});
+
+await check('the aadhaar extractor says what a wrong upload actually is', () => {
+  // Without `looksLike` the upload can only be re-asked for. With it, an
+  // Aadhaar slot holding somebody's passport hands the passport to the slot
+  // that wanted one.
+  const outcome = normaliseExtractionForTests('aadhaar', {
+    aadhaar: {},
+    pages: [
+      {
+        page_number: 1,
+        average_confidence: 0.95,
+        text:
+          'REPUBLIC OF INDIA PASSPORT\nPassport No: Z1234567\n' +
+          'Date of Issue 12/05/2021 Date of Expiry 11/05/2031',
+      },
+    ],
+  });
+  assert.equal(outcome.completeness.verdict, 'wrong_document');
+  assert.equal(outcome.completeness.looksLike, 'passport');
+});
+
+await check('a slot is re-derived from the upload it actually holds', () => {
+  // The status was set from the file that has just left. Left alone it says
+  // `ocr_done` about an extraction of somebody's Aadhaar under the résumé
+  // extractor, and the flow reads that as "the CV is on file".
+  const restored = slotStatusFor(undefined);
+  assert.equal(restored, 'pending');
+  assert.equal(slotStatusFor({ status: 'queued' }), 'ocr_queued');
+  assert.equal(slotStatusFor({ status: 'skipped' }), 'received');
+  assert.equal(
+    slotStatusFor({ status: 'done', completeness: { complete: false, problems: [] } }),
+    'incomplete',
+  );
+});
+
+console.log('\nidentity documents go to the CRM’s own identity records');
+
+await check('an Aadhaar found behind a CV is filed as an Aadhaar', () => {
+  // People send one PDF: CV first, the cards scanned in behind it. Read only by
+  // the résumé extractor those pages are wasted, and the bot then asks for a
+  // card it is already holding.
+  const behind = identityBehindCv(
+    {},
+    [
+      {
+        key: 'page_1_text',
+        value:
+          'GOVERNMENT OF INDIA UNIQUE IDENTIFICATION AUTHORITY OF INDIA ' +
+          'AADHAAR 2345 6789 0123 Asha Kumari',
+        confidence: null,
+      },
+    ],
+  );
+  assert.ok(behind.includes('aadhaar'));
+});
+
+await check('a CV that merely contains twelve digits is not an Aadhaar', () => {
+  // The number marker alone is twelve digits in three groups, which an ordinary
+  // CV produces by accident out of a row of years. Filing that as somebody's
+  // Aadhaar card would be worse than not looking.
+  const behind = identityBehindCv(
+    {},
+    [
+      {
+        key: 'page_1_text',
+        value:
+          'RAVI KUMAR — Welder. Projects delivered 2019 2020 2021 across three refineries, ' +
+          'with commissioning support throughout.',
+        confidence: null,
+      },
+    ],
+  );
+  assert.ok(!behind.includes('aadhaar'));
+});
+
+await check('a passport scanned behind a CV is still found', () => {
+  const behind = identityBehindCv(
+    {},
+    [
+      {
+        key: 'page_1_text',
+        value:
+          'RAVI KUMAR Welder\nREPUBLIC OF INDIA PASSPORT Passport No: Z1234567 ' +
+          'Date of Issue 12/05/2021 Date of Expiry 11/05/2031',
+        confidence: null,
+      },
+    ],
+  );
+  assert.ok(behind.includes('passport'));
+});
+
+console.log('\npartial deliveries are collapsed, not sent one per answer');
+
+await check('everything inside one window shares a key', () => {
+  const now = 1_700_000_000_000;
+  const first = coalesceKey('crm_sync', '919000000000', 10_000, now);
+  const second = coalesceKey('crm_sync', '919000000000', 10_000, now + 4_000);
+  assert.equal(first, second);
+});
+
+await check('the key moves forward with the clock', () => {
+  // A key of just the candidate's id would coalesce the first burst and then be
+  // refused for an hour, because a completed job's id is retained — so every
+  // delivery after the first would be silently dropped.
+  const now = 1_700_000_000_000;
+  assert.notEqual(
+    coalesceKey('crm_sync', '919000000000', 10_000, now),
+    coalesceKey('crm_sync', '919000000000', 10_000, now + 11_000),
+  );
+});
+
+await check('two candidates are never collapsed into one delivery', () => {
+  const now = 1_700_000_000_000;
+  assert.notEqual(
+    coalesceKey('crm_sync', '919000000000', 10_000, now),
+    coalesceKey('crm_sync', '919000000001', 10_000, now),
+  );
+});
+
+await check('a burst of answers becomes one delivery, not one each', async () => {
+  const seen: string[] = [];
+  const q = new InProcessQueue();
+  q.register('crm_sync', async (payload) => {
+    seen.push(payload.waId);
+  }, 1);
+
+  // Five answers inside one window. The delay is what the coalescing rests on:
+  // the key is claimed the moment the timer is set, so the four that follow
+  // find it taken rather than each setting a timer of their own.
+  for (let i = 0; i < 5; i += 1) {
+    await q.enqueue(
+      'crm_sync',
+      { waId: '919000000000', partial: true },
+      { key: 'one-window', delayMs: 20 },
+    );
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  await q.close();
+
+  assert.deepEqual(seen, ['919000000000']);
+});
+
+await check('the window closing lets the next burst through', async () => {
+  const seen: string[] = [];
+  const q = new InProcessQueue();
+  q.register('crm_sync', async (payload) => {
+    seen.push(payload.waId);
+  }, 1);
+
+  await q.enqueue('crm_sync', { waId: '9190', partial: true }, { key: 'window-1', delayMs: 10 });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await q.enqueue('crm_sync', { waId: '9190', partial: true }, { key: 'window-2', delayMs: 10 });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await q.close();
+
+  assert.equal(seen.length, 2);
 });
 
 /* ------------------------------------------------------------------ */

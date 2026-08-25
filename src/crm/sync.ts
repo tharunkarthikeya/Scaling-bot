@@ -37,6 +37,7 @@ import {
   type CrmCandidateResponse,
 } from './client.js';
 import { toCrmPayload } from './mapping.js';
+import { snapshotFor } from './snapshot.js';
 
 /**
  * Submits one candidate.
@@ -46,7 +47,10 @@ import { toCrmPayload } from './mapping.js';
  * crash or a redeploy — is recognised by the CRM as the same submission and
  * returns the same candidate rather than creating another.
  */
-export async function syncCandidateToCrm(payload: { waId: string }): Promise<void> {
+export async function syncCandidateToCrm(payload: {
+  waId: string;
+  partial?: boolean;
+}): Promise<void> {
   const { waId } = payload;
 
   if (!crmConfigured()) {
@@ -63,6 +67,17 @@ export async function syncCandidateToCrm(payload: { waId: string }): Promise<voi
     return;
   }
 
+  // A partial that arrives after the registration finished is not a partial. The
+  // job was scheduled while the candidate was still answering and the delay ran
+  // out afterwards; delivering it as one would tell the CRM the conversation is
+  // still open when it is not.
+  const partial = !!payload.partial && candidate.stage !== 'REGISTRATION_COMPLETED';
+
+  if (partial) {
+    await syncPartial(candidate);
+    return;
+  }
+
   // Already delivered. A duplicate job, or a retry that raced the success.
   if (candidate.crmSync?.status === 'synced') {
     logger.debug({ waId, crmId: candidate.crmSync.candidateId }, 'already synced');
@@ -70,7 +85,11 @@ export async function syncCandidateToCrm(payload: { waId: string }): Promise<voi
   }
 
   const attempts = (candidate.crmSync?.attempts ?? 0) + 1;
-  const body = toCrmPayload(candidate, config.WHATSAPP_PHONE_NUMBER_ID);
+  const body = toCrmPayload(
+    candidate,
+    config.WHATSAPP_PHONE_NUMBER_ID,
+    await snapshotFor(candidate),
+  );
 
   // Read once, before anything is sent. Both paths below may need it, and a
   // file read is not worth doing twice inside a retry.
@@ -118,12 +137,16 @@ export async function syncCandidateToCrm(payload: { waId: string }): Promise<voi
     }
 
     await setSync(candidate, {
+      ...candidate.crmSync,
       status: 'synced',
       candidateId: result.candidate_id,
       attempts,
       lastAttemptAt: new Date(),
       syncedAt: new Date(),
       lastError: undefined,
+      // Whatever went with the submission or straight after it, the CRM now
+      // holds this file — so a later partial does not send it again.
+      resumeSha256: cv?.sha256 ?? candidate.crmSync?.resumeSha256,
     });
 
     logger.info(
@@ -147,6 +170,7 @@ export async function syncCandidateToCrm(payload: { waId: string }): Promise<voi
     // complete, so this is not a retry — it is a question to ask.
     if (crmErr?.needsCv) {
       await setSync(candidate, {
+        ...candidate.crmSync,
         status: 'needs_cv',
         attempts,
         lastAttemptAt: new Date(),
@@ -164,6 +188,7 @@ export async function syncCandidateToCrm(payload: { waId: string }): Promise<voi
     const exhausted = !crmErr?.retryable || attempts >= config.CRM_SYNC_MAX_ATTEMPTS;
 
     await setSync(candidate, {
+      ...candidate.crmSync,
       status: exhausted ? 'failed' : 'pending',
       attempts,
       lastAttemptAt: new Date(),
@@ -181,11 +206,154 @@ export async function syncCandidateToCrm(payload: { waId: string }): Promise<voi
   }
 }
 
+/**
+ * Delivers a registration that is still being answered.
+ *
+ * The same endpoint, the same idempotency key, the same candidate — this is not
+ * a second record, it is the first one arriving early and then filling in. What
+ * makes it safe is that the CRM is told: `registration.complete` is false, so
+ * the CV policy is not applied to somebody who has not yet reached the question
+ * that would have produced a CV, and the candidate is not put in front of a
+ * recruiter as a finished profile.
+ *
+ * Three things it deliberately does not do.
+ *
+ * It **never reopens a step and never fails the candidate.** A partial is a
+ * courtesy to the recruiter watching the desk; nothing in the conversation
+ * depends on it, and a candidate must not be asked a question because a
+ * background delivery to another system did not land. So a failure here is a
+ * log line and a note on the record, and the next answer schedules another one.
+ *
+ * It **never touches `crmSync.status`.** That field means "has this candidate
+ * been handed over?", and the answer is still no. Writing `synced` on a partial
+ * would take the candidate out of `reconcileCrmSync`'s sight and a registration
+ * that never completed would never be delivered.
+ *
+ * It **does not resend the CV it has already sent.** The bytes are the
+ * expensive part of the submission and a partial runs on every answered
+ * question. The digest on the record is what decides, so replacing a CV still
+ * sends the new one.
+ */
+async function syncPartial(candidate: CandidateDoc): Promise<void> {
+  const { waId } = candidate;
+
+  // §4 — nothing about anybody who has not consented leaves this system, and
+  // that is not softened by the destination being our own CRM.
+  if (!candidate.consent?.given) {
+    logger.debug({ waId }, 'partial crm sync skipped: no consent on record');
+    return;
+  }
+
+  // A business contact is not a candidate (§2), and neither is somebody reading
+  // back an application or asking for a person. Only registrations are synced.
+  if (candidate.enquiry && candidate.enquiry !== 'apply') {
+    logger.debug({ waId, enquiry: candidate.enquiry }, 'partial crm sync skipped: not a registration');
+    return;
+  }
+
+  // Somebody who has answered nothing yet. The CRM would get a record with a
+  // phone number on it and nothing else, which is not a candidate, it is a
+  // missed call — and it would be allocated to a recruiter as though it were.
+  if (!worthSending(candidate)) {
+    logger.debug({ waId }, 'partial crm sync skipped: nothing answered yet');
+    return;
+  }
+
+  const body = toCrmPayload(
+    candidate,
+    config.WHATSAPP_PHONE_NUMBER_ID,
+    await snapshotFor(candidate),
+  );
+
+  try {
+    const result = await createCandidate(body);
+
+    // The CV, once. `uploadResume` needs an id, which is why this is after the
+    // submission rather than inside it — and a partial never sends the file
+    // inline, because the inline path exists for the CV policy and a partial is
+    // not held to it.
+    const cv = await readCv(candidate);
+    const sent =
+      cv && cv.sha256 !== candidate.crmSync?.resumeSha256
+        ? await uploadCv(candidate, result.candidate_id, cv)
+        : false;
+
+    await setSync(candidate, {
+      ...(candidate.crmSync ?? { status: 'pending', attempts: 0 }),
+      candidateId: result.candidate_id,
+      partialSyncedAt: new Date(),
+      partialError: undefined,
+      ...(sent ? { resumeSha256: cv!.sha256 } : {}),
+    });
+
+    logger.info(
+      { waId, crmId: result.candidate_id, stage: candidate.stage, cv: sent },
+      'registration in progress delivered to the crm',
+    );
+  } catch (err) {
+    const detail = err instanceof CrmError ? err.message : String(err);
+
+    await setSync(candidate, {
+      ...(candidate.crmSync ?? { status: 'pending', attempts: 0 }),
+      partialError: detail,
+    });
+
+    // Warn, and stop. The next answer schedules another delivery carrying
+    // everything this one was carrying, so retrying here would only race it.
+    logger.warn(
+      { waId, detail, status: err instanceof CrmError ? err.status : undefined },
+      'partial crm sync failed; the next answer will carry it',
+    );
+  }
+}
+
+/**
+ * Whether there is enough on the record for the CRM to be worth telling.
+ *
+ * Consent alone is not enough: it is given before a single question is asked,
+ * so syncing on it would file every "hi" as a candidate. One answer is, because
+ * one answer is a person who started registering — and someone who starts and
+ * stops is exactly the candidate a recruiter wants to see.
+ */
+function worthSending(candidate: CandidateDoc): boolean {
+  const p = candidate.profile ?? {};
+  if (typeof p.fullName === 'string' && p.fullName.trim()) return true;
+
+  // A CV or any other document is an answer, and often the first one — a
+  // candidate who sends their CV before anything else has told us a great deal.
+  const documents = Object.values(candidate.documents ?? {});
+  if (documents.some((slot) => slot?.documentId)) return true;
+
+  // Anything the flow has recorded, other than the bookkeeping it writes for
+  // itself. Without this exclusion the language question alone would count.
+  const BOOKKEEPING = new Set([
+    'lookingForOverseasJob',
+    'tradePacks',
+    'tradeQuestions',
+    'tradeQuestionsFor',
+    'jobLevel',
+    'jobLevelFor',
+    'cvRequired',
+    'cvPolicyVersion',
+    'identityFlagged',
+    'aadhaarFieldsRead',
+    'passportExpiryNotifiedFor',
+  ]);
+
+  return Object.entries(p).some(([key, value]) => {
+    if (BOOKKEEPING.has(key)) return false;
+    if (value === undefined || value === null || value === '') return false;
+    return !Array.isArray(value) || value.length > 0;
+  });
+}
+
 /** A CV read off our own disk, ready to go over the wire as bytes. */
 interface CvFile {
   buffer: Buffer;
   filename: string;
   mimeType: string;
+  /** The upload's digest, so a file already handed over is not handed over twice. */
+  sha256?: string;
 }
 
 /**
@@ -210,6 +378,7 @@ async function readCv(candidate: CandidateDoc): Promise<CvFile | undefined> {
       buffer: await readFile(upload.storageKey),
       filename: upload.originalFilename ?? 'cv.pdf',
       mimeType: upload.mimeType,
+      sha256: upload.sha256,
     };
   } catch (err) {
     logger.error(
@@ -236,7 +405,7 @@ async function uploadCv(
   candidate: CandidateDoc,
   crmCandidateId: string,
   cv: CvFile,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await uploadResume({
       candidateId: crmCandidateId,
@@ -245,6 +414,7 @@ async function uploadCv(
       mimeType: cv.mimeType,
     });
     logger.info({ waId: candidate.waId, crmId: crmCandidateId }, 'cv uploaded to crm');
+    return true;
   } catch (err) {
     const conflict = err instanceof CrmError && err.status === 409;
     logger[conflict ? 'info' : 'error'](
@@ -253,6 +423,10 @@ async function uploadCv(
         ? 'the crm already holds a cv for this candidate; keeping theirs'
         : 'cv upload to crm failed; the candidate is synced without it',
     );
+    // A conflict is the CRM keeping the résumé it already has, which is the
+    // file being *there* rather than the upload having failed — so it counts as
+    // delivered and no partial sync offers it again.
+    return conflict;
   }
 }
 
@@ -288,6 +462,22 @@ export async function reconcileCrmSync(): Promise<number> {
       $or: [
         { crmSync: { $exists: false } },
         { 'crmSync.status': 'pending', 'crmSync.lastAttemptAt': { $lt: stale } },
+        // Pending and never attempted at all.
+        //
+        // `completeRegistration` writes `{status: 'pending', attempts: 0}` the
+        // moment it queues the handover, so a job lost between the queue and a
+        // worker leaves a record that satisfies neither clause above: `crmSync`
+        // exists, and `lastAttemptAt` is absent rather than old — and a `$lt`
+        // never matches a missing field. That candidate was invisible to the
+        // one sweep whose entire job is to find them.
+        //
+        // Gated on the registration having finished a while ago, so a handover
+        // still legitimately in flight is not chased a second time.
+        {
+          'crmSync.status': 'pending',
+          'crmSync.lastAttemptAt': { $exists: false },
+          completedAt: { $lt: stale },
+        },
       ],
     })
     .limit(50)

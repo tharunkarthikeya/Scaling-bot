@@ -523,6 +523,30 @@ const schema = z.object({
    */
   CRM_SYNC_MAX_ATTEMPTS: z.coerce.number().int().positive().default(6),
 
+  /**
+   * Whether a registration still in progress is sent to the CRM.
+   *
+   * On, a candidate appears in the CRM as soon as they have consented and told
+   * us something, and fills in as they answer — which is what a recruiter
+   * watching the desk actually wants, because someone who stops halfway is
+   * still someone worth calling. Off, only finished registrations are sent,
+   * which is what this bot did before.
+   *
+   * Consent is the floor either way. Nothing is sent about anybody who has not
+   * given it (§4), whichever way this is set.
+   */
+  CRM_PARTIAL_SYNC: bool.default('true'),
+  /**
+   * How long answers are collected before a partial snapshot is sent.
+   *
+   * Every answered question and every arrived document schedules one, and
+   * without a window a candidate tapping through six buttons would post six
+   * near-identical profiles. Deliveries inside one window collapse into a
+   * single job carrying all of them, so this is the CRM's worst-case lag behind
+   * the conversation and nothing more.
+   */
+  CRM_PARTIAL_SYNC_DEBOUNCE_MS: z.coerce.number().int().positive().default(10_000),
+
   /* ---------------------------------------------------------------- */
   /* Process role                                                      */
   /*                                                                   */
