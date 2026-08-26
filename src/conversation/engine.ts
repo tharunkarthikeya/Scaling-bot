@@ -73,6 +73,7 @@ import {
   nextStep,
   stepById,
   stepsInSection,
+  wantsSgMy,
   type Answer,
   type FlowStep,
   type Section,
@@ -102,7 +103,7 @@ import { DOCUMENTS, requirementFor, TUNABLES } from './rules.js';
 import { packById, type TradeQuestion } from './trades.js';
 import { questionsForOccupation } from './tradeQuestions.js';
 import { classifyJobLevel } from './jobLevel.js';
-import { variantForLine, warnOnLineChange } from './lines.js';
+import { warnOnLineChange } from './lines.js';
 import { transcribe } from './audio.js';
 
 /** Meta's customer service window. Outside it, only approved templates may be sent. */
@@ -187,12 +188,11 @@ function blankCandidate(params: {
     waId: params.waId,
     phone: params.phone,
     profileName: params.profileName,
-    // Which number they wrote to, and the flow that number runs. Decided once,
-    // here, and never again — see `conversation/lines.ts` for why a variant
-    // that could change under a candidate mid-registration would be worse than
-    // one that is occasionally out of date.
+    // Which number they wrote to. Only ever read to decide where a reply leaves
+    // from: both numbers run the same flow, and which questions this
+    // conversation gets is decided later, from the destination it chooses
+    // (`routeFor` in `flow.ts`).
     phoneNumberId: params.phoneNumberId,
-    flowVariant: variantForLine(params.phoneNumberId),
     stage: 'NEW',
     status: 'new_enquiry',
     profile: {},
@@ -285,9 +285,12 @@ async function scheduleCrmSync(candidate: CandidateDoc): Promise<void> {
   // place to not send something is before it is queued.
   if (!candidate.consent?.given) return;
 
-  // A business contact is not a candidate (§2). A tracking or staff enquiry is
-  // not a registration.
-  if (candidate.enquiry && candidate.enquiry !== 'apply') return;
+  // A business contact is not a candidate (§2), and a tracking lookup is not a
+  // record. A staff enquiry is neither of those: it is somebody who gave their
+  // name, their destination and the job they want so that a person could call
+  // them back, and the CRM is where that person works. It syncs through the
+  // partial path and is marked `enquiry: 'staff'` on the way (`crm/sync.ts`).
+  if (candidate.enquiry === 'b2b' || candidate.enquiry === 'track') return;
 
   // Once the registration is finished, `completeRegistration` has queued the
   // real handover and its outcome is the one that is recorded. A partial
@@ -413,7 +416,22 @@ const STAGE_BY_SECTION: Record<Section, ConversationStage> = {
   personal: 'BASIC_DETAILS_PENDING',
   experience: 'BASIC_DETAILS_PENDING',
   job_preference: 'JOB_PREFERENCE_PENDING',
-  country: 'JOB_PREFERENCE_PENDING',
+  /**
+   * The destination, which is asked first now — straight after consent, because
+   * it decides which route the conversation takes (§10).
+   *
+   * It was `JOB_PREFERENCE_PENDING` while it sat among the preferences. Left
+   * there it would report a candidate who has answered one question as being at
+   * the job preferences, and then walk the stage *backwards* through
+   * `CV_PENDING` and `BASIC_DETAILS_PENDING` as the rest of registration
+   * happened — visible on every CRM screen and in every mid-registration sync.
+   *
+   * `CV_PENDING` is where this question actually falls: consent given,
+   * registration under way, the CV the next thing to come. The stage names a
+   * phase rather than a question, and `statusForStage` reads this one as
+   * `registration_started`, which is exactly what such a candidate is.
+   */
+  country: 'CV_PENDING',
   availability: 'JOB_PREFERENCE_PENDING',
   documents: 'DOCUMENTS_PENDING',
   confirm: 'CONFIRMATION_PENDING',
@@ -428,6 +446,19 @@ const BOT_OWNED: ReadonlySet<CandidateStatus> = new Set<CandidateStatus>([
   'documents_pending',
   'documents_received',
 ]);
+
+/**
+ * The stage a question puts the conversation in.
+ *
+ * `STAGE_BY_SECTION` with one exception, and the exception is the staff
+ * intake's country question. That flow has no CV in it at all, so `CV_PENDING`
+ * on an enquiry that will never be asked for one would read, on a CRM screen,
+ * as a document being chased from somebody nobody has asked.
+ */
+function stageForStep(candidate: CandidateDoc, section: Section): ConversationStage {
+  if (candidate.enquiry === 'staff' && section === 'country') return 'BASIC_DETAILS_PENDING';
+  return STAGE_BY_SECTION[section];
+}
 
 /**
  * Keeps the CRM-facing status in step with the conversation, without ever
@@ -541,23 +572,28 @@ async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
 /**
  * Works out how much a CV would add for the job this candidate wants (§5).
  *
- * Only on the Singapore/Malaysia line, where it decides one thing: whether the
- * CV step is asked at all. Everywhere else it does nothing, because everywhere
- * else the CV is asked of everyone and there is nothing to decide.
+ * Only for a candidate bound for Singapore or Malaysia, where it decides one
+ * thing: whether the CV step is asked at all. For every other destination it
+ * does nothing, because there the CV is asked of everyone — and asked before
+ * this could run — so there is nothing to decide.
  *
  * Runs before `nextStep`, for the same reason `ensureTradeQuestions` does: the
  * scheduler is a synchronous walk over stored state, so anything a step's guard
  * needs has to be on the record by the time it is consulted.
  *
  * Computed once and stored. Recomputing per turn would spend a model call on
- * every message and could change its mind mid-conversation, which on this line
+ * every message and could change its mind mid-conversation, which on this route
  * means a CV question that appears and disappears. It is recomputed only when
  * the job it was computed for changes — an edit of the job preferences, which
  * clears `desiredOccupation` and friends, produces a different job here and a
  * fresh classification.
  */
 async function ensureJobLevel(candidate: CandidateDoc): Promise<void> {
-  if (candidate.flowVariant !== 'sgmy') return;
+  // Read from the destination they chose, not from the number they wrote to.
+  // A candidate who edits §10 away from Singapore or Malaysia (§22) stops
+  // being one of these on the same turn, and is asked for a CV like anybody
+  // else — the level stays on the record and nothing reads it.
+  if (!wantsSgMy(candidate)) return;
   if (candidate.enquiry === 'b2b' || candidate.enquiry === 'staff') return;
 
   const job = desiredJobForLevel(candidate);
@@ -628,8 +664,8 @@ async function askNextQuestion(
 
   await ensureTradeQuestions(candidate);
 
-  // Whether this candidate is asked for a CV at all, on the line where that is
-  // a question. A no-op on the default line.
+  // Whether this candidate is asked for a CV at all, on the route where that is
+  // a question. A no-op for every other destination.
   await ensureJobLevel(candidate);
 
   // And the answers those questions already have, from the same evidence (§1).
@@ -694,8 +730,9 @@ async function askNextQuestion(
   // fall back to JOB_PREFERENCE_PENDING would restart it as far as every CRM
   // screen and every sweep is concerned.
   if (!candidate.completedAt) {
-    patch.stage = STAGE_BY_SECTION[step.section];
-    patch.status = statusForStage(STAGE_BY_SECTION[step.section], candidate.status);
+    const stage = stageForStep(candidate, step.section);
+    patch.stage = stage;
+    patch.status = statusForStage(stage, candidate.status);
   }
 
   // A half-finished multi-select left behind would have the next question's taps
@@ -1223,6 +1260,17 @@ async function completeStaffEnquiry(candidate: CandidateDoc): Promise<void> {
   // menu brought them in. Enqueued before the handover, so the export does not
   // depend on staff doing anything.
   await queue.enqueue('ats_export', { waId: candidate.waId });
+
+  // And into the CRM, where whoever picks this up actually works. The last
+  // answer already scheduled one of these and this coalesces with it, which is
+  // the point: what goes out is the finished intake, carrying the enquiry id
+  // this function has just minted rather than the state before it.
+  //
+  // Not `completeRegistration`'s handover, and deliberately so. There is no
+  // registration here to complete, no CV policy to satisfy and no Application
+  // ID — the record says `enquiry: 'staff'`, `complete: false`, and
+  // `assignable: true`, which is the whole truth about it.
+  await scheduleCrmSync(candidate);
 
   // `announce: false` — they have just been told staff will contact them, and
   // the generic handover line underneath it would say the same thing twice.
@@ -1960,9 +2008,9 @@ const SECTION_BY_MENU_CHOICE: Record<string, Section> = {
  * registration, which is why only that section's fields are forgotten.
  */
 async function startEdit(candidate: CandidateDoc, section: Section): Promise<void> {
-  // This conversation's questions — its line and its branch. The `country`
-  // section holds a different question on each number, and the staff intake's
-  // `personal` section is one question where registration's is five. Resolving
+  // This conversation's questions — its route and its branch. The staff
+  // intake's `personal` section is one question where registration's is five,
+  // and its `country` section is one where registration's is three. Resolving
   // by anything less would clear an answer this conversation never gave and
   // then queue the question that gave it.
   const steps = sectionStepsFor(candidate, section);

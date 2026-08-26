@@ -69,7 +69,7 @@ export function parseWebhook(body: unknown): ParsedWebhook {
       const value = change.value as AnyRecord;
 
       // Present on every real delivery; absent only from a hand-rolled payload.
-      // `variantForLine` treats absence as the default line, so a missing one
+      // `sendingNumberFor` treats absence as the main number, so a missing one
       // costs nothing.
       const phoneNumberId = value.metadata?.phone_number_id
         ? String(value.metadata.phone_number_id)

@@ -22,10 +22,12 @@
  *
  * There used to be three of the first kind, one per destination-and-job pair,
  * because the CRM's policy decided whether each pair needed a CV and the
- * conversation branched on the answer. The flow no longer asks where a candidate
- * wants to work, so there is no pair to key a policy on and no branch to test:
- * every candidate is asked for a CV. `verify:taxonomy` still probes the policy
- * endpoint, which the CRM continues to apply on its own side.
+ * conversation branched on the answer. Nothing in the flow reads that policy
+ * now: the CV is asked of every candidate, except on the Singapore/Malaysia
+ * route, where the question is decided from the job alone
+ * (`conversation/jobLevel.ts`) and never from a call to the CRM.
+ * `verify:taxonomy` still probes the policy endpoint, which the CRM continues
+ * to apply on its own side.
  *
  * B is the one that would quietly ruin a database. A candidate who finishes
  * while the CRM is unreachable must not be lost, and the retry that delivers

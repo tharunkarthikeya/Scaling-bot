@@ -77,14 +77,53 @@ export interface CrmResumePayload {
  * a finished one. Without it, "no passport on file" reads as "this candidate
  * has no passport" when it means "we have not asked yet".
  *
- * `complete` is the field the CRM acts on. A partial submission is not held to
- * the CV policy — refusing to file someone because they have not yet reached
- * the question that would have produced the document is not a rule, it is a
- * race — and it is not allocated to a recruiter until the candidate has
- * finished.
+ * `complete` is the field the CRM acts on for the CV policy. A partial
+ * submission is not held to it — refusing to file someone because they have not
+ * yet reached the question that would have produced the document is not a rule,
+ * it is a race.
+ *
+ * `complete` is deliberately *not* what allocation waits for; `assignable` is.
+ * See below.
  */
 export interface CrmRegistrationState {
   complete: boolean;
+  /**
+   * Which conversation produced this record.
+   *
+   *   apply  a registration, finished or still being answered
+   *   staff  somebody who tapped "Talk to staff" and was asked the intake's
+   *          nine questions (§24). They are not registering, and this record
+   *          will never carry `complete: true` — the field says so plainly so
+   *          the CRM never has to infer it from an absence.
+   */
+  enquiry: 'apply' | 'staff';
+  /**
+   * Whether there is enough here to put in front of a person.
+   *
+   * The CRM owns assignment — who gets this candidate, when, and under what
+   * workload rules. This is the one thing it cannot work out for itself: which
+   * half-finished records are a person worth calling and which are a message
+   * that stopped after "hi".
+   *
+   * True when all three of these hold:
+   *
+   *   1. Consent is on the record (§4). Nothing is assignable before it.
+   *   2. There is somebody to call something — a name they typed, one read off
+   *      a document, or the name WhatsApp shows. Not the phone number the
+   *      profile falls back to, which is not a name.
+   *   3. They have said what they want — a destination, a job category, or a
+   *      job in their own words.
+   *
+   * A finished registration is always assignable. Everything else is judged on
+   * what is actually on the record, so a candidate who answers the destination
+   * and then goes quiet is assignable, and one who consented and said nothing
+   * else is not.
+   *
+   * Deliberately not gated on `complete`. Waiting for a finished registration
+   * means the candidate who needs a person most — the one who stopped — is the
+   * one nobody is given.
+   */
+  assignable: boolean;
   /** Our own stage name, for the audit trail rather than for a decision. */
   stage: string;
   /** The bot's candidate status (§26). */
@@ -259,6 +298,10 @@ export function registrationStateOf(candidate: CandidateDoc): CrmRegistrationSta
 
   const state: CrmRegistrationState = {
     complete: candidate.stage === 'REGISTRATION_COMPLETED',
+    // Only two branches ever reach the CRM. A business enquiry is filed
+    // elsewhere and a tracking lookup is not a record at all.
+    enquiry: candidate.enquiry === 'staff' ? 'staff' : 'apply',
+    assignable: assignableFor(candidate),
     stage: candidate.stage,
     status: candidate.status,
     application_id: trimmed(candidate.candidateId),
@@ -274,6 +317,45 @@ export function registrationStateOf(candidate: CandidateDoc): CrmRegistrationSta
     if (state[key] === undefined) delete state[key];
   }
   return state;
+}
+
+/**
+ * Whether the CRM may put this record in front of a person yet.
+ *
+ * The conditions are spelled out on `CrmRegistrationState.assignable`; this is
+ * where they are applied. Exported because it is a rule rather than a
+ * formatting detail, and a rule is worth testing directly.
+ */
+export function assignableFor(candidate: CandidateDoc): boolean {
+  // Finished is finished. Nothing below can make it less true.
+  if (candidate.stage === 'REGISTRATION_COMPLETED') return true;
+
+  // §4, again and without exception. The consent gate on the sync already stops
+  // this record leaving, and saying it here too means a payload built anywhere
+  // else cannot claim otherwise.
+  if (!candidate.consent?.given) return false;
+
+  // Not a candidate at all (§2). Neither of these is synced today; the guard is
+  // here so that a future caller cannot make one assignable by accident.
+  if (candidate.enquiry === 'b2b' || candidate.enquiry === 'track') return false;
+
+  const p = candidate.profile ?? {};
+
+  // Somebody to ask for by name. `profile.full_name` falls back to the WhatsApp
+  // id so the CRM can always open the record; that fallback is not a name and
+  // is not accepted here.
+  const named = !!(trimmed(p.fullName) ?? trimmed(candidate.profileName));
+
+  // And something they have actually asked for. Any one of the three is enough:
+  // a destination alone tells a recruiter whether this is theirs, and so does a
+  // job.
+  const wants = !!(
+    trimmed(p.countryPreference) ??
+    trimmed(p.jobCategory) ??
+    trimmed(p.desiredOccupation)
+  );
+
+  return named && wants;
 }
 
 /**

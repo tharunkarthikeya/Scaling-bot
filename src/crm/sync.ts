@@ -244,10 +244,18 @@ async function syncPartial(candidate: CandidateDoc): Promise<void> {
     return;
   }
 
-  // A business contact is not a candidate (§2), and neither is somebody reading
-  // back an application or asking for a person. Only registrations are synced.
-  if (candidate.enquiry && candidate.enquiry !== 'apply') {
-    logger.debug({ waId, enquiry: candidate.enquiry }, 'partial crm sync skipped: not a registration');
+  // A business contact is not a candidate (§2), and somebody reading back an
+  // application is not a record at all.
+  //
+  // A staff enquiry is neither, and it does sync. They gave a name, a
+  // destination and a job precisely so that the person calling them back would
+  // have them, and the CRM is where that person works — a record that reached
+  // only the ATS was a record nobody could be assigned. It goes through this
+  // path rather than the finished-registration one because that is exactly what
+  // it is: a record that is complete for its own purpose and will never carry
+  // `complete: true`. `registrationStateOf` marks it `enquiry: 'staff'`.
+  if (candidate.enquiry === 'b2b' || candidate.enquiry === 'track') {
+    logger.debug({ waId, enquiry: candidate.enquiry }, 'partial crm sync skipped: not a candidate');
     return;
   }
 

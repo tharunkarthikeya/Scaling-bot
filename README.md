@@ -83,7 +83,7 @@ duplicate person.
 | `src/conversation/trades.ts` | Trade-specific question packs (§8). Add a trade here and nowhere else. |
 | `src/conversation/tradeQuestions.ts` | **Questions written per candidate for a job no pack covers, and the filter around them.** |
 | `src/conversation/interpret.ts` | The only model call that reads a candidate: reply → option id. |
-| `src/conversation/jobLevel.ts` | Whether the job someone wants is one a CV speaks to. Second number only. |
+| `src/conversation/jobLevel.ts` | Whether the job someone wants is one a CV speaks to. Singapore/Malaysia route only. |
 | `src/conversation/translate.ts` | Fixed copy in a language we do not ship. |
 | `src/conversation/faq.ts` | **What the bot may answer in its own words, and the guardrail around it.** |
 | `src/conversation/respond.ts` | Replies to a message that is about the open question, and to a file that is not the document asked for. |
@@ -123,9 +123,11 @@ Meta webhook
 Apply
   → Language
   → Consent
+  → Country preference         ← Gulf / Europe / Russia-CIS / Singapore /
+                                 Malaysia / Any / Select.  Singapore or
+                                 Malaysia forks to the route below
   → CV upload                  ← read by the resume extractor; everything it
   → Personal details             yields is a question the sections below skip
-  → Country preference         ← Gulf / Europe / Russia-CIS / Any / Select
   → Experience
   → Trade-specific questions
   → Job preferences
@@ -137,25 +139,26 @@ Apply
   → Application ID
 ```
 
-The CV sits directly after consent because it is the only step that can answer
-other steps: the resume extractor fills the name, date of birth, education,
-trade, experience and certifications, and `nextStep` then walks past every
-question those fill (§1, §5). Collected any later, the saving arrives after the
-candidate has already been asked by hand.
+**Where they want to work is asked first, and it is the one thing that forks
+the flow.** Singapore and Malaysia are two rows in that question; choosing
+either runs [the Singapore/Malaysia route](#the-singaporemalaysia-route), where
+the CV is not asked up front and is asked later only of a candidate whose job is
+one a CV speaks to. Every other answer runs the flow above, where the CV comes
+first and is asked of everyone. `routeFor` in `conversation/flow.ts` is the whole
+of that decision, and it reads the destination — never the number the candidate
+wrote to.
 
-**Singapore and Malaysia are no longer offered as destinations**, and the branch
-they triggered went with them. Naming one country used to collect the passport
-before the CV and ask the job early, so the CRM could resolve a CV requirement
-from destination plus job; a Europe/Russia answer was the only thing that
-triggered the identity documents at all. Neither runs now — every candidate is
-asked for a CV, and every candidate is asked for Aadhaar and PAN.
+The CV sits directly behind that question because it is the only step that can
+answer other steps: the resume extractor fills the name, date of birth,
+education, trade, experience and certifications, and `nextStep` then walks past
+every question those fill (§1, §5). Collected any later, the saving arrives after
+the candidate has already been asked by hand.
 
-The country question itself stays, minus those two rows, and has moved from
-first to after the personal details. It was asked first because it was a branch
-point, and a branch point asked after the branch cannot branch. It is an ordinary
-preference now, so it sits where it reads naturally. `destination_country` still
-reaches the CRM for a country an admin adds to the taxonomy; a region — "the
-Gulf" is six countries — is never named as one.
+A Europe/Russia answer used to be the only thing that triggered the identity
+documents at all, so a Gulf candidate finished registration without ever being
+asked for one. That gate is gone: Aadhaar and PAN are asked of everyone, on both
+routes. `destination_country` reaches the CRM for a country an admin has added to
+the taxonomy; a region — "the Gulf" is six countries — is never named as one.
 
 **The PAN is never sent to an extractor.** Nothing on it answers a question the
 flow asks, so it is filed exactly as it arrived for a documentation officer to
@@ -201,16 +204,29 @@ Most turns never reach a model at all. A tapped button already carries its
 option id; a typed reply matching an offered label in any of the three
 languages, or the number of an offered row, is resolved by comparison.
 
-## Two numbers, two flows
+## Two numbers, one flow
 
-The agency runs two WhatsApp numbers off one app, and they do not ask the same
-questions. Which flow a conversation gets is decided from the `phone_number_id`
-Meta puts in the webhook envelope, in `conversation/lines.ts`, and nowhere else:
+The agency runs two WhatsApp numbers off one app, and they ask the same
+questions. They did not always: the second number ran the Singapore/Malaysia
+flow and the first did not, so which questions a candidate got depended on which
+number they happened to write to — and a candidate on the second number could
+not ask for the Gulf, while one on the first could not ask for Singapore. The two
+flows are one now. Singapore and Malaysia are rows in the country question every
+candidate is asked, and choosing one is what runs the route that used to be a
+separate number's flow.
 
-| Number | WABA | Flow | |
-|---|---|---|---|
-| `WHATSAPP_PHONE_NUMBER_ID` | `WHATSAPP_WABA_ID` | `STEPS` | The flow this bot has always run. Unchanged. |
-| `WHATSAPP_PHONE_NUMBER_ID_SGMY` | `WHATSAPP_WABA_ID_SGMY` | `SGMY_STEPS` | Singapore and Malaysia. |
+| Number | WABA | |
+|---|---|---|
+| `WHATSAPP_PHONE_NUMBER_ID` | `WHATSAPP_WABA_ID` | The main number. |
+| `WHATSAPP_PHONE_NUMBER_ID_SGMY` | `WHATSAPP_WABA_ID_SGMY` | Optional second number. Same flow; a second thread on a second number. |
+
+What the second number still costs is everything about a number that has nothing
+to do with which questions it asks. Replies, read receipts and the re-engagement
+template are all posted to the number the conversation belongs to, which is
+stored on the record as `phoneNumberId` — the 24-hour window belongs to the pair,
+so a reply sent from the other number is not merely confusing, it is one Meta
+refuses. The sweeps need it for the same reason: they send outside any inbound
+context and would otherwise have nothing to send from.
 
 The two numbers are on two WhatsApp Business Accounts. Whether they are also on
 two Meta **apps** is the question that decides two more settings:
@@ -221,57 +237,63 @@ two Meta **apps** is the question that decides two more settings:
 | Access token | shared — leave `WHATSAPP_ACCESS_TOKEN_SGMY` unset | set it, or every reply to the second number gets a 401 |
 
 Both failures look identical from outside: the bot ignoring that number. Each
-setting falls back to the main line's value, so unset means "same app" and
+setting falls back to the main number's value, so unset means "same app" and
 nothing changes for a deployment that has only ever had one number.
 `npm run doctor` checks both numbers and both WABA subscriptions, each on its own
 token, and refuses at boot if the two numbers are set to the same id.
 
-**Leave the second variable unset and there is no second line.** Every message
-runs the default flow, which is the state every existing deployment is in — an
-unrecognised number, a blank one, and an envelope with no metadata at all all
-resolve to the default, because the default is the flow that is safe to run for
-anyone.
+**Leave the second variable unset and there is one number.** Nothing about the
+flow changes either way — since the merge, no environment variable decides what
+anybody is asked.
 
-### The Singapore/Malaysia flow
+## The Singapore/Malaysia route
 
 ```
 Apply
   → Language
   → Consent
-  → Personal details             ← no CV here
-  → Country preference           ← Singapore | Malaysia. Nothing else.
+  → Country preference           ← Singapore or Malaysia chosen here
+  → Personal details             ← no CV yet
   → Experience
   → Trade-specific questions
   → Job preferences
   → CV                           ← only if the job is one a CV speaks to
+  → Availability
   → Documents
   → Confirm
   → Application ID
 ```
 
-Three differences from the default flow, and nothing else. Every other question,
-the opening menu, the B2B branch, tracking, the documents, the edit and update
-menus, the idle-session prompt and the handoff to staff are the same code — the
-shared steps are the *same objects* in both lists, so a question added to a
-shared section appears on both numbers without anyone remembering to add it
-twice.
+Two differences from the flow above, and nothing else. Every other question, the
+opening menu, the country question itself, the B2B branch, tracking, the
+documents, the edit and update menus, the idle-session prompt and the handoff to
+staff are the same code — the shared steps are the *same objects* in both lists,
+so a question added to a shared section appears on both routes without anyone
+remembering to add it twice.
 
-**No CV up front.** The default flow asks for it immediately after consent
-because it is the only step that can answer other steps — the resume extractor
-fills the name, date of birth, education, trade and experience, and `nextStep`
-then walks past every question it filled (§1, §5). This flow gives that up. Its
-CV is collected after the personal and experience sections have already been put
-to the candidate by hand, so it is a document for a recruiter to read rather
-than a shortcut through the flow. That is the price of not asking a cleaner for
-a résumé, and it is worth stating rather than discovering.
+Which route a conversation is on is derived, never stored: `routeFor` reads
+`countryPreference` on every call. A candidate who changes their destination
+through UPDATE (§22) changes route on the same turn — a Singapore cleaner who
+switches to the Gulf is asked for a CV, and a Gulf welder who switches to
+Singapore keeps the one already on file. A stored copy of the route would have
+gone on sending them down the old one.
 
-**Two destinations.** `country_preference_sgmy` replaces the five-row question
-and the free-text follow-up behind its "Select countries" row — there is nothing
-to select from and no "any country", which on this line would be a preference
-nobody can act on. It writes the same `countryPreference` field as the default
-question, so a record reads the same way whichever number wrote it. The ids are
-`singapore` and `malaysia`; `destination_country` reaches the CRM only if an
-admin has both in the CRM's country taxonomy, which `verify:taxonomy` reports.
+**No CV up front.** Everywhere else it is asked immediately after the
+destination, because it is the only step that can answer other steps — the resume
+extractor fills the name, date of birth, education, trade and experience, and
+`nextStep` then walks past every question it filled (§1, §5). This route gives
+that up. Its CV is collected after the personal and experience sections have
+already been put to the candidate by hand, so it is a document for a recruiter to
+read rather than a shortcut through the flow. That is the price of not asking a
+cleaner for a résumé, and it is worth stating rather than discovering.
+
+**The two rows cannot be configured away.** The CRM's country taxonomy is
+rendered into the country question at run time, and WhatsApp allows ten rows —
+so `render.ts` pins Singapore and Malaysia and gives the CRM's list what is left.
+A fork with no way to reach it would be a route nobody could enter, and it would
+fail silently. `destination_country` still reaches the CRM only if an admin has
+both countries in the taxonomy, which `verify:taxonomy` reports; the rows are
+offered either way.
 
 **The CV is asked of some candidates and not others.** After the job
 preferences — the first point at which the job they *want* is known, as distinct
@@ -302,18 +324,9 @@ of the candidate, it is never shown to them, and it is not sent to the CRM — a
 recruiter reading a profile has the job title itself, which is better evidence
 than our guess about it.
 
-### What a second number costs elsewhere
-
-Replies, read receipts and the re-engagement template are all posted to the
-number the conversation belongs to, which is stored on the record as
-`phoneNumberId` — the 24-hour window belongs to the pair, so a reply sent from
-the other number is not merely confusing, it is one Meta refuses. The sweeps
-need it for the same reason: they send outside any inbound context and would
-otherwise have nothing to send from.
-
-A conversation is stamped with its line and its flow when its record is created
-and keeps both. `npm run doctor` checks that the token can see both numbers, and
-that they are not the same id.
+A conversation is stamped with its number when its record is created and keeps
+it. It is not stamped with a flow: there is one flow, and the route through it is
+read off the destination every time it is needed.
 
 ## The opening menu
 
@@ -386,14 +399,17 @@ questions. Those are asked here instead.
 ```
 Other → Talk to staff
   1. Language
-  2. Full name
-  3. Country preference        ← whichever question this number asks
-  4. Passport — do you have one?
+  2. Consent                   ← the same question registration asks
+  3. Full name
+  4. Country preference        ← the same question every candidate is asked
+  5. Which job                 ← so the caller knows before they dial
+  6. Passport — do you have one?
      ...if yes, upload         → read by the passport extractor
-  5. Aadhaar upload            → read by the document extractor
-  6. PAN upload                → stored, never read
-  7. Confirm
+  7. Aadhaar upload            → read by the document extractor
+  8. PAN upload                → stored, never read
+  9. Confirm
   → "Our staff will contact you shortly", with a reference number
+  → filed in the CRM as `enquiry: staff`, assignable
   → the conversation goes to a person
 ```
 
@@ -412,8 +428,24 @@ else a candidate quotes one.
 The record stays in `candidates` — it is a person, their passport and their
 Aadhaar, and the uploads belong where every other candidate's go. Only the B2B
 branch is filed apart, and only because a business contact is not applying for
-anything. What a staff enquiry does *not* get: a CV, trade questions, job
-preferences, a CRM submission, or a §21 reminder.
+anything. What a staff enquiry does *not* get: a CV, trade questions, an
+availability question, an `ADR-` id, or a §21 reminder.
+
+**It does now reach the CRM**, which is where the person calling them back
+actually works — an enquiry that reached only the ATS was an enquiry nobody
+could be assigned. It goes over as a partial: same endpoint, same idempotency
+key, `enquiry: "staff"`, `complete: false` (there is no registration here to
+complete) and `assignable: true`. Somebody who asks for staff today and
+registers next week updates the record they already have rather than creating a
+second one.
+
+**Which is why the intake asks for consent.** It used to skip the question,
+following the B2B branch, on the grounds that what it collected stayed in this
+system and went to a member of staff. Filing an enquiry in the CRM makes that
+untrue — a second system holds their name and their documents — and §4 has no
+exception for a destination we happen to own. The question is registration's
+own, asked in registration's place: after the language, before anything
+personal. Declining it ends the conversation the way it does in registration.
 
 Nothing asks for a date of birth, and tracking needs one. In practice the
 passport and Aadhaar extractors supply it, which is what makes the reference
@@ -428,7 +460,7 @@ button offering a human on every screen is an invitation to leave, and it was
 being offered hardest at the moments a candidate was most likely to take it —
 underneath a question they had just failed to answer.
 
-There is now exactly one: **Other → Talk to staff**. A smoke check walks all four
+There is now exactly one: **Other → Talk to staff**. A smoke check walks all three
 flows and every menu to keep it that way.
 
 **The automatic escalations are untouched.** Distress, a report that somebody has
@@ -511,12 +543,34 @@ CRM sees one candidate being filled in rather than a dozen. What travels:
 | Section | What is in it |
 |---|---|
 | `profile` | The flat summary: name, phone, residence, destination, job category, experience band, passport number and expiry. |
-| `registration` | How far the conversation has got, and which documents are still to be asked for. `complete` is false until the candidate confirms. |
+| `registration` | How far the conversation has got, which documents are still to be asked for, whether this is a registration or a staff enquiry, and whether it is `assignable`. `complete` is false until the candidate confirms. |
 | `cv` | The CV as the extractor read it — employers, dates, education, certificates, licences — in the same shape the CRM's email pipeline produces. |
 | `identity` | The Aadhaar and the passport, as their own extractors read them, filed by the CRM in its own identity collections. |
 | `job` | The job, the course and trade, the country and how strictly it is meant, when they can start — and every question that produced those answers. |
 
-Three rules run through it.
+### Assignment
+
+The CRM owns it — who gets a candidate, when, and under what workload rules.
+The one thing it cannot work out for itself is which half-finished records are a
+person worth ringing and which are a message that stopped after "hi". That is
+what `registration.assignable` says, and it is deliberately **not** gated on
+`complete`: waiting for a finished registration means the candidate who most
+needs a person — the one who stopped — is the one nobody is given.
+
+It is true when all three hold:
+
+1. **Consent is on the record** (§4). Nothing is assignable before it.
+2. **There is somebody to ask for by name** — typed, read off a document, or the
+   name WhatsApp shows. Not the phone number `profile.full_name` falls back to
+   so the record can always be opened; a fallback is not a name.
+3. **They have said what they want** — a destination, a job category, or a job in
+   their own words. Any one of the three.
+
+A finished registration is always assignable. So is a completed staff intake,
+which has all three by its fifth question. `assignableFor` in `crm/mapping.ts`
+is the rule, and `npm run smoke` pins each clause of it.
+
+Three more rules run through the rest of it.
 
 **Consent is the floor.** Nothing is sent about anybody who has not given it
 (§4), whichever way `CRM_PARTIAL_SYNC` is set, and a partial is never sent for
@@ -919,20 +973,25 @@ These are deliberate — flagging rather than hiding them:
   conversation. If candidates are reaching staff without asking to, that
   classification is where to look first, and the wording that governs it is in
   `INTERPRETER_PROMPT`.
-- **The second number is not driven end to end.** `npm run smoke` pins its
-  question order, its two-country question, both sides of the CV decision and
-  the routing; `npm run harness` still drives the default line only. The
-  envelope it posts carries `phone_number_id`, so pointing a driven number at
-  the second line is a parameter rather than a rewrite.
-- **One record per number, not per person.** The record is keyed on `waId`, so
-  somebody who writes to both numbers has one conversation, on whichever line
-  they wrote to first. The other number's flow is not offered to them and their
-  replies keep coming from the first. It is logged when it happens.
+- **The Singapore/Malaysia route is not driven end to end.** `npm run smoke`
+  pins its question order, both sides of the CV decision and the routing;
+  `npm run harness` answers the country question like any other and so drives
+  whichever route its answers choose.
+- **One record per person, on the number they wrote to first.** The record is
+  keyed on `waId`, so somebody who writes to both numbers has one conversation,
+  and their replies keep coming from the first number. Nothing about the
+  questions turns on that any more — both numbers run this flow — but it is
+  logged when it happens.
 - **The Singapore/Malaysia CV answers nothing.** Collected after the personal
-  and experience sections, it cannot skip the questions it fills on the default
-  line — see **Two numbers, two flows** above. If that saving matters more than
-  not asking a cleaner for a résumé, move `CV_STEP` back up `SGMY_STEPS`; the
-  step itself is shared and needs no change.
+  and experience sections, it cannot skip the questions it fills — see **The
+  Singapore/Malaysia route** above. If that saving matters more than not asking
+  a cleaner for a résumé, move `CV_STEP` back up `SGMY_STEPS`; the step itself is
+  shared and needs no change.
+- **"Select countries" does not fork.** Typing Singapore into the free-text
+  follow-up behind that row is a list of preferences, not a destination, and it
+  leaves the candidate on the main route — so they are asked for a CV. Tapping
+  the Singapore row, or typing something the interpreter resolves to it, is what
+  moves them.
 - **`singapore` and `malaysia` must exist in the CRM's country taxonomy** for
   `destination_country` to reach it. The bot offers them either way; the CRM
   simply receives no destination until an admin adds them. `npm run

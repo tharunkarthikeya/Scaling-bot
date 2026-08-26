@@ -156,10 +156,10 @@ function envelope(message: Record<string, unknown>, waId = WA_ID, line?: string)
             field: 'messages',
             value: {
               messaging_product: 'whatsapp',
-              // Which number it arrived on, as Meta sends it. The default is the
-              // main one, which is the flow this harness drives. Passing the
-              // second number here is what would drive the Singapore/Malaysia
-              // flow instead — see `conversation/lines.ts`.
+              // Which number it arrived on, as Meta sends it. Both numbers run
+              // the same flow, so this changes only which number the replies
+              // leave from — what a candidate is asked is decided by the
+              // destination they choose (`routeFor` in `conversation/flow.ts`).
               metadata: { phone_number_id: line ?? config.WHATSAPP_PHONE_NUMBER_ID },
               contacts: [{ wa_id: waId, profile: { name: 'Asha Kumari' } }],
               messages: [message],

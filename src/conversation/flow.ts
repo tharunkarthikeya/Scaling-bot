@@ -40,7 +40,6 @@ import {
 } from './trades.js';
 import { MAX_GENERATED_QUESTIONS } from './tradeQuestions.js';
 import { cvWorthAsking, type JobLevel } from './jobLevel.js';
-import type { FlowVariant } from './lines.js';
 import { taxonomyCountryName } from '../crm/taxonomy.js';
 import {
   availabilityBand,
@@ -53,6 +52,20 @@ import {
 /* ─────────────────────────────────────────────────────────────────────────────
  * Types
  * ───────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * Which of the two lists a conversation walks.
+ *
+ * It used to be which of the agency's two numbers a candidate wrote to. It is
+ * now what they answered at §10 — the two numbers ask the same questions, and
+ * the destination is what changes when the CV is asked and of whom. Derived on
+ * every read (`routeFor`) rather than stored, so it cannot disagree with the
+ * answer it is derived from.
+ */
+export type FlowVariant = 'default' | 'sgmy';
+
+/** Both routes, for the boot-time checks and the smoke suite. */
+export const FLOW_VARIANTS: readonly FlowVariant[] = ['default', 'sgmy'] as const;
 
 export type Section =
   | 'start'
@@ -360,18 +373,64 @@ export const JOB_CATEGORY_CHOICES: Choice[] = [
 ];
 
 /**
- * Where a candidate would like to work.
+ * The two destinations that fork the flow.
  *
- * Singapore and Malaysia are deliberately absent. They were two rows here and
- * the trigger for a whole branch — the passport collected before the CV, the job
- * asked early so the CRM's CV policy could be resolved from destination plus job
- * — and the agency stopped placing into them. Removing the rows removed the
- * branch; what is left is the ordinary question every other destination always
- * used.
+ * They are rows in the one country question like any other — what makes them
+ * different is what choosing one *means*: `routeFor` puts that candidate on the
+ * Singapore/Malaysia route, where the CV is not asked up front and is asked
+ * later only of a candidate whose job is one a CV speaks to.
  *
- * The remaining ids are unchanged, because they are written into every record
- * that has already answered this and renaming one would orphan a stored
- * preference (§22).
+ * The ids are the CRM's own country ids, so `destinationCountryOf` resolves them
+ * to real country names for the submission — provided an admin has both in the
+ * CRM's country taxonomy. A country the bot offers but the CRM cannot name
+ * reaches it with no destination, which is a taxonomy edit and not a code
+ * change; `verify:crm` reports the list it actually has.
+ */
+export const SGMY_COUNTRY_CHOICES: Choice[] = [
+  {
+    id: 'singapore',
+    label: { en: 'Singapore', ta: 'சிங்கப்பூர்', hi: 'सिंगापुर', te: 'సింగపూర్', ml: 'സിംഗപ്പൂർ' },
+  },
+  {
+    id: 'malaysia',
+    label: { en: 'Malaysia', ta: 'மலேசியா', hi: 'मलेशिया', te: 'మలేషియా', ml: 'മലേഷ്യ' },
+  },
+];
+
+/** The destination ids that put a candidate on the Singapore/Malaysia route. */
+export const SGMY_DESTINATIONS: ReadonlySet<string> = new Set(
+  SGMY_COUNTRY_CHOICES.map((choice) => choice.id),
+);
+
+/**
+ * Whether this candidate has asked for Singapore or Malaysia.
+ *
+ * A tap on either row, or a typed answer the interpreter resolved to one of
+ * them. Not "Select countries" with Singapore typed into the free-text
+ * follow-up below: that answer is a list of preferences rather than a
+ * destination, and which route a candidate walks has to be decided by the one
+ * field the question itself writes.
+ */
+export function wantsSgMy(c: CandidateDoc): boolean {
+  const chosen = p(c).countryPreference;
+  return typeof chosen === 'string' && SGMY_DESTINATIONS.has(chosen);
+}
+
+/**
+ * Where a candidate would like to work — and where the flow forks (§10).
+ *
+ * One question, every destination the agency places into, asked of everyone
+ * immediately after consent. Singapore and Malaysia are two rows in it like any
+ * other, and choosing one is the only thing that decides which of the two
+ * routes a candidate then walks: the CV first and asked of everyone, or the CV
+ * late and only where it says something. It is asked this early *because* it
+ * decides that — a branch point asked after the branch cannot branch.
+ *
+ * The ids are unchanged, because they are written into every record that has
+ * already answered this and renaming one would orphan a stored preference
+ * (§22). `singapore` and `malaysia` included: they are the ids the second
+ * number's own two-country question wrote while the two flows were separate, so
+ * a candidate part-way through that flow keeps their answer and their route.
  */
 export const COUNTRY_CHOICES: Choice[] = [
   // Labelled the way candidates say it — "Gulf countries", never "GCC". The
@@ -391,7 +450,10 @@ export const COUNTRY_CHOICES: Choice[] = [
   },
   { id: 'europe', label: { en: 'Europe', ta: 'ஐரோப்பா', hi: 'यूरोप', te: 'యూరప్', ml: 'യൂറോപ്പ്' } },
   { id: 'russia_cis', label: { en: 'Russia / CIS', ta: 'ரஷ்யா/CIS', hi: 'रूस/CIS', te: 'రష్యా / CIS', ml: 'റഷ്യ / CIS' } },
-  { id: 'gulf countries', label: { en: 'Gulf countries', ta: 'வளைகுடா நாடுகள்', hi: 'गल्फ देश', te: 'గల్ఫ్ దేశాలు', ml: 'ഗൾഫ് രാജ്യങ്ങൾ' } },
+  // The two that fork the flow, sitting among the rest rather than apart from
+  // them: they are destinations to the candidate reading this, and nothing on
+  // screen says otherwise.
+  ...SGMY_COUNTRY_CHOICES,
   { id: 'any', label: { en: 'Any country', ta: 'எந்த நாடும்', hi: 'कोई भी देश', te: 'ఏ దేశమైనా', ml: 'ഏത് രാജ്യവും' } },
   {
     id: 'select',
@@ -411,6 +473,19 @@ export const COUNTRY_CHOICES: Choice[] = [
 export function destinationCountryOf(c: CandidateDoc): string | undefined {
   return taxonomyCountryName(String(p(c).countryPreference));
 }
+
+/**
+ * A second id for the Gulf, understood and never rendered.
+ *
+ * `gcc` above already carries this label in every language, so a second row
+ * saying the same words is a list with a duplicate in it. It stays reachable —
+ * records written while it was on the menu store this id, and `labelFor` has to
+ * go on resolving it — as an answer the interpreter may return rather than a row
+ * a candidate can tap.
+ */
+const COUNTRY_ALIASES: Choice[] = [
+  { id: 'gulf countries', label: { en: 'Gulf countries', ta: 'வளைகுடா நாடுகள்', hi: 'गल्फ देश', te: 'గల్ఫ్ దేశాలు', ml: 'ഗൾഫ് രാജ്യങ്ങൾ' } },
+];
 
 const YES_NO: Choice[] = [
   { id: 'yes', label: { en: 'Yes', ta: 'ஆம்', hi: 'हाँ', te: 'అవును', ml: 'അതെ' } },
@@ -547,7 +622,7 @@ const START_STEPS: FlowStep[] = [
 ];
 
 /**
- * The CV, asked immediately after consent.
+ * The CV, asked immediately after the destination.
  *
  * First because of what it saves: the resume extractor fills the name, the date
  * of birth, the trade, the experience and the certifications, and every field it
@@ -556,12 +631,13 @@ const START_STEPS: FlowStep[] = [
  * sections rather than arriving after they have already been put to the
  * candidate one at a time.
  *
- * Unconditional. It was once skippable on the single-country route, where the
- * CRM's policy could rule a CV unnecessary for a given destination and job — but
- * that policy keys on a destination this flow no longer collects, so there is
- * nothing left to evaluate and the honest default is to ask. The CRM may still
- * refuse a submission for a missing CV, and `reopenCvForCrm` reopens this slot
- * when it does.
+ * Asked of everyone bound anywhere but Singapore or Malaysia, and asked of them
+ * first. That is the whole of the difference between the two routes: the same
+ * step, in a different place, with a different set of people in front of it —
+ * see `when` below and §10 above it.
+ *
+ * The CRM may still refuse a submission for a missing CV, and `reopenCvForCrm`
+ * reopens this slot when it does.
  */
 const CV_STEP: FlowStep = {
   id: 'cv',
@@ -582,9 +658,9 @@ const CV_STEP: FlowStep = {
   ],
   hiddenChoices: DOCUMENT_FALLBACKS,
   /**
-   * Unconditional on the default line. Conditional on the Singapore/Malaysia
-   * one, and this is the only thing that differs about the step itself — it is
-   * the same object in both lists, asked at a different point in each.
+   * Unconditional for every destination but two. Conditional for Singapore and
+   * Malaysia, and this is the only thing that differs about the step itself —
+   * it is the same object in both lists, asked at a different point in each.
    *
    * There the CV is not asked up front at all. It comes after the job
    * preferences, and only for a job a CV says something about: someone applying
@@ -592,12 +668,17 @@ const CV_STEP: FlowStep = {
    * `jobLevel` is written by `ensureJobLevel` in the engine before this is
    * evaluated, from `jobLevel.ts`.
    *
+   * Read against the destination rather than the number they wrote to, which is
+   * what makes one flow out of what used to be two. A candidate who has not
+   * answered §10 yet is on neither route — but the country question sits above
+   * this step in both lists, so that state is never one this guard is asked
+   * about.
+   *
    * An unset `jobLevel` asks. That is the deferred case — the model was
    * unreachable when the level was due — and asking for a CV that can be
    * declined in one tap is the recoverable half of that mistake.
    */
-  when: (c) =>
-    c.flowVariant !== 'sgmy' || cvWorthAsking(p(c).jobLevel as JobLevel | undefined),
+  when: (c) => !wantsSgMy(c) || cvWorthAsking(p(c).jobLevel as JobLevel | undefined),
   satisfied: (c) => documentSatisfied(c, 'cv'),
 };
 
@@ -803,12 +884,16 @@ const PERSONAL_STEPS: FlowStep[] = [
 /* ─────────────────────────────────────────────────────────────────────────────
  * §10  Where they want to work
  *
- * After the personal details rather than before the CV, which is where it sat
- * while it was a branch point — it decided whether the passport or the CV came
- * first, and a branch point asked after the branch cannot branch. It no longer
- * decides anything about the shape of the flow: every candidate is asked for a
- * CV, and every candidate is asked for the same documents. So it is an ordinary
- * preference again, and it is asked once the bot knows who it is talking to.
+ * Straight after consent, and before anything it decides. It is a branch point
+ * again: Singapore and Malaysia are two of its rows, and choosing one is what
+ * sends a candidate down the route that does not ask for a CV up front. A branch
+ * point asked after the branch cannot branch, so it goes first.
+ *
+ * All three questions here are asked on both routes. `selected_countries` is
+ * reachable only behind "Select countries", which is not a Singapore/Malaysia
+ * answer — so it is present on that route and never asked there, which is what
+ * `when` is for. `country_strictness` is asked on both and means the same thing
+ * on both: whether a candidate holds out for where they named.
  * ───────────────────────────────────────────────────────────────────────────*/
 
 const COUNTRY_STEPS: FlowStep[] = [
@@ -824,6 +909,7 @@ const COUNTRY_STEPS: FlowStep[] = [
     },
     input: 'choice',
     choices: COUNTRY_CHOICES,
+    hiddenChoices: COUNTRY_ALIASES,
     satisfied: (c) => has(p(c).countryPreference),
     apply: (a) => ({ countryPreference: a.ids?.[0] }),
     clears: ['countryPreference', 'selectedCountries', 'countryStrictness'],
@@ -891,58 +977,6 @@ const COUNTRY_STEPS: FlowStep[] = [
     clears: ['countryStrictness'],
   },
 ];
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * §10  Where they want to work — the Singapore/Malaysia line
- *
- * The second number places into two countries and no others, so the question is
- * the two of them and nothing else. Not "any country", which on this line would
- * be a preference the agency cannot act on, and not "select countries", which
- * invites a candidate to type somewhere nobody is hiring for.
- *
- * The ids are the CRM's own country ids, so `destinationCountryOf` resolves them
- * to real country names for the submission — provided an admin has both in the
- * CRM's country taxonomy. A country the bot offers but the CRM cannot name
- * reaches it with no destination, which is a taxonomy edit and not a code
- * change; `verify:crm` reports the list it actually has.
- *
- * `country_strictness` below is shared with the default line and asked here too:
- * with two destinations on offer, whether a candidate holds out for one of them
- * or would take either is exactly the thing a recruiter needs to know.
- * ───────────────────────────────────────────────────────────────────────────*/
-
-export const SGMY_COUNTRY_CHOICES: Choice[] = [
-  {
-    id: 'singapore',
-    label: { en: 'Singapore', ta: 'சிங்கப்பூர்', hi: 'सिंगापुर', te: 'సింగపూర్', ml: 'സിംഗപ്പൂർ' },
-  },
-  {
-    id: 'malaysia',
-    label: { en: 'Malaysia', ta: 'மலேசியா', hi: 'मलेशिया', te: 'మలేషియా', ml: 'മലേഷ്യ' },
-  },
-];
-
-const SGMY_COUNTRY_STEP: FlowStep = {
-  // A distinct id, deliberately. It writes the same `countryPreference` field
-  // as the default question and reads the same way on the record, but it offers
-  // a different set of options — and `stepById` hands the engine the step whose
-  // `choices` the interpreter is offered. Sharing the id would offer a
-  // Singapore/Malaysia candidate the Gulf.
-  id: 'country_preference_sgmy',
-  section: 'country',
-  prompt: {
-    en: 'Where would you like to work?',
-    ta: 'எங்கு வேலை செய்ய விரும்புகிறீர்கள்?',
-    hi: 'आप कहाँ काम करना चाहेंगे?',
-    te: 'మీరు ఎక్కడ పని చేయాలనుకుంటున్నారు?',
-    ml: 'നിങ്ങൾക്ക് എവിടെയാണ് ജോലി ചെയ്യണ്ടത്?',
-  },
-  input: 'choice',
-  choices: SGMY_COUNTRY_CHOICES,
-  satisfied: (c) => has(p(c).countryPreference),
-  apply: (a) => ({ countryPreference: a.ids?.[0] }),
-  clears: ['countryPreference', 'selectedCountries', 'countryStrictness'],
-};
 
 const EXPERIENCE_STEPS: FlowStep[] = [
 
@@ -1367,9 +1401,10 @@ const PREFERENCE_STEPS: FlowStep[] = [
  *
  * Asked of every candidate. This section used to be gated on a Europe/Russia
  * destination, which is how a Gulf candidate reached the end of registration
- * without ever being asked for an identity document — and that gate read the
- * country preference, a question this flow no longer asks. So the gate is gone
- * and the three documents are asked in one order, of everyone.
+ * without ever being asked for an identity document. The gate is gone and the
+ * three documents are asked in one order, of everyone — including everyone on
+ * the Singapore/Malaysia route, which changes when the CV is asked and nothing
+ * about these.
  *
  * The passport comes first, and as two questions rather than one: whether they
  * have one, and then the booklet itself. The split matters because "no" and
@@ -1651,7 +1686,7 @@ export function occupationForQuestions(c: CandidateDoc): string | undefined {
 }
 
 /**
- * The job to classify for the CV question on the Singapore/Malaysia line (§5).
+ * The job to classify for the Singapore/Malaysia CV question (§5).
  *
  * The counterpart of `occupationForQuestions`, and a different question from it:
  * that one asks what the candidate *has done*, this one asks what they are
@@ -1845,12 +1880,17 @@ const ALL_TRADE_STEPS: FlowStep[] = [
 ];
 
 /**
- * The flow, in order.
+ * The flow, in order — for every destination but two.
  *
- * Apply → consent → CV → personal → country → experience → trade →
+ * Apply → consent → country → CV → personal → experience → trade →
  * job preferences → documents → confirm.
  *
- * The CV sits immediately after consent because it is the only step that can
+ * The country question is first because it decides which of the two lists a
+ * conversation walks (`routeFor`), and it is the same three questions in the
+ * same place on both — so up to the moment it is answered, the two lists are
+ * one flow asking one set of questions.
+ *
+ * The CV sits immediately behind it because it is the only step that can
  * answer other steps. Everything the resume extractor fills — name, date of
  * birth, education, trade, experience, certifications — is a question the four
  * sections below it then skip, and that only works if it is collected before
@@ -1866,12 +1906,11 @@ const ALL_TRADE_STEPS: FlowStep[] = [
 export const STEPS: FlowStep[] = [
   ...START_STEPS,
   ...B2B_STEPS,
+  // Where they want to work, and with it which of the two lists this
+  // conversation is walking. Asked before anything that turns on the answer.
+  ...COUNTRY_STEPS,
   CV_STEP,
   ...PERSONAL_STEPS,
-  // Where they want to work, once the bot knows who it is talking to. It is a
-  // preference now rather than a branch point, so nothing below depends on it
-  // and it sits where it reads naturally in the conversation.
-  ...COUNTRY_STEPS,
   ...EXPERIENCE_STEPS,
   ...ALL_TRADE_STEPS,
   ...PREFERENCE_STEPS,
@@ -1880,56 +1919,57 @@ export const STEPS: FlowStep[] = [
 ];
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * The second line
+ * The Singapore/Malaysia route
  * ───────────────────────────────────────────────────────────────────────────*/
 
 /**
  * The preference questions, split at the section boundary.
  *
  * Derived from `PREFERENCE_STEPS` rather than listed again, so a question added
- * to the default line lands in the same place on the second one. The split is
- * where the CV goes on that line: after what they want to do, before when they
- * can start.
+ * to the flow above lands in the same place on this route. The split is where
+ * the CV goes here: after what they want to do, before when they can start.
  */
 const JOB_PREFERENCE_STEPS = PREFERENCE_STEPS.filter((s) => s.section === 'job_preference');
 const AVAILABILITY_STEPS = PREFERENCE_STEPS.filter((s) => s.section === 'availability');
 
 /**
- * The Singapore/Malaysia flow, in order.
+ * The Singapore/Malaysia route, in order.
  *
- * Apply -> consent -> personal -> country (two of them) -> experience -> trade
- * -> job preferences -> **CV, if the job is one a CV speaks to** -> availability
- * -> documents -> confirm.
+ * Apply -> consent -> country (**Singapore or Malaysia**) -> personal ->
+ * experience -> trade -> job preferences -> **CV, if the job is one a CV speaks
+ * to** -> availability -> documents -> confirm.
  *
- * Three differences from `STEPS`, and nothing else:
+ * Two differences from `STEPS`, and nothing else:
  *
- *   1. No CV after consent. The step is not merely moved: for a candidate
- *      applying to clean or to pack it is never asked at all.
- *   2. Two destinations. `SGMY_COUNTRY_STEP` replaces `country_preference` and
- *      `selected_countries` — there is nothing to select from and no "any".
- *   3. The CV, where a CV is worth having, sits after the job preferences,
+ *   1. No CV behind the country question. The step is not merely moved: for a
+ *      candidate applying to clean or to pack it is never asked at all.
+ *   2. The CV, where a CV is worth having, sits after the job preferences,
  *      because that is the first point at which the job they want is known.
  *
- * What that third one costs, said out loud: on the default line the CV is
+ * What that second one costs, said out loud: everywhere else the CV is
  * collected before the personal and experience sections *because* the resume
  * extractor answers them, and `nextStep` then walks past every question it
  * filled (§1, §5). Collected here it cannot do that — the candidate has
- * already been asked those questions by hand. The CV on this line is a document
- * for a recruiter to read, not a shortcut through the flow. That is the trade
- * this line makes in exchange for never asking a cleaner for a CV.
+ * already been asked those questions by hand. The CV on this route is a
+ * document for a recruiter to read, not a shortcut through the flow. That is
+ * the trade this route makes in exchange for never asking a cleaner for a CV.
  *
  * Everything else is the same objects in the same order: the same opening menu,
- * the same B2B branch, the same trade packs, the same documents, the same
- * confirmation. A question added to a shared section appears on both lines.
+ * the same country question, the same B2B branch, the same trade packs, the
+ * same documents, the same confirmation. A question added to a shared section
+ * appears on both routes.
+ *
+ * The first three entries are `STEPS`' first three entries, and that is
+ * load-bearing rather than tidy: a candidate who has not named a destination
+ * yet is on the default route by `routeFor`, so the questions that come before
+ * the answer have to be the same questions in the same order whichever list is
+ * being walked.
  */
 export const SGMY_STEPS: FlowStep[] = [
   ...START_STEPS,
   ...B2B_STEPS,
+  ...COUNTRY_STEPS,
   ...PERSONAL_STEPS,
-  SGMY_COUNTRY_STEP,
-  // Shared with the default line: with two countries on offer, whether they
-  // hold out for one of them is still worth asking.
-  ...COUNTRY_STEPS.filter((s) => s.id === 'country_strictness'),
   ...EXPERIENCE_STEPS,
   ...ALL_TRADE_STEPS,
   ...JOB_PREFERENCE_STEPS,
@@ -1943,27 +1983,36 @@ export const SGMY_STEPS: FlowStep[] = [
  * §24  The staff intake
  *
  * What "Other → Talk to staff" runs, instead of handing the conversation over
- * on the spot. Seven questions, every one of them a step that already exists —
- * the same language question, the same name question, the same country
- * question, the same three documents, the same confirmation. Nothing here is a
- * new question; what is new is which of them are asked and in what order.
+ * on the spot. Nine questions, every one of them a step that already exists —
+ * the same language question, the same consent question, the same name, the
+ * same country, the same job, the same three documents, the same confirmation.
+ * Nothing here is a new question; what is new is which of them are asked and in
+ * what order.
  *
  * The point is what a member of staff has in front of them when they pick the
  * conversation up. It used to be a phone number. It is now a name, a
- * destination, a passport read off the page, an Aadhaar read off the page, and
- * a PAN filed as it arrived — so the call starts where it used to get to after
- * four messages.
+ * destination, the job they are after, a passport read off the page, an Aadhaar
+ * read off the page, and a PAN filed as it arrived — so the call starts where it
+ * used to get to after four messages.
  *
  * The documents route to OCR exactly as they do in registration, because they
  * are the same slots: `rules.ts` sends the passport to the passport extractor
  * and the Aadhaar to the document extractor, and `NEVER_OCR` keeps the PAN away
  * from both. There is nothing to configure here and nothing that could drift.
  *
- * No consent step, following the B2B branch, which collects a name and an
- * Aadhaar the same way. Worth a decision rather than an assumption if this ever
- * carries more than it does today.
+ * **Consent is asked here now, and this is the decision that put it here.** The
+ * intake used to skip it, following the B2B branch, on the grounds that what it
+ * collected stayed in this system and went to a member of staff. That is no
+ * longer true: an intake is filed in the CRM, so a second system holds their
+ * name and their documents, and §4 does not have an exception for a destination
+ * we happen to own. The question is the same question registration asks, asked
+ * in the same place — after the language, before anything personal.
  *
- * No CV, no trade questions, no job preferences: this is somebody who asked to
+ * The job question is here for the reason the country question always was: it
+ * is the first thing the person calling back needs to know, and asking it in
+ * the intake is one tap against a whole exchange on the phone.
+ *
+ * No CV, no trade questions, no availability: this is somebody who asked to
  * speak to a person, not somebody registering for work. If they turn out to
  * want that, staff start the registration.
  * ───────────────────────────────────────────────────────────────────────────*/
@@ -1978,45 +2027,58 @@ function pick(from: FlowStep[], ...ids: string[]): FlowStep[] {
 }
 
 /**
- * The intake, for one line.
+ * The intake. One list, because there is one country question.
  *
- * The country question is the only thing that differs between the two numbers,
- * and it differs for the same reason it does in registration: the second line
- * places into two countries and offering the other five would be offering
- * somewhere nobody is hiring for.
+ * It was two while the second number asked its own two-country question — the
+ * only thing that ever differed between them. Now that every candidate is asked
+ * the same question, so is everybody who asks to speak to a person, and there
+ * is nothing left to pick between.
+ *
+ * Nothing here forks. Which route the *registration* would take does not matter
+ * to somebody who is not registering: the intake has no CV step to place and no
+ * availability question to place it behind. `job_category` is the same step
+ * registration asks, so the answer reads identically on the record and reaches
+ * the CRM through the same `job` section — and its "Other" row still takes the
+ * job in their own words.
  */
-function staffIntake(country: FlowStep): FlowStep[] {
-  return [
-    ...pick(START_STEPS, 'language', 'language_other'),
-    ...pick(PERSONAL_STEPS, 'full_name'),
-    country,
-    ...pick(DOCUMENT_STEPS, 'passport_status', 'passport_upload', 'aadhaar_upload', 'pan_upload'),
-    CONFIRM_STEP,
-  ];
-}
-
-export const STAFF_STEPS: FlowStep[] = staffIntake(
-  pick(COUNTRY_STEPS, 'country_preference')[0]!,
-);
-
-export const STAFF_STEPS_SGMY: FlowStep[] = staffIntake(SGMY_COUNTRY_STEP);
-
-/** The intake belonging to a line. */
-export function staffStepsForVariant(variant: FlowVariant | undefined): FlowStep[] {
-  return variant === 'sgmy' ? STAFF_STEPS_SGMY : STAFF_STEPS;
-}
+export const STAFF_STEPS: FlowStep[] = [
+  ...pick(START_STEPS, 'language', 'language_other', 'consent'),
+  ...pick(PERSONAL_STEPS, 'full_name'),
+  ...pick(COUNTRY_STEPS, 'country_preference'),
+  ...pick(JOB_PREFERENCE_STEPS, 'job_category'),
+  ...pick(DOCUMENT_STEPS, 'passport_status', 'passport_upload', 'aadhaar_upload', 'pan_upload'),
+  CONFIRM_STEP,
+];
 
 /** Every flow list, for the boot-time checks and the id registry. */
 export const FLOWS: Record<string, FlowStep[]> = {
   default: STEPS,
   sgmy: SGMY_STEPS,
   'staff intake': STAFF_STEPS,
-  'staff intake (sgmy)': STAFF_STEPS_SGMY,
 };
 
-/** The list a variant walks. `nextStep` picks the B2B branch out of it separately. */
+/** The list a route walks. `nextStep` picks the B2B branch out of it separately. */
 export function stepsForVariant(variant: FlowVariant | undefined): FlowStep[] {
   return variant === 'sgmy' ? SGMY_STEPS : STEPS;
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  THE ONE PLACE A DESTINATION IS TURNED INTO A ROUTE. Nothing else may decide it.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Singapore or Malaysia is the Singapore/Malaysia route; everything else, and
+ * everything not yet answered, is the flow this bot has always run — because
+ * that is the one that is safe to run for anyone.
+ *
+ * Derived, never stored. A stored copy would be a second answer to a question
+ * §10 has already answered, and the two could disagree: a candidate who edits
+ * their destination (§22) changes route, and a copy written when the record was
+ * created would go on sending them down the old one. The number they wrote to
+ * has no say in it — both numbers run this same flow.
+ */
+export function routeFor(c: CandidateDoc): FlowVariant {
+  return wantsSgMy(c) ? 'sgmy' : 'default';
 }
 
 /**
@@ -2024,16 +2086,16 @@ export function stepsForVariant(variant: FlowVariant | undefined): FlowStep[] {
  *
  * Two decisions in one place: which branch — a business contact is walked
  * through their own four questions and none of registration's — and which
- * line, meaning the number they wrote to. Everything that schedules a question
- * goes through this, so a flow is never chosen twice and never chosen
+ * route, meaning where they said they want to work. Everything that schedules a
+ * question goes through this, so a flow is never chosen twice and never chosen
  * differently in two places.
  */
 export function stepsFor(c: CandidateDoc): FlowStep[] {
   if (c.enquiry === 'b2b') return B2B_STEPS;
   // Somebody who asked to speak to a person is asked the seven questions that
   // make that conversation useful, and none of registration's.
-  if (c.enquiry === 'staff') return staffStepsForVariant(c.flowVariant);
-  return stepsForVariant(c.flowVariant);
+  if (c.enquiry === 'staff') return STAFF_STEPS;
+  return stepsForVariant(routeFor(c));
 }
 
 /**
@@ -2045,7 +2107,7 @@ export function stepsFor(c: CandidateDoc): FlowStep[] {
  * lists, so only a question unique to one line adds an entry of its own.
  */
 const STEP_BY_ID = new Map<string, FlowStep>();
-for (const step of [...STEPS, ...SGMY_STEPS, ...STAFF_STEPS, ...STAFF_STEPS_SGMY]) {
+for (const step of [...STEPS, ...SGMY_STEPS, ...STAFF_STEPS]) {
   if (!STEP_BY_ID.has(step.id)) STEP_BY_ID.set(step.id, step);
 }
 
@@ -2084,11 +2146,11 @@ export function nextStep(c: CandidateDoc): FlowStep | undefined {
 /**
  * Steps belonging to a section, for the edit and update menus (§18, §22).
  *
- * Variant-aware, because the two lines do not hold the same questions in the
- * `country` section: editing it on the Singapore/Malaysia line has to re-ask
- * that line's two-country question rather than the default line's five. The
- * parameter defaults to the default line, so an existing caller means what it
- * always did.
+ * The parameter is kept because the two routes need not hold the same questions
+ * in a given section, and it defaults to the flow every candidate starts on.
+ * The `country` section is identical on both — one question, asked of everyone —
+ * so an edit of it re-asks the same three questions whichever route the
+ * candidate is on.
  */
 export function stepsInSection(section: Section, variant?: FlowVariant): FlowStep[] {
   return stepsForVariant(variant).filter((s) => s.section === section);
@@ -2103,7 +2165,7 @@ export function fieldsToClear(section: Section, variant?: FlowVariant): string[]
  * The same two, resolved against the flow this conversation is actually on.
  *
  * Which matters most for the staff intake, whose `personal` section is one
- * question where registration's is five. Editing by variant alone would clear a
+ * question where registration's is five. Editing by route alone would clear a
  * date of birth and an education level the intake never asked for, and then
  * queue those questions to be answered.
  */
@@ -2123,10 +2185,11 @@ export function sectionFieldsFor(c: CandidateDoc, section: Section): string[] {
  * ───────────────────────────────────────────────────────────────────────────*/
 
 const LABELS = new Map<string, Localised>();
-// Both lists. The confirmation summary reads a stored option id back into a
-// label, and a candidate on the second line has "singapore" on their record --
-// a label that exists only in that line's country question.
-for (const step of [...STEPS, ...SGMY_STEPS, ...STAFF_STEPS, ...STAFF_STEPS_SGMY]) {
+// Both lists, and the hidden choices with them: the confirmation summary reads
+// a stored option id back into a label, and some of those ids -- "gulf
+// countries", the fallbacks a document step accepts in words -- were never rows
+// anybody could tap.
+for (const step of [...STEPS, ...SGMY_STEPS, ...STAFF_STEPS]) {
   for (const choice of [...(step.choices ?? []), ...(step.hiddenChoices ?? [])]) {
     LABELS.set(`${step.id}:${choice.id}`, choice.label);
     if (!LABELS.has(choice.id)) LABELS.set(choice.id, choice.label);

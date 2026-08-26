@@ -4,7 +4,6 @@ import { logger } from '../logger.js';
 import { DOCUMENTS, TUNABLES } from '../conversation/rules.js';
 import { ingestionRows } from '../ingestion/ledger.js';
 import type { Language } from '../conversation/language.js';
-import type { FlowVariant } from '../conversation/lines.js';
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Registration state (protocol §21)
@@ -256,8 +255,9 @@ export interface CandidateProfile {
   /**
    * How much a CV would add for the job they want (`conversation/jobLevel.ts`).
    *
-   * Written only on the Singapore/Malaysia line, once the job preferences are
-   * answered, and read by exactly one thing: whether the CV step is asked. It
+   * Written only for a candidate bound for Singapore or Malaysia, once the job
+   * preferences are answered, and read by exactly one thing: whether the CV
+   * step is asked. It
    * is a property of the *job*, not an assessment of the candidate, and it is
    * deliberately not sent to the CRM — a recruiter reading a profile has the
    * job title itself, which is better evidence than our guess about it.
@@ -404,17 +404,17 @@ export interface CandidateDoc {
    */
   phoneNumberId?: string;
 
-  /**
-   * Which list of questions this conversation walks (`conversation/lines.ts`).
+  /*
+   * There is no `flowVariant` here, and that is deliberate.
    *
-   * Derived from `phoneNumberId` when the record is created, and then left
-   * alone. Recomputing it per turn would let an environment change move a
-   * candidate mid-registration onto a flow that asks different questions, and
-   * re-ask or skip whichever ones the two lists disagree about.
-   *
-   * Absent means the default flow, which is what every existing record means.
+   * Which list of questions a conversation walks used to be decided from
+   * `phoneNumberId` and stored beside it. It is now decided from the
+   * destination the candidate chose at §10 — `routeFor` in `conversation/
+   * flow.ts` — and derived on every read, so it cannot fall out of step with
+   * the answer it comes from when that answer is edited (§22). Records written
+   * before the two flows became one still carry the old field; nothing reads
+   * it.
    */
-  flowVariant?: FlowVariant;
 
   /**
    * The decision staff have recorded on the application. Absent until

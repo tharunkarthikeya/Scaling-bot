@@ -93,13 +93,19 @@ const schema = z.object({
   WHATSAPP_ACCESS_TOKEN: z.string().min(1),
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
   /**
-   * The second WhatsApp number, which runs the Singapore/Malaysia flow.
+   * The agency's second WhatsApp number.
    *
-   * Optional, and absent means there is no second line: `variantForLine` then
-   * maps every inbound message to the default flow and nothing about the
-   * existing conversation changes. Set it to the `phone_number_id` Meta reports
-   * for that number in the webhook envelope — not the display number, which is
-   * a different value and will silently match nothing.
+   * It runs the same flow as the first one. It ran the Singapore/Malaysia
+   * questions while those were a flow of their own; they are a route inside the
+   * one flow now, reached by choosing Singapore or Malaysia at §10 from either
+   * number, so this variable no longer decides what anybody is asked. What it
+   * still decides is that replies, read receipts and the re-engagement template
+   * leave from the number the candidate wrote to, and that `doctor` checks both.
+   *
+   * Optional. Absent means there is one number, which is the state most
+   * deployments are in. Set it to the `phone_number_id` Meta reports for that
+   * number in the webhook envelope — not the display number, which is a
+   * different value and will silently match nothing.
    *
    * One access token covers both numbers when they sit under the same WABA;
    * they are separate numbers on one app, not separate apps.
@@ -612,10 +618,10 @@ const schema = z.object({
     const missing = (path: string, message: string) =>
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
 
-    // One number cannot run two flows. Set to the same id, `variantForLine`
-    // would answer `sgmy` for every message and the main flow would be
-    // unreachable — which is a one-character mistake in an environment tab and
-    // an entire product behaving differently.
+    // Two numbers, or one. Set to the same id, the second entry is not a second
+    // number at all: `doctor` would report one line twice and call it a healthy
+    // pair, and a WABA subscription that was never checked would go on dropping
+    // every message sent to the number nobody had configured.
     if (
       env.WHATSAPP_PHONE_NUMBER_ID_SGMY &&
       env.WHATSAPP_PHONE_NUMBER_ID_SGMY === env.WHATSAPP_PHONE_NUMBER_ID
@@ -623,7 +629,7 @@ const schema = z.object({
       missing(
         'WHATSAPP_PHONE_NUMBER_ID_SGMY',
         'must be the other number - it is the same as WHATSAPP_PHONE_NUMBER_ID, ' +
-          'which would route every candidate to the Singapore/Malaysia flow',
+          'so only one of the two numbers is configured at all',
       );
     }
 

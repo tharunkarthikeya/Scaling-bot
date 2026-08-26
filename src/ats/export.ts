@@ -38,6 +38,7 @@ import {
   type SessionDoc,
 } from '../db/models.js';
 import { messages as botSessions } from '../db/models.js';
+import { routeFor } from '../conversation/flow.js';
 import { atsCollection, atsConfigured, ATS_COLLECTIONS } from './client.js';
 
 /** What every row this file writes says about where it came from. */
@@ -192,9 +193,15 @@ function exportedCandidate(candidate: CandidateDoc): Record<string, unknown> {
     phone: candidate.phone,
     /** `apply` or `staff` — how they reached us, kept because it changes what was asked. */
     enquiry: candidate.enquiry ?? 'apply',
-    /** Which of the agency's numbers, and which flow it runs (`conversation/lines.ts`). */
+    /** Which of the agency's numbers they wrote to (`conversation/lines.ts`). */
     whatsappNumberId: candidate.phoneNumberId,
-    flowVariant: candidate.flowVariant ?? 'default',
+    /**
+     * Which of the two routes they walked, worked out from the destination they
+     * chose rather than read off the record — there is no stored copy of it any
+     * more, because a destination edited later (§22) would leave one behind
+     * (`routeFor` in `conversation/flow.ts`).
+     */
+    flowVariant: routeFor(candidate),
 
     applicationId: candidate.candidateId,
     applicationStatus: candidate.application?.status,
@@ -232,7 +239,7 @@ function exportedCandidate(candidate: CandidateDoc): Record<string, unknown> {
     workTypePreference: p.workTypePreference,
     generalJobs: p.generalJobs,
     trainingWillingness: p.trainingWillingness,
-    /** Only ever set on the Singapore/Malaysia line; see `conversation/jobLevel.ts`. */
+    /** Only ever set for a Singapore/Malaysia candidate; see `conversation/jobLevel.ts`. */
     jobLevel: p.jobLevel,
 
     countryPreference: p.countryPreference,

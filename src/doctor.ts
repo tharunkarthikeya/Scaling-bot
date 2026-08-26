@@ -221,7 +221,7 @@ const lines: Array<{ label: string; id: string; variable: string }> = [
   ...(config.WHATSAPP_PHONE_NUMBER_ID_SGMY
     ? [
         {
-          label: 'whatsapp number (Singapore/Malaysia line)',
+          label: 'whatsapp number (second line)',
           id: config.WHATSAPP_PHONE_NUMBER_ID_SGMY,
           variable: 'WHATSAPP_PHONE_NUMBER_ID_SGMY',
         },
@@ -237,7 +237,7 @@ if (lines.length === 1) {
     'whatsapp lines',
     'both numbers are the same id',
     'WHATSAPP_PHONE_NUMBER_ID_SGMY must be the *other* number. Set to the same ' +
-      'id, every candidate would be routed to the Singapore/Malaysia flow.',
+      'id, the second number is not configured at all and nothing checks it.',
   );
 }
 
@@ -277,7 +277,7 @@ const wabas: Array<{ label: string; id?: string; variable: string; line?: string
   ...(config.WHATSAPP_PHONE_NUMBER_ID_SGMY
     ? [
         {
-          label: 'webhook subscription (Singapore/Malaysia line)',
+          label: 'webhook subscription (second line)',
           id: config.WHATSAPP_WABA_ID_SGMY,
           variable: 'WHATSAPP_WABA_ID_SGMY',
           line: config.WHATSAPP_PHONE_NUMBER_ID_SGMY,

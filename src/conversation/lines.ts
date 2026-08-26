@@ -1,63 +1,31 @@
 /**
- * Which WhatsApp number a conversation belongs to, and which flow that number
- * runs.
+ * Which WhatsApp number a conversation belongs to.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- *  THE ONE PLACE A NUMBER IS TURNED INTO A FLOW. Nothing else may decide it.
+ *  NUMBERS ONLY. WHICH QUESTIONS GET ASKED IS `conversation/flow.ts`.
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * The agency runs two numbers. They are the same bot — the same opening menu,
- * the same consent, the same documents, the same tracking, the same handoff to
- * staff — differing only in which list of questions `nextStep` walks:
+ * The agency runs two numbers and they are the same bot: the same opening menu,
+ * the same consent, the same country question, the same documents, the same
+ * tracking, the same handoff to staff — and now the same flow. They did differ.
+ * The second number ran the Singapore/Malaysia questions and the first did not,
+ * and a candidate got one flow or the other according to which number they had
+ * happened to write to. That split is gone: Singapore and Malaysia are two rows
+ * in the one country question, and choosing one is what puts a candidate on that
+ * route, from either number. `routeFor` in `flow.ts` is the whole of it.
  *
- *   default   the flow this bot has always run. Unchanged, and it stays the
- *             answer for every number that is not explicitly the second one.
- *   sgmy      the Singapore/Malaysia line. Two destinations instead of five, no
- *             CV up front, and the CV asked later and only of a candidate whose
- *             job is one a CV says anything about (see `jobLevel.ts`).
+ * What is left here is everything about a number that stays true whatever
+ * questions it asks: a reply has to leave from the number the candidate wrote
+ * to, on a token that can see that number, and a webhook has to survive a
+ * signature check against the app that owns the subscription.
  *
- * The mapping is a pure function of the `phone_number_id` Meta puts in the
- * webhook envelope, so it is decided from the message itself rather than from
- * anything the candidate can say. A number we do not recognise — a third line
- * somebody adds, a test number, an envelope with no metadata at all — is the
- * default flow, because the default flow is the one that is safe to run for
- * anyone.
- *
- * A conversation is stamped with its line and its variant when its record is
- * created, and keeps both. That is what makes the flow stable for a candidate
- * mid-registration, and it is also why the two numbers are not two identities:
- * the record is keyed on `waId`, so one person writing to both numbers has one
- * record, and it belongs to whichever line they wrote to first.
+ * A conversation is stamped with its number when its record is created and keeps
+ * it. The record is keyed on `waId`, so one person writing to both numbers has
+ * one record, and it belongs to whichever number they wrote to first.
  */
 
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-
-/**
- * Which list of questions a conversation runs.
- *
- * Stored on the record rather than recomputed, because the question a candidate
- * is looking at must not change under them if an operator edits an environment
- * variable mid-conversation.
- */
-export type FlowVariant = 'default' | 'sgmy';
-
-/** Every variant, for the boot-time checks and the smoke suite. */
-export const FLOW_VARIANTS: readonly FlowVariant[] = ['default', 'sgmy'] as const;
-
-/**
- * The flow behind a `phone_number_id`.
- *
- * Undefined, blank, unknown, or simply the main number all give `default`. Only
- * an exact match on the configured second number gives `sgmy`, so the new flow
- * cannot be reached by accident — including when `WHATSAPP_PHONE_NUMBER_ID_SGMY`
- * is unset, which is the state every existing deployment is in.
- */
-export function variantForLine(phoneNumberId: string | undefined): FlowVariant {
-  const second = config.WHATSAPP_PHONE_NUMBER_ID_SGMY;
-  if (!second || !phoneNumberId) return 'default';
-  return phoneNumberId === second ? 'sgmy' : 'default';
-}
 
 /**
  * The number to send from, for a conversation on this line.
@@ -109,19 +77,19 @@ export function webhookSecrets(): string[] {
     : [config.WHATSAPP_APP_SECRET];
 }
 
-/** Whether the second line is configured at all. Read by `doctor` and the smoke checks. */
+/** Whether the second number is configured at all. Read by `doctor` and the smoke checks. */
 export function secondLineConfigured(): boolean {
   return !!config.WHATSAPP_PHONE_NUMBER_ID_SGMY;
 }
 
 /**
- * Warns when a conversation's line and the line a message arrived on disagree.
+ * Warns when a conversation's number and the number a message arrived on
+ * disagree.
  *
- * It means one person has written to both numbers. There is one record per
- * `waId` and it keeps the flow it started on, which is the conservative answer —
- * changing flow mid-registration would re-ask questions the other flow does not
- * have and skip ones it does. Worth a log line either way, because the candidate
- * is being replied to on a number that is not the one they last wrote to.
+ * It means one person has written to both. There is one record per `waId` and it
+ * keeps the number it started on — nothing about the questions turns on that any
+ * more, because both numbers run the same flow, but the reply still leaves from
+ * a number that is not the one they last wrote to, and that is worth a log line.
  */
 export function warnOnLineChange(params: {
   waId: string;

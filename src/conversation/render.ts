@@ -30,6 +30,7 @@ import {
   disambiguationChoices,
   generatedQuestionFor,
   labelFor,
+  SGMY_DESTINATIONS,
   type FlowStep,
 } from './flow.js';
 import { taxonomyCountries, taxonomyJobs } from '../crm/taxonomy.js';
@@ -185,31 +186,44 @@ function crmChoicesFor(step: FlowStep): Choice[] | undefined {
     if (!countries) return undefined;
 
     const compiled = new Map((step.choices ?? []).map((c) => [c.id, c]));
+
+    // Singapore and Malaysia are rows an admin must not be able to take away.
+    // They are not merely two more destinations: choosing one is what puts a
+    // candidate on the route that does not ask for a CV up front (§10), and a
+    // fork with no way to reach it is a flow nobody can enter. They are pinned
+    // out of the CRM's list and back in below the ceiling.
+    const pinned = (step.choices ?? []).filter((c) => SGMY_DESTINATIONS.has(c.id));
+
     // The region rows are not countries and do not come from the CRM's country
     // table, but candidates still choose them — "the Gulf, anywhere" is a real
     // answer. They are kept, after the named countries, exactly as before.
-    const regions = (step.choices ?? []).filter((c) => !countries.some((x) => x.id === c.id));
+    const regions = (step.choices ?? []).filter(
+      (c) => !SGMY_DESTINATIONS.has(c.id) && !countries.some((x) => x.id === c.id),
+    );
 
-    const named = countries.map((country) => {
-      const known = compiled.get(country.id);
-      if (known) return known;
-      return {
-        id: country.id,
-        label: {
-          en: country.name,
-          ta: country.name,
-          hi: country.name,
-          te: country.name,
-          ml: country.name,
-        },
-      };
-    });
+    const named = countries
+      .filter((country) => !SGMY_DESTINATIONS.has(country.id))
+      .map((country) => {
+        const known = compiled.get(country.id);
+        if (known) return known;
+        return {
+          id: country.id,
+          label: {
+            en: country.name,
+            ta: country.name,
+            hi: country.name,
+            te: country.name,
+            ml: country.name,
+          },
+        };
+      });
 
-    // WhatsApp's ten-row ceiling again, and the regions have to survive it:
-    // dropping "Any country" would leave a candidate with no way to say the
-    // thing most of them mean.
-    const room = Math.max(1, 10 - regions.length);
-    return [...named.slice(0, room), ...regions];
+    // WhatsApp's ten-row ceiling again, and the rows that carry meaning of their
+    // own have to survive it: dropping "Any country" would leave a candidate
+    // with no way to say the thing most of them mean, and dropping Singapore
+    // would close a route.
+    const room = Math.max(1, 10 - regions.length - pinned.length);
+    return [...named.slice(0, room), ...pinned, ...regions];
   }
 
   return undefined;
