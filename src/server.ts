@@ -24,6 +24,7 @@ import { markAsRead } from './whatsapp/client.js';
 import { captureAttachment } from './ingestion/whatsapp.js';
 import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
 import { record, renderMetrics } from './metrics/index.js';
+import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -271,6 +272,72 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         logger.warn({ url: req.url, ip: req.ip }, 'rejected unauthenticated api request');
         return res.code(401).send({ error: 'unauthorized' });
       }
+    });
+
+    /**
+     * The CRM telling us that a candidate now belongs to somebody.
+     *
+     * Two ids and nothing else on the wire. Everything the message says is read
+     * back out of the CRM by `notifyStaffOfAssignment` - see `staff/notify.ts`
+     * for why the wording lives on this side of the hop.
+     *
+     * Always 200 when the request itself was well formed, including when
+     * nothing was sent. The CRM has already written its own durable
+     * notification by the time it calls this, and there is nothing here it
+     * could usefully retry: a staff member with no number on file needs an
+     * admin, not another delivery attempt. The reason travels in the body
+     * instead, so it lands in the CRM's log where somebody will read it.
+     */
+    app.post('/api/staff-assignment', async (req, res) => {
+      const body = (req.body ?? {}) as { candidate_id?: unknown; staff_id?: unknown };
+      const candidateId = typeof body.candidate_id === 'string' ? body.candidate_id.trim() : '';
+      const staffId = typeof body.staff_id === 'string' ? body.staff_id.trim() : '';
+
+      if (!candidateId || !staffId) {
+        return res.code(400).send({ error: 'candidate_id and staff_id are required' });
+      }
+
+      return notifyStaffOfAssignment({ candidateId, staffId });
+    });
+
+    /**
+     * The CRM's SLA sweep telling us nobody has touched some allocated work.
+     *
+     * Facts rather than ids, unlike the assignment relay above. A sweep's result
+     * is not a record this bot could fetch back: by the time it asked, the next
+     * sweep may have resolved half of it, and re-reading would report a
+     * different set than the one that actually breached.
+     *
+     * One call per sweep, covering however many profiles it found - so `count`
+     * is the field that decides whether the message names a candidate or
+     * summarises a backlog.
+     */
+    app.post('/api/sla-breach', async (req, res) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const count = Number(body.count);
+      const thresholdHours = Number(body.threshold_hours);
+
+      if (!Number.isFinite(count) || count < 1 || !Number.isFinite(thresholdHours)) {
+        return res.code(400).send({ error: 'count and threshold_hours are required' });
+      }
+
+      const text = (value: unknown): string | undefined =>
+        typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+      return notifyAdminsOfSlaBreach({
+        count,
+        threshold_hours: thresholdHours,
+        staff_count: Number.isFinite(Number(body.staff_count))
+          ? Number(body.staff_count)
+          : undefined,
+        candidate_id: text(body.candidate_id),
+        candidate_name: text(body.candidate_name),
+        staff_name: text(body.staff_name),
+        hours_overdue: Number.isFinite(Number(body.hours_overdue))
+          ? Number(body.hours_overdue)
+          : undefined,
+        reason: text(body.reason),
+      });
     });
 
     app.get('/api/candidates', async (req) => {

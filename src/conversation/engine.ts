@@ -294,9 +294,16 @@ async function scheduleCrmSync(candidate: CandidateDoc): Promise<void> {
 
   // Once the registration is finished, `completeRegistration` has queued the
   // real handover and its outcome is the one that is recorded. A partial
-  // chasing it would deliver the same record under the same key and tell the
-  // CRM the conversation is still open.
-  if (candidate.stage === 'REGISTRATION_COMPLETED') return;
+  // chasing it would race that handover under the same key.
+  //
+  // Once the handover has actually landed, a later change is not a race any
+  // more — it is a document that arrived after the candidate was told they were
+  // registered, or an answer they corrected. Those used to stop here and reach
+  // the CRM never: `syncModeFor` now calls them an update, and this is the
+  // guard that has to let them past to get there.
+  if (candidate.stage === 'REGISTRATION_COMPLETED' && candidate.crmSync?.status !== 'synced') {
+    return;
+  }
 
   try {
     await queue.enqueue(

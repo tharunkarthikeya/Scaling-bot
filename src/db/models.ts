@@ -866,6 +866,33 @@ export interface ProcessedEventDoc {
 }
 
 /**
+ * Outbound dedupe for "a candidate is now yours".
+ *
+ * The mirror of `ProcessedEventDoc`, one hop further out. That one stops Meta's
+ * retries asking a candidate the same question twice; this stops the CRM's
+ * retries telling a staff member the same thing twice.
+ *
+ * `noticeKey` is `candidateId/staffId/assignedAt`, and the third part is what
+ * makes it right rather than merely safe. On the pair alone, a candidate moved
+ * A -> B -> A would leave the third step unsaid: A really was handed work they
+ * no longer had, and the key would already exist. With the moment in it, a
+ * replayed relay reads the same timestamp and is refused, while a genuine
+ * change carries a new one and goes out.
+ */
+export interface StaffNoticeDoc {
+  _id?: ObjectId;
+  noticeKey: string;
+  candidateId: string;
+  staffId: string;
+  /** As the CRM reported it. Absent for a candidate with no allocation time on file. */
+  assignedAt?: string;
+  claimedAt: Date;
+  /** Set once Meta has accepted it. A claim without one is a send still in flight. */
+  sentAt?: Date;
+  wamid?: string;
+}
+
+/**
  * Audit trail for the events §23 and §27 require us to be able to prove:
  * consent given, consent withdrawn, deletion requested, staff takeover.
  * Survives candidate deletion by design — it holds no document content.
@@ -931,6 +958,8 @@ export const b2bDocuments = (): Collection<CandidateDocumentsDoc> =>
   getDb().collection<CandidateDocumentsDoc>(COLLECTIONS.b2bDocuments);
 export const processedEvents = (): Collection<ProcessedEventDoc> =>
   getDb().collection<ProcessedEventDoc>('processed_events');
+export const staffNotices = (): Collection<StaffNoticeDoc> =>
+  getDb().collection<StaffNoticeDoc>('staff_notices');
 export const auditEvents = (): Collection<AuditEventDoc> =>
   getDb().collection<AuditEventDoc>('audit_events');
 /** Single-document counter behind the human-facing candidate id. */
@@ -1143,6 +1172,20 @@ export async function ensureIndexes(): Promise<void> {
     { key: { processedAt: 1 }, expireAfterSeconds: 60 * 60 * 24 * 7, name: 'processedAt_ttl' },
   ]);
 
+  // The unique index *is* the dedupe. A read-then-send would let two relays
+  // arriving together both find nothing and both message the same person — and
+  // two relays arriving together is the normal shape of a retry, not an
+  // exotic one.
+  await createIndexes(staffNotices(), [
+    { key: { noticeKey: 1 }, unique: true, name: 'noticeKey_unique' },
+    // Ninety days rather than seven. The key carries the moment of the
+    // allocation, so an expired row can only re-send if the identical relay
+    // arrives a quarter later — which would be a fault somewhere else. Long
+    // enough that nothing legitimate falls through, short enough not to grow
+    // without bound.
+    { key: { claimedAt: 1 }, expireAfterSeconds: 60 * 60 * 24 * 90, name: 'claimedAt_ttl' },
+  ]);
+
   await createIndexes(auditEvents(), [
     { key: { waId: 1, at: -1 }, name: 'waId_at' },
     { key: { event: 1, at: -1 }, name: 'event_at' },
@@ -1175,6 +1218,98 @@ export async function ensureIndexes(): Promise<void> {
   ]);
 
   logger.info('mongodb indexes ensured');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * "Has this staff member already been told?"
+ *
+ * The CRM relays an allocation best-effort, which means it retries, which means
+ * the same allocation can arrive here more than once — and a WhatsApp template
+ * is not a pop-up that can be sent twice harmlessly. It costs the agency money,
+ * it reads to the recipient as a second candidate, and at the volume a rebalance
+ * produces it reads as a fault.
+ *
+ * Claim, send, confirm. Not send-then-record: a crash between the two would let
+ * the retry send again, which is the case this exists for.
+ *
+ * That ordering buys at-most-once and pays for it honestly — a crash between
+ * the claim and the send loses that message, because the retry finds the claim
+ * and stands down. It is the right way round here: the staff member already has
+ * the durable notification in the CRM's own bell, so the cost of losing this one
+ * is a message they can still find on their screen, while the cost of the other
+ * failure is a template billed twice that reads as a second candidate. A send
+ * that *fails* rather than crashes gives the claim back, so only a lost process
+ * costs anything.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** `candidateId/staffId/assignedAt` — see `StaffNoticeDoc` for why the third part. */
+export function staffNoticeKey(params: {
+  candidateId: string;
+  staffId: string;
+  assignedAt?: string | null;
+}): string {
+  return `${params.candidateId}/${params.staffId}/${params.assignedAt ?? 'unknown'}`;
+}
+
+/**
+ * Takes the right to send this notice, or reports that somebody already has.
+ *
+ * Returns true exactly once per key, including when two callers race: the
+ * loser's insert fails on the unique index and it is told false. A caller told
+ * false must not send.
+ *
+ * A database that cannot be reached returns true. That is deliberate and it is
+ * the right way round: refusing to send would silently drop a real allocation
+ * on an outage, and the cost of the other failure is one duplicate message.
+ */
+export async function claimStaffNotice(params: {
+  candidateId: string;
+  staffId: string;
+  assignedAt?: string | null;
+}): Promise<boolean> {
+  const noticeKey = staffNoticeKey(params);
+  try {
+    await staffNotices().insertOne({
+      noticeKey,
+      candidateId: params.candidateId,
+      staffId: params.staffId,
+      ...(params.assignedAt ? { assignedAt: params.assignedAt } : {}),
+      claimedAt: new Date(),
+    });
+    return true;
+  } catch (err) {
+    if ((err as { code?: number }).code === 11000) return false;
+    logger.warn({ err, noticeKey }, 'could not claim a staff notice; sending anyway');
+    return true;
+  }
+}
+
+/** Marks a claimed notice as delivered, for the audit trail and for `inspect`. */
+export async function confirmStaffNotice(noticeKey: string, wamid?: string): Promise<void> {
+  try {
+    await staffNotices().updateOne(
+      { noticeKey },
+      { $set: { sentAt: new Date(), ...(wamid ? { wamid } : {}) } },
+    );
+  } catch (err) {
+    logger.warn({ err, noticeKey }, 'could not mark a staff notice as sent');
+  }
+}
+
+/**
+ * Gives the claim back, so a later attempt can take it.
+ *
+ * Called when the send did not happen — Meta refused, the template is not
+ * approved, the staff member has no usable number. Holding a claim for a
+ * message that was never delivered would mean the retry that could have worked
+ * is refused as a duplicate of nothing.
+ */
+export async function releaseStaffNotice(noticeKey: string): Promise<void> {
+  try {
+    await staffNotices().deleteOne({ noticeKey, sentAt: { $exists: false } });
+  } catch (err) {
+    logger.warn({ err, noticeKey }, 'could not release a staff notice claim');
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

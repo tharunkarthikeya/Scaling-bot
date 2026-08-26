@@ -161,6 +161,98 @@ export async function fetchCvRequirement(params: {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Reading a candidate back, to announce that somebody now owns them
+ *
+ * Both of these are `undefined` on any failure rather than throwing. Their one
+ * caller is composing a notification about an allocation that has already
+ * happened and been recorded on the other side: there is nothing to roll back
+ * and nothing to retry into, so a CRM that cannot be reached costs a message,
+ * not a candidate.
+ * -------------------------------------------------------------------------*/
+
+/** The handful of facts the staff assignment message is built from. */
+export interface CrmAssignmentSummary {
+  candidate_id: string;
+  source?: string;
+  full_name?: string | null;
+  destination_country?: string | null;
+  job?: string | null;
+  phone?: string | null;
+  documents?: string[];
+  assigned_staff_id?: string | null;
+  /**
+   * When that allocation was made, ISO-8601, as the CRM recorded it.
+   *
+   * What tells one allocation apart from a retried relay announcing the same
+   * one. See `staffNoticeKey`.
+   */
+  assigned_at?: string | null;
+}
+
+/** One staff member's contact details, and whether they are still active. */
+export interface CrmStaffContact {
+  id: string;
+  name?: string | null;
+  phone?: string | null;
+  role?: string | null;
+  active?: boolean;
+}
+
+async function readJson<T>(path: string, what: string): Promise<T | undefined> {
+  if (!crmConfigured()) return undefined;
+
+  try {
+    const res = await fetch(url(path), {
+      headers: headers(),
+      signal: AbortSignal.timeout(config.CRM_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      logger.warn({ status: res.status, what }, 'crm read failed');
+      return undefined;
+    }
+    return (await res.json()) as T;
+  } catch (err) {
+    logger.warn({ err, what }, 'crm read unreachable');
+    return undefined;
+  }
+}
+
+/** What to say about the candidate. */
+export async function fetchAssignmentSummary(
+  candidateId: string,
+): Promise<CrmAssignmentSummary | undefined> {
+  return readJson<CrmAssignmentSummary>(
+    `/candidates/${encodeURIComponent(candidateId)}/assignment-summary`,
+    'assignment summary',
+  );
+}
+
+/** Who to say it to. */
+export async function fetchStaffContact(
+  staffId: string,
+): Promise<CrmStaffContact | undefined> {
+  return readJson<CrmStaffContact>(
+    `/staff/${encodeURIComponent(staffId)}/contact`,
+    'staff contact',
+  );
+}
+
+/**
+ * Every admin who should hear that work has gone unattended.
+ *
+ * A list rather than one id, because an SLA breach is not addressed to anybody
+ * in particular - it is addressed to whoever is running the desk, and the CRM's
+ * own feed already fans out to all of them.
+ */
+export async function fetchAdminContacts(): Promise<CrmStaffContact[]> {
+  const body = await readJson<{ contacts?: CrmStaffContact[] }>(
+    '/staff/admin-contacts',
+    'admin contacts',
+  );
+  return body?.contacts ?? [];
+}
+
 /** Submits one finished registration. Safe to call again with the same payload. */
 export async function createCandidate(
   payload: CrmCandidatePayload,

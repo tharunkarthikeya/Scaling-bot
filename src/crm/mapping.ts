@@ -20,6 +20,7 @@
  * happen.
  */
 
+import { config } from '../config.js';
 import type { CandidateDoc } from '../db/models.js';
 import { destinationCountryOf, stepsFor } from '../conversation/flow.js';
 import type {
@@ -162,13 +163,38 @@ export interface CrmCandidatePayload {
 /**
  * A stable key for one candidate's submission.
  *
- * Derived from identifiers that do not change — the business phone number the
- * message arrived on, and the candidate's WhatsApp id — rather than generated,
- * so a retry after a crash produces the same key it did the first time. That is
- * what lets the CRM recognise a repeat instead of creating a second candidate.
+ * Derived rather than generated, so a retry after a crash — this minute or next
+ * week — produces the key it produced the first time. That is what lets the CRM
+ * recognise a repeat instead of creating a second candidate.
+ *
+ * ──────────────────────────────────────────────────────────────────────────
+ *  IT DOES NOT VARY BY LINE, AND THERE IS NO PARAMETER THAT COULD MAKE IT.
+ * ──────────────────────────────────────────────────────────────────────────
+ *
+ * The agency runs five or six numbers. They are five or six *sending*
+ * identities: different threads on the candidate's phone, different lines for a
+ * reply to leave from. They are not five or six people. Somebody who asked
+ * about Qatar on one number in March and came back to the Gulf number in August
+ * is one candidate, and a key carrying the line they happened to write to would
+ * make them two — each with half a registration, on two different desks.
+ *
+ * This used to take the line as an argument. Every caller passed the
+ * deployment's main number and the key was line-independent by convention;
+ * `candidate.phoneNumberId` was one autocomplete away from being passed
+ * instead, and nothing would have failed loudly if it had been. The parameter
+ * is gone, so the property holds by construction rather than by care.
+ *
+ * The constant stays in the string because that is the shape every key already
+ * written to the CRM has, and changing it would orphan them from the fast
+ * lookup for no gain. (Not for nothing: a record found by phone instead adopts
+ * the new key — see `_refresh_existing` in the CRM — so even that would heal.)
  */
-export function idempotencyKeyFor(candidate: CandidateDoc, phoneNumberId: string): string {
-  return `whatsapp/${phoneNumberId}/${candidate.waId}`;
+export function idempotencyKeyFor(candidate: CandidateDoc): string {
+  // Normalised, so a record whose `waId` was ever written with a plus or a
+  // space cannot key differently from the same person's next message. Meta's
+  // `wa_id` is already bare digits; this costs nothing and closes the case.
+  const digits = candidate.waId.replace(/\D/g, '');
+  return `whatsapp/${config.WHATSAPP_PHONE_NUMBER_ID}/${digits || candidate.waId}`;
 }
 
 /**
@@ -210,7 +236,6 @@ function list(values: unknown): string[] | undefined {
  */
 export function toCrmPayload(
   candidate: CandidateDoc,
-  phoneNumberId: string,
   /**
    * The CV, identity and job sections, where the caller has read them.
    *
@@ -277,7 +302,7 @@ export function toCrmPayload(
   return {
     source: 'whatsapp',
     profile,
-    idempotency_key: idempotencyKeyFor(candidate, phoneNumberId),
+    idempotency_key: idempotencyKeyFor(candidate),
     ...(typeof p.cvRequired === 'boolean' ? { cv_required_claim: p.cvRequired } : {}),
     registration: registrationStateOf(candidate),
     ...(snapshot?.cv ? { cv: snapshot.cv } : {}),

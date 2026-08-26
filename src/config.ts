@@ -136,10 +136,103 @@ const schema = z.object({
 
   WHATSAPP_APP_SECRET_SGMY: blankable(z.string().min(1).optional()),
   WHATSAPP_ACCESS_TOKEN_SGMY: blankable(z.string().min(1).optional()),
+
+  /* ---------------------------------------------------------------- */
+  /* The rest of the fleet                                              */
+  /*                                                                    */
+  /* Two numbers were named variables because there were two. There are  */
+  /* five or six, and a `_SGMY3` would be a worse version of a list, so   */
+  /* every further line goes here.                                       */
+  /*                                                                    */
+  /* None of this touches who a candidate *is*: identity is the number    */
+  /* they are holding, and it is the same on every one of these. What a   */
+  /* line decides is which number a reply leaves from, which token can    */
+  /* fetch its media, and which secret its webhooks are signed with.      */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Every other `phone_number_id` the agency runs, comma-separated.
+   *
+   * The value Meta reports in the webhook envelope, not the display number —
+   * a display number here silently matches nothing, which looks exactly like
+   * the bot ignoring that line.
+   *
+   * Lines under one Meta app need nothing else: they share the access token
+   * and the app secret, and a reply already leaves from the number it arrived
+   * on. Only a line on a *different* app needs the two settings below.
+   */
+  WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS: blankable(z.string().min(1).optional()),
+  /**
+   * Per-line access tokens, as `phoneNumberId=token` pairs, comma-separated.
+   *
+   * Pairs rather than a positional list on purpose: a positional list that
+   * drifts out of step with the ids above sends one line's calls under another
+   * line's token, which is a 401 on exactly one number and looks like nothing
+   * at all from the outside.
+   *
+   * A line with no entry uses `WHATSAPP_ACCESS_TOKEN`, which is right for
+   * every number sitting under the same app.
+   */
+  WHATSAPP_ADDITIONAL_ACCESS_TOKENS: blankable(z.string().min(1).optional()),
+  /**
+   * Further app secrets to accept webhook signatures against, comma-separated.
+   *
+   * Meta signs with the secret of the app that owns the subscription, and the
+   * signature is checked before the body is parsed — so there is no line to
+   * look a secret up by yet, and every secret we own has to be tried. Trying
+   * more of our own secrets widens nothing: a body signed with none of them is
+   * still rejected.
+   */
+  WHATSAPP_ADDITIONAL_APP_SECRETS: blankable(z.string().min(1).optional()),
+
   WHATSAPP_GRAPH_API_VERSION: z.string().default('v25.0'),
 
   WHATSAPP_REENGAGEMENT_TEMPLATE: blankable(z.string().min(1).optional()),
   WHATSAPP_REENGAGEMENT_TEMPLATE_LANG: z.string().default('en'),
+
+  /* ---------------------------------------------------------------- */
+  /* Telling a staff member they have been given somebody               */
+  /*                                                                    */
+  /* A template, and it has to be: a staff member never messages this    */
+  /* number, so their 24-hour window is closed permanently and a plain   */
+  /* text send is refused by Meta rather than merely discouraged.        */
+  /*                                                                    */
+  /* Unset disables the notification and `POST /api/staff-assignment`    */
+  /* says so in its reply. That is the right state before the template   */
+  /* is approved: the CRM can be wired up and its relay logged without   */
+  /* anything being sent, and turning it on is one environment variable. */
+  /* ---------------------------------------------------------------- */
+
+  WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE: blankable(z.string().min(1).optional()),
+  WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE_LANG: z.string().default('en'),
+
+  /**
+   * Approved template for telling the admins that work has gone unattended.
+   *
+   * The other half of the same arrangement, and a template for the same reason:
+   * an admin messages this number no more often than a staff member does.
+   *
+   * Unset disables the alert and `POST /api/sla-breach` says so. The CRM's
+   * sweep, its records and the admins' in-app feed are unaffected either way.
+   */
+  WHATSAPP_SLA_ALERT_TEMPLATE: blankable(z.string().min(1).optional()),
+  WHATSAPP_SLA_ALERT_TEMPLATE_LANG: z.string().default('en'),
+
+  /**
+   * The country code to read a bare ten-digit staff number as.
+   *
+   * The CRM keeps a staff phone as free text, which is right for a roster that
+   * spans India, the Gulf and occasionally Europe. What that leaves behind is
+   * "9876543210" with no way to place it by looking at it, and the roster is
+   * mostly Indian, so this is the assumption that gets those numbers messaged.
+   *
+   * A number written with a country code is always used as written; this only
+   * ever applies to one that has none. Set it blank to turn the assumption off
+   * entirely — those staff then get no WhatsApp notification until an admin
+   * puts a full number on their account, which is the safer half of the trade
+   * and available by deleting one value.
+   */
+  STAFF_PHONE_DEFAULT_COUNTRY_CODE: z.string().regex(/^\d*$/).default('91'),
 
   ANTHROPIC_API_KEY: z.string().min(1),
   // Model is read from env so it can be changed without touching code.
@@ -640,6 +733,44 @@ const schema = z.object({
         'WHATSAPP_PHONE_NUMBER_ID_SGMY',
         'required when WHATSAPP_WABA_ID_SGMY is set - the second line needs a number',
       );
+    }
+
+    // The same reasoning, for the rest of the fleet. A number listed twice is
+    // one number, and a deployment that believes it is running six lines while
+    // five are configured has one number nothing is routed to and no way to see
+    // it: every message there is dropped and the fleet count reads healthy.
+    const listed = (env.WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+    const named = [env.WHATSAPP_PHONE_NUMBER_ID, env.WHATSAPP_PHONE_NUMBER_ID_SGMY].filter(
+      Boolean,
+    );
+    const seen = new Set<string>();
+    for (const id of listed) {
+      if (named.includes(id) || seen.has(id)) {
+        missing(
+          'WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS',
+          `${id} is listed more than once - each entry has to be a different number`,
+        );
+        break;
+      }
+      seen.add(id);
+    }
+
+    // A token for a line that is not configured reaches nothing. It is almost
+    // always the id that is wrong rather than the token, and left unchecked it
+    // is a line running on the main token and 401ing on every call.
+    for (const pair of (env.WHATSAPP_ADDITIONAL_ACCESS_TOKENS ?? '').split(',')) {
+      const id = pair.split('=')[0]?.trim();
+      if (!id) continue;
+      if (!named.includes(id) && !seen.has(id)) {
+        missing(
+          'WHATSAPP_ADDITIONAL_ACCESS_TOKENS',
+          `${id} has a token but is not one of the configured numbers`,
+        );
+        break;
+      }
     }
 
     if (env.STORAGE_DRIVER === 's3') {

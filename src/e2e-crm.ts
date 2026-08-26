@@ -481,7 +481,7 @@ for (const scenario of SCENARIOS) {
   // the output rather than guessed at.
   {
     const { toCrmPayload } = await import('./crm/mapping.js');
-    const sent = toCrmPayload(candidate!, config.WHATSAPP_PHONE_NUMBER_ID);
+    const sent = toCrmPayload(candidate!);
     console.log(
       `  ${DIM}sent  key=${sent.idempotency_key}  phone=${sent.profile.phone_e164 ?? '—'}  ` +
         `job=${sent.profile.job_category ?? '—'}${RESET}`,

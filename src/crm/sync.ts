@@ -40,6 +40,53 @@ import { toCrmPayload } from './mapping.js';
 import { snapshotFor } from './snapshot.js';
 
 /**
+ * What one scheduled sync should actually do.
+ *
+ * Three answers, and the third is the one that used to be missing:
+ *
+ *   update             send what is on the record now. A registration still
+ *                      being answered, *or* one that finished and has changed
+ *                      since — a passport that was promised and arrived a week
+ *                      later, an answer corrected.
+ *   handover           the real submission at the end of registration. Its
+ *                      outcome is what `crmSync.status` records.
+ *   already_delivered  a duplicate job for a handover that has happened and a
+ *                      record that has not moved since.
+ *
+ * The case that was silently dropped: a document arriving after the candidate
+ * was told they were registered. It scheduled a sync, the sync saw a finished
+ * registration and stopped treating it as a partial, then saw `synced` and
+ * returned — so the CRM never learned about the document, and never would.
+ *
+ * A post-handover update is safe now in a way it was not before, and for a
+ * reason on the other side of the wire: the CRM refreshes an existing candidate
+ * on a repeated key instead of returning early. `registrationStateOf` is
+ * derived from the stage, so an update after completion correctly reports
+ * `complete: true` — it cannot tell the CRM the conversation is still open.
+ *
+ * Exported for the smoke checks: this is a decision about three fields and it
+ * should be testable without a database, a queue or a conversation.
+ */
+export function syncModeFor(
+  candidate: CandidateDoc,
+  requestedPartial: boolean,
+): 'update' | 'handover' | 'already_delivered' {
+  const finished = candidate.stage === 'REGISTRATION_COMPLETED';
+  const handedOver = candidate.crmSync?.status === 'synced';
+
+  if (requestedPartial) {
+    // A partial scheduled while the candidate was still answering, whose debounce
+    // ran out after they finished. It is not an update, it is the handover
+    // arriving early — and delivering it as an update would leave the handover
+    // unrecorded and the candidate permanently `pending`.
+    if (finished && !handedOver) return 'handover';
+    return 'update';
+  }
+
+  return handedOver ? 'already_delivered' : 'handover';
+}
+
+/**
  * Submits one candidate.
  *
  * Idempotent by construction: the payload carries a key derived from the
@@ -67,29 +114,22 @@ export async function syncCandidateToCrm(payload: {
     return;
   }
 
-  // A partial that arrives after the registration finished is not a partial. The
-  // job was scheduled while the candidate was still answering and the delay ran
-  // out afterwards; delivering it as one would tell the CRM the conversation is
-  // still open when it is not.
-  const partial = !!payload.partial && candidate.stage !== 'REGISTRATION_COMPLETED';
+  const mode = syncModeFor(candidate, !!payload.partial);
 
-  if (partial) {
+  if (mode === 'update') {
     await syncPartial(candidate);
     return;
   }
 
-  // Already delivered. A duplicate job, or a retry that raced the success.
-  if (candidate.crmSync?.status === 'synced') {
-    logger.debug({ waId, crmId: candidate.crmSync.candidateId }, 'already synced');
+  // Already delivered and nothing new to say. A duplicate job, or a retry that
+  // raced the success.
+  if (mode === 'already_delivered') {
+    logger.debug({ waId, crmId: candidate.crmSync?.candidateId }, 'already synced');
     return;
   }
 
   const attempts = (candidate.crmSync?.attempts ?? 0) + 1;
-  const body = toCrmPayload(
-    candidate,
-    config.WHATSAPP_PHONE_NUMBER_ID,
-    await snapshotFor(candidate),
-  );
+  const body = toCrmPayload(candidate, await snapshotFor(candidate));
 
   // Read once, before anything is sent. Both paths below may need it, and a
   // file read is not worth doing twice inside a retry.
@@ -207,14 +247,20 @@ export async function syncCandidateToCrm(payload: {
 }
 
 /**
- * Delivers a registration that is still being answered.
+ * Delivers the record as it stands, without claiming to be the handover.
+ *
+ * Two callers, both from `syncModeFor`: a registration still being answered,
+ * and one that finished and has changed since — a document that arrived after
+ * the candidate was told they were registered, an answer they corrected.
  *
  * The same endpoint, the same idempotency key, the same candidate — this is not
- * a second record, it is the first one arriving early and then filling in. What
- * makes it safe is that the CRM is told: `registration.complete` is false, so
- * the CV policy is not applied to somebody who has not yet reached the question
- * that would have produced a CV, and the candidate is not put in front of a
- * recruiter as a finished profile.
+ * a second record, it is the one the CRM already has, filling in. What makes it
+ * safe is that the CRM is told where the conversation actually is:
+ * `registration.complete` is derived from the stage, so a mid-registration
+ * delivery says `false` — the CV policy is not applied to somebody who has not
+ * reached the question that would have produced a CV, and they are not put in
+ * front of a recruiter as a finished profile — and a post-completion update
+ * says `true`, because by then they are.
  *
  * Three things it deliberately does not do.
  *
@@ -267,11 +313,7 @@ async function syncPartial(candidate: CandidateDoc): Promise<void> {
     return;
   }
 
-  const body = toCrmPayload(
-    candidate,
-    config.WHATSAPP_PHONE_NUMBER_ID,
-    await snapshotFor(candidate),
-  );
+  const body = toCrmPayload(candidate, await snapshotFor(candidate));
 
   try {
     const result = await createCandidate(body);
@@ -296,7 +338,9 @@ async function syncPartial(candidate: CandidateDoc): Promise<void> {
 
     logger.info(
       { waId, crmId: result.candidate_id, stage: candidate.stage, cv: sent },
-      'registration in progress delivered to the crm',
+      candidate.stage === 'REGISTRATION_COMPLETED'
+        ? 'a change after registration delivered to the crm'
+        : 'registration in progress delivered to the crm',
     );
   } catch (err) {
     const detail = err instanceof CrmError ? err.message : String(err);

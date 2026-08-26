@@ -323,6 +323,99 @@ export async function sendReengagementTemplate(
 }
 
 /**
+ * One approved template, with its body parameters filled in.
+ *
+ * Both callers below are templates for the same reason, and it is not a matter
+ * of taste: neither a staff member nor an admin ever messages this number, so
+ * the 24-hour window that free-form text needs is closed for them permanently
+ * and always will be. Meta refuses such a send outright - the failure is a 400,
+ * not a message that quietly does not arrive.
+ *
+ * Parameters are positional because a WhatsApp template's are: `{{1}}` is the
+ * first element of the array and there is no way to name them. Each caller
+ * documents its own order against the body submitted to Meta.
+ */
+async function sendBodyTemplate(
+  to: string,
+  name: string,
+  language: string,
+  parameters: string[],
+  from?: FromNumber,
+): Promise<SendResult> {
+  if (config.SHADOW_MODE) {
+    logger.info({ to, template: name, parameters }, 'shadow mode: template suppressed');
+    return { shadowed: true };
+  }
+
+  // From the same budget as a reply. It is the same Meta rate limit and the
+  // same number: a burst of allocations that spent nothing here would simply
+  // spend it out of a candidate's reply a moment later, and be harder to see.
+  await budgets.replies.acquire();
+
+  const json = await graphPost(
+    `${sendingNumberFor(from)}/messages`,
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name,
+        language: { code: language },
+        components: [
+          {
+            type: 'body',
+            // Meta rejects a newline inside a parameter, which is worth knowing
+            // here rather than in a 400: the line breaks belong to the template
+            // body, and each parameter is one field's worth of text.
+            parameters: parameters.map((text) => ({ type: 'text', text })),
+          },
+        ],
+      },
+    },
+    from,
+  );
+
+  return { wamid: json?.messages?.[0]?.id, shadowed: false };
+}
+
+/**
+ * Tells one staff member, on their own number, that a candidate is now theirs.
+ *
+ * Parameter order is fixed by `staffAssignmentParameters` in `staff/notify.ts`,
+ * which is the one place it is written down.
+ */
+export async function sendStaffAssignmentTemplate(
+  to: string,
+  parameters: string[],
+  from?: FromNumber,
+): Promise<SendResult> {
+  const name = config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE;
+  if (!name) throw new Error('WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE is not configured');
+  return sendBodyTemplate(
+    to,
+    name,
+    config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE_LANG,
+    parameters,
+    from,
+  );
+}
+
+/**
+ * Tells one admin that a candidate has sat with a staff member untouched.
+ *
+ * Parameter order is fixed by `slaAlertParameters` in `staff/notify.ts`.
+ */
+export async function sendSlaAlertTemplate(
+  to: string,
+  parameters: string[],
+  from?: FromNumber,
+): Promise<SendResult> {
+  const name = config.WHATSAPP_SLA_ALERT_TEMPLATE;
+  if (!name) throw new Error('WHATSAPP_SLA_ALERT_TEMPLATE is not configured');
+  return sendBodyTemplate(to, name, config.WHATSAPP_SLA_ALERT_TEMPLATE_LANG, parameters, from);
+}
+
+/**
  * Best-effort read receipt. Failing to mark read must never block processing.
  *
  * Spends from its own budget, and gives up rather than waiting for one. Both

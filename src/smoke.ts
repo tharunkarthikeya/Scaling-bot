@@ -21,6 +21,11 @@ import assert from 'node:assert/strict';
 import { ObjectId } from 'mongodb';
 import crypto from 'node:crypto';
 import { config } from './config.js';
+import {
+  slaAlertParameters,
+  staffAssignmentParameters,
+  staffPhoneToE164,
+} from './staff/notify.js';
 import { verifySignature } from './whatsapp/signature.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import {
@@ -106,6 +111,9 @@ import {
 import { OTHER_CHOICES, REMINDER_CHOICES, RESUME_CHOICES } from './conversation/copy.js';
 import * as copy from './conversation/copy.js';
 import { assignableFor, idempotencyKeyFor, toCrmPayload } from './crm/mapping.js';
+import { syncModeFor } from './crm/sync.js';
+import { accessTokenFor, configuredLines, webhookSecrets } from './conversation/lines.js';
+import { staffNoticeKey } from './db/models.js';
 import { cvSectionFrom, jobSectionOf } from './crm/snapshot.js';
 import { resetTaxonomy, setTaxonomyForTests } from './crm/taxonomy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
@@ -702,7 +710,7 @@ await check('a region is never sent to the CRM as a destination country', () => 
   // for the candidate would put a fact on the record nobody established.
   for (const region of ['gcc', 'europe', 'russia_cis', 'any', 'select']) {
     const c = candidate({ profile: { lookingForOverseasJob: true, countryPreference: region } });
-    assert.equal(toCrmPayload(c, '111').profile.destination_country, undefined, region);
+    assert.equal(toCrmPayload(c).profile.destination_country, undefined, region);
   }
 });
 
@@ -3511,7 +3519,7 @@ await check('residence is sent, and no destination is invented', () => {
   // countries", which is six of them and not a destination the CRM can be told
   // — and sending the residence in its place would file a Chennai candidate as
   // wanting to work in India, which is a fact nobody established.
-  const payload = toCrmPayload(readyForCrm(), '111222333');
+  const payload = toCrmPayload(readyForCrm());
   assert.equal(payload.profile.country, 'India');
   assert.equal(payload.profile.location, 'Chennai, Tamil Nadu');
   assert.equal(payload.profile.destination_country, undefined);
@@ -3525,23 +3533,23 @@ await check('a destination the CRM cannot name is not invented', () => {
   // than with a country somebody made up. `verify:taxonomy` is what reports the
   // list an installation actually has.
   for (const region of ['gcc', 'europe', 'malaysia', 'singapore']) {
-    const payload = toCrmPayload(readyForCrm({ countryPreference: region }), '111');
+    const payload = toCrmPayload(readyForCrm({ countryPreference: region }));
     assert.equal(payload.profile.destination_country, undefined, region);
   }
 
   // And the job category, which the flow does still ask, does reach the CRM.
-  assert.equal(toCrmPayload(readyForCrm(), '111').profile.job_category, 'general_worker');
+  assert.equal(toCrmPayload(readyForCrm()).profile.job_category, 'general_worker');
 });
 
 await check('the experience band is sent as a band, never as a number', () => {
-  const payload = toCrmPayload(readyForCrm(), '111');
+  const payload = toCrmPayload(readyForCrm());
   assert.equal(payload.profile.total_experience_band, '1_3');
   // "1_3" is a range the candidate picked. Turning it into 2.0 would put a
   // figure on the record they never gave.
   assert.equal(payload.profile.total_experience_years, undefined);
 
   // A CV that stated an actual figure does fill the numeric field.
-  const exact = toCrmPayload(readyForCrm({ totalExperienceYears: 6 }), '111');
+  const exact = toCrmPayload(readyForCrm({ totalExperienceYears: 6 }));
   assert.equal(exact.profile.total_experience_years, 6);
 });
 
@@ -3552,7 +3560,6 @@ await check('the passport is sent and the Aadhaar and PAN are not', () => {
   // nothing (§15, §16).
   const payload = toCrmPayload(
     readyForCrm({ aadhaarNumber: '1234 5678 9012', panNumber: 'ABCDE1234F' }),
-    '111',
   );
   assert.equal(payload.profile.passport_number, 'Z1234567');
   assert.equal(payload.profile.passport_expiry, '03/2031');
@@ -3566,34 +3573,34 @@ await check('the idempotency key is derived, so a retry reproduces it', () => {
   // Generated keys defeat the purpose: a retry after a crash would carry a new
   // one and the CRM would create a second candidate. Derived from identifiers
   // that do not change, the same submission always produces the same key.
-  const first = toCrmPayload(readyForCrm(), '111222333').idempotency_key;
-  const second = toCrmPayload(readyForCrm(), '111222333').idempotency_key;
+  const first = toCrmPayload(readyForCrm()).idempotency_key;
+  const second = toCrmPayload(readyForCrm()).idempotency_key;
   assert.equal(first, second);
-  assert.equal(first, 'whatsapp/111222333/919000000000');
+  assert.equal(first, `whatsapp/${config.WHATSAPP_PHONE_NUMBER_ID}/919000000000`);
 
   // Two candidates on the same business number are still two submissions.
   const other = candidate({ waId: '919999999999', profile: { fullName: 'Asha' } });
-  assert.notEqual(toCrmPayload(other, '111222333').idempotency_key, first);
+  assert.notEqual(toCrmPayload(other).idempotency_key, first);
 });
 
 await check('the phone is sent in international form', () => {
   // `waId` is the full number without a plus. The plus is what tells the CRM
   // this is international rather than a local number whose country nobody
   // recorded — their cross-country duplicate check reads exactly that.
-  const payload = toCrmPayload(readyForCrm(), '111');
+  const payload = toCrmPayload(readyForCrm());
   assert.equal(payload.profile.phone_e164, '+919000000000');
   assert.equal(payload.profile.phone, '+919000000000');
 });
 
 await check('what the bot believes about the CV is sent as a claim, not a fact', () => {
-  const payload = toCrmPayload(readyForCrm({ cvRequired: false }), '111');
+  const payload = toCrmPayload(readyForCrm({ cvRequired: false }));
   // Named `cv_required_claim` on the wire. The CRM derives its own answer and
   // may refuse the submission regardless of what this says.
   assert.equal(payload.cv_required_claim, false);
   assert.equal(payload.source, 'whatsapp');
 
   // Absent when the bot has no opinion, rather than guessed at.
-  assert.equal(toCrmPayload(readyForCrm(), '111').cv_required_claim, undefined);
+  assert.equal(toCrmPayload(readyForCrm()).cv_required_claim, undefined);
 });
 
 await check('a candidate with no name still reaches the CRM', () => {
@@ -3601,10 +3608,10 @@ await check('a candidate with no name still reaches the CRM', () => {
   // registering without a readable name is still a person a recruiter has to be
   // able to open, so the display name and then the number stand in.
   const noName = candidate({ profileName: 'Ravi', profile: { lookingForOverseasJob: true } });
-  assert.equal(toCrmPayload(noName, '111').profile.full_name, 'Ravi');
+  assert.equal(toCrmPayload(noName).profile.full_name, 'Ravi');
 
   const nothing = candidate({ profile: { lookingForOverseasJob: true } });
-  assert.equal(toCrmPayload(nothing, '111').profile.full_name, '919000000000');
+  assert.equal(toCrmPayload(nothing).profile.full_name, '919000000000');
 });
 
 await check('empty fields are omitted rather than sent as nulls', () => {
@@ -3612,7 +3619,7 @@ await check('empty fields are omitted rather than sent as nulls', () => {
   // nothing" — and on a re-registration that difference decides whether an
   // existing value survives.
   const sparse = candidate({ profile: { lookingForOverseasJob: true, fullName: 'Ravi' } });
-  const payload = toCrmPayload(sparse, '111');
+  const payload = toCrmPayload(sparse);
   for (const [key, value] of Object.entries(payload.profile)) {
     assert.notEqual(value, undefined, `${key} was sent as undefined`);
     assert.notEqual(value, null, `${key} was sent as null`);
@@ -3899,10 +3906,10 @@ await check('the CRM can name a country it added, and refuses to name a region',
   setTaxonomyForTests({ countries: [{ id: 'kuwait', name: 'Kuwait', order: 1 }] });
 
   const kuwait = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'kuwait' } });
-  assert.equal(toCrmPayload(kuwait, '111').profile.destination_country, 'Kuwait');
+  assert.equal(toCrmPayload(kuwait).profile.destination_country, 'Kuwait');
 
   const gulf = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'gcc' } });
-  assert.equal(toCrmPayload(gulf, '111').profile.destination_country, undefined);
+  assert.equal(toCrmPayload(gulf).profile.destination_country, undefined);
   resetTaxonomy();
 });
 
@@ -5127,13 +5134,13 @@ function midRegistration(overrides: Partial<CandidateDoc> = {}): CandidateDoc {
 }
 
 await check('the payload says plainly that the registration is unfinished', () => {
-  const payload = toCrmPayload(midRegistration(), '111');
+  const payload = toCrmPayload(midRegistration());
   assert.equal(payload.registration?.complete, false);
   assert.equal(payload.registration?.stage, 'JOB_PREFERENCE_PENDING');
 });
 
 await check('a finished registration says so, and carries its application id', () => {
-  const payload = toCrmPayload(readyForCrm(), '111');
+  const payload = toCrmPayload(readyForCrm());
   assert.equal(payload.registration?.complete, true);
   assert.equal(payload.registration?.application_id, 'ADR-00042');
 });
@@ -5142,7 +5149,7 @@ await check('the documents still outstanding are named, not merely absent', () =
   // A blank on a half-filled record is a question nobody has asked yet. Saying
   // which ones is the difference between that and "this candidate has no
   // Aadhaar".
-  const outstanding = toCrmPayload(midRegistration(), '111').registration
+  const outstanding = toCrmPayload(midRegistration()).registration
     ?.outstanding_documents;
   assert.ok(outstanding?.includes('cv'));
   assert.ok(outstanding?.includes('aadhaar'));
@@ -5154,7 +5161,7 @@ await check('only documents this candidate will actually be asked for are listed
   // contact's company registration certificate — and "still to come: company
   // registration certificate" against a welder reads as a broken bot.
   const outstanding =
-    toCrmPayload(midRegistration(), '111').registration?.outstanding_documents ?? [];
+    toCrmPayload(midRegistration()).registration?.outstanding_documents ?? [];
   for (const never of [
     'b2b_aadhaar_front',
     'b2b_aadhaar_back',
@@ -5175,8 +5182,8 @@ await check('a passport is listed once the candidate says they hold one', () => 
     profile: { ...before.profile, passportStatus: 'yes' },
   });
 
-  assert.ok(!toCrmPayload(before, '111').registration?.outstanding_documents?.includes('passport'));
-  assert.ok(toCrmPayload(after, '111').registration?.outstanding_documents?.includes('passport'));
+  assert.ok(!toCrmPayload(before).registration?.outstanding_documents?.includes('passport'));
+  assert.ok(toCrmPayload(after).registration?.outstanding_documents?.includes('passport'));
 });
 
 console.log('\nthe job section — questions travel with their answers');
@@ -5291,7 +5298,7 @@ function staffEnquiry(overrides: Partial<CandidateDoc> = {}): CandidateDoc {
 }
 
 await check('a staff enquiry reaches the CRM saying what it is (§24)', () => {
-  const registration = toCrmPayload(staffEnquiry(), '111').registration!;
+  const registration = toCrmPayload(staffEnquiry()).registration!;
 
   // Not a registration, and it says so rather than leaving the CRM to infer it
   // from an absence. This record will never carry `complete: true`.
@@ -5303,11 +5310,11 @@ await check('a staff enquiry reaches the CRM saying what it is (§24)', () => {
   assert.equal(registration.assignable, true);
 
   // A registration says the other thing, on the same field.
-  assert.equal(toCrmPayload(readyForCrm(), '111').registration!.enquiry, 'apply');
+  assert.equal(toCrmPayload(readyForCrm()).registration!.enquiry, 'apply');
 
   // And the state the record is actually in when the delivery fires: the intake
   // ends in a handover, and the debounced sync lands after it.
-  const handed = toCrmPayload(staffEnquiry({ stage: 'HUMAN_HANDOFF' }), '111').registration!;
+  const handed = toCrmPayload(staffEnquiry({ stage: 'HUMAN_HANDOFF' })).registration!;
   assert.equal(handed.stage, 'HUMAN_HANDOFF');
   assert.equal(handed.complete, false);
   assert.equal(handed.assignable, true);
@@ -5321,7 +5328,7 @@ await check('the intake\u2019s country and job travel with it', () => {
   assert.equal(job.job_category, 'general_worker');
 
   // On the flat profile too, which is what their list screen reads.
-  const profile = toCrmPayload(staffEnquiry(), '111').profile;
+  const profile = toCrmPayload(staffEnquiry()).profile;
   assert.equal(profile.job_category, 'general_worker');
   assert.equal(profile.full_name, 'Asha Kumari');
 });
@@ -5335,22 +5342,25 @@ await check('an enquiry and a registration from one person are one record', () =
   const registered = readyForCrm();
   assert.equal(enquiry.waId, registered.waId, 'fixtures must be the same person');
   assert.equal(
-    toCrmPayload(enquiry, '111').idempotency_key,
-    toCrmPayload(registered, '111').idempotency_key,
+    toCrmPayload(enquiry).idempotency_key,
+    toCrmPayload(registered).idempotency_key,
   );
-  assert.equal(idempotencyKeyFor(enquiry, '111'), 'whatsapp/111/919000000000');
+  assert.equal(
+    idempotencyKeyFor(enquiry),
+    `whatsapp/${config.WHATSAPP_PHONE_NUMBER_ID}/919000000000`,
+  );
 });
 
 await check('assignable does not wait for a finished registration', () => {
   // The point of the flag. A candidate who answered the destination and went
   // quiet is exactly the person a recruiter should be given, and they will
   // never be `complete`.
-  const partial = toCrmPayload(midRegistration(), '111').registration!;
+  const partial = toCrmPayload(midRegistration()).registration!;
   assert.equal(partial.complete, false);
   assert.equal(partial.assignable, true);
 
   // And a finished one is assignable for the ordinary reason.
-  assert.equal(toCrmPayload(readyForCrm(), '111').registration!.assignable, true);
+  assert.equal(toCrmPayload(readyForCrm()).registration!.assignable, true);
 });
 
 await check('assignable needs consent, a name, and something they asked for', () => {
@@ -5669,6 +5679,261 @@ await check('the window closing lets the next burst through', async () => {
   await q.close();
 
   assert.equal(seen.length, 2);
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\ntelling a staff member they have been given somebody');
+
+await check('a number written with its country code is used as written', () => {
+  assert.equal(staffPhoneToE164('+971 50 123 4567'), '971501234567');
+  assert.equal(staffPhoneToE164('00919876543210'), '919876543210');
+  assert.equal(staffPhoneToE164('+91-98765-43210'), '919876543210');
+});
+
+await check('a bare ten-digit number is read as the default country code', () => {
+  // The roster is mostly Indian and writes its own numbers the way it says
+  // them. Without this the majority of staff would never be messaged.
+  const cc = config.STAFF_PHONE_DEFAULT_COUNTRY_CODE;
+  assert.equal(staffPhoneToE164('9876543210'), `${cc}9876543210`);
+  assert.equal(staffPhoneToE164('98765 43210'), `${cc}9876543210`);
+});
+
+await check('a number too short to reach anybody is refused, not padded', () => {
+  // Refused rather than repaired: a typo that is sent anyway reaches a stranger,
+  // and the message names a candidate.
+  for (const bad of ['12345', '+1234', '', '   ', 'extension 204', undefined, null]) {
+    assert.equal(staffPhoneToE164(bad), undefined, `accepted ${JSON.stringify(bad)}`);
+  }
+});
+
+await check('every parameter is non-empty, whatever is missing from the record', () => {
+  // Meta rejects an empty parameter, so a candidate who has answered almost
+  // nothing must still produce seven sendable values.
+  const params = staffAssignmentParameters({ candidateId: 'CND-1024', registration: 'Incomplete' });
+  assert.equal(params.length, 7);
+  for (const value of params) {
+    assert.ok(value.length > 0, 'a blank parameter');
+    assert.ok(!/[\n\t]/.test(value), `a line break in ${JSON.stringify(value)}`);
+    assert.ok(!/ {4}/.test(value), `four spaces in ${JSON.stringify(value)}`);
+  }
+});
+
+await check('the parameters are in the order the approved body expects', () => {
+  // This is the contract with Meta. Reordering it here without resubmitting the
+  // template there sends cleanly and says the wrong things.
+  assert.deepEqual(
+    staffAssignmentParameters({
+      fullName: 'John Doe',
+      candidateId: 'CND-1024',
+      country: 'Singapore',
+      job: 'Welder',
+      phone: '+91 98765 43210',
+      registration: 'Incomplete',
+      documents: ['Passport', 'CV'],
+    }),
+    [
+      'John Doe',
+      'CND-1024',
+      'Singapore',
+      'Welder',
+      '+91 98765 43210',
+      'Incomplete',
+      'Passport, CV',
+    ],
+  );
+});
+
+await check('a value that arrived with a line break in it still sends', () => {
+  // A CV's name field routinely carries one. Collapsing costs the formatting;
+  // rejecting would cost the notification.
+  const [name] = staffAssignmentParameters({
+    fullName: 'John\n   Doe',
+    candidateId: 'CND-1',
+    registration: 'Complete',
+  });
+  assert.equal(name, 'John Doe');
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\ntelling the admins nobody has touched it');
+
+await check('one overdue candidate is named, with who is holding it', () => {
+  assert.deepEqual(
+    slaAlertParameters({
+      count: 1,
+      threshold_hours: 48,
+      candidate_id: 'CND-1024',
+      candidate_name: 'John Doe',
+      staff_name: 'Priya Sharma',
+      hours_overdue: 51.4,
+      reason: 'unviewed',
+    }),
+    ['John Doe (CND-1024)', '51 hours', 'Priya Sharma', 'opened'],
+  );
+});
+
+await check('a candidate opened but never judged says so', () => {
+  // The admin's first question is whether anyone looked at it at all, so the
+  // two reasons must not collapse into one word.
+  const [, , , notYet] = slaAlertParameters({
+    count: 1,
+    threshold_hours: 48,
+    candidate_name: 'John Doe',
+    hours_overdue: 60,
+    reason: 'unevaluated',
+  });
+  assert.equal(notYet, 'verified');
+});
+
+await check('a backlog is counted rather than named', () => {
+  // Naming the first of six would read as though it were the only one.
+  assert.deepEqual(
+    slaAlertParameters({ count: 6, threshold_hours: 48, staff_count: 4 }),
+    ['6 candidates', 'over 48 hours', '4 staff members', 'opened or verified'],
+  );
+});
+
+await check('one of each is singular, and the window is a whole number', () => {
+  assert.deepEqual(
+    slaAlertParameters({ count: 1, threshold_hours: 47.5, candidate_name: 'Asha' }),
+    ['Asha', 'over 48 hours', 'a staff member', 'opened'],
+  );
+});
+
+await check('an alert with nothing on file still has four sendable values', () => {
+  // Meta rejects an empty parameter, and a sweep that found something must be
+  // announceable even when the record behind it is bare.
+  for (const facts of [
+    { count: 1, threshold_hours: 48 },
+    { count: 3, threshold_hours: 48 },
+  ]) {
+    const params = slaAlertParameters(facts);
+    assert.equal(params.length, 4);
+    for (const value of params) {
+      assert.ok(value.length > 0, `a blank parameter in ${JSON.stringify(facts)}`);
+      assert.ok(!/[\n\t]/.test(value), `a line break in ${JSON.stringify(value)}`);
+    }
+  }
+});
+
+/* ------------------------------------------------------------------ */
+
+console.log('\none candidate across five or six company numbers');
+
+await check('the idempotency key does not vary by line', () => {
+  // The claim the whole feature rests on. The agency's numbers are sending
+  // identities - different threads on the candidate's phone - and a key that
+  // carried the line would make one person six candidates, each holding a
+  // sixth of a registration, on up to six different desks.
+  const person = candidate({ waId: '919000000000', profile: { fullName: 'Ravi' } });
+  const keys = new Set(
+    ['101', '202', '303', '404', '505', '606'].map((line) =>
+      idempotencyKeyFor({ ...person, phoneNumberId: line }),
+    ),
+  );
+  assert.equal(keys.size, 1, `the line leaked into the key: ${[...keys].join(', ')}`);
+});
+
+await check('the key is the candidate number, so two people are two records', () => {
+  // The converse, and the half a phone-derived rule could get wrong.
+  const one = idempotencyKeyFor(candidate({ waId: '919000000000' }));
+  const two = idempotencyKeyFor(candidate({ waId: '919999999999' }));
+  assert.notEqual(one, two);
+});
+
+await check('a waId written with punctuation keys the same as a bare one', () => {
+  // Meta sends bare digits, so this costs nothing today. It means a record
+  // repaired by hand, or migrated, cannot key differently from the same
+  // person's next message.
+  assert.equal(
+    idempotencyKeyFor(candidate({ waId: '+91 90000-00000' })),
+    idempotencyKeyFor(candidate({ waId: '919000000000' })),
+  );
+});
+
+await check('every configured number is listed once', () => {
+  const lines = configuredLines();
+  assert.ok(lines.includes(config.WHATSAPP_PHONE_NUMBER_ID), 'the main line is missing');
+  assert.equal(new Set(lines).size, lines.length, 'a number is listed twice');
+  for (const line of lines) assert.ok(line.length > 0, 'a blank entry reached the fleet list');
+});
+
+await check('a line with no token override calls on the main token', () => {
+  // The common case, and the one every existing deployment is in: numbers
+  // under one Meta app share a token.
+  assert.equal(accessTokenFor('a-line-with-no-override'), config.WHATSAPP_ACCESS_TOKEN);
+  assert.equal(accessTokenFor(undefined), config.WHATSAPP_ACCESS_TOKEN);
+});
+
+await check('every app secret we own is offered to the signature check', () => {
+  const secrets = webhookSecrets();
+  assert.ok(secrets.includes(config.WHATSAPP_APP_SECRET), 'the main app secret is missing');
+  assert.equal(new Set(secrets).size, secrets.length, 'a secret is offered twice');
+  assert.ok(secrets.every(Boolean), 'a blank secret reached the signature check');
+});
+
+await check('one allocation is one notice, and a move back is a new one', () => {
+  // The key the outbound dedupe is built on. Same candidate, same staff member,
+  // same moment - a retried relay - is one notice. A different moment is a
+  // different allocation, which is what makes A -> B -> A announceable.
+  const at = '2026-08-27T09:00:00Z';
+  const replay = staffNoticeKey({ candidateId: 'CND-1', staffId: 'ST-1', assignedAt: at });
+  assert.equal(staffNoticeKey({ candidateId: 'CND-1', staffId: 'ST-1', assignedAt: at }), replay);
+
+  const movedBack = staffNoticeKey({
+    candidateId: 'CND-1',
+    staffId: 'ST-1',
+    assignedAt: '2026-08-29T11:00:00Z',
+  });
+  assert.notEqual(movedBack, replay);
+
+  const otherOwner = staffNoticeKey({ candidateId: 'CND-1', staffId: 'ST-2', assignedAt: at });
+  assert.notEqual(otherOwner, replay);
+});
+
+await check('a document sent after registration still reaches the crm', () => {
+  // The case that was dropped in silence. A passport promised during the
+  // conversation and sent a week later changed the record, scheduled a sync,
+  // and the sync stopped treating it as a partial because the registration had
+  // finished - then saw `synced` and returned. The CRM never learned about it.
+  const done = candidate({
+    stage: 'REGISTRATION_COMPLETED',
+    crmSync: { status: 'synced', candidateId: 'CND-1024', attempts: 1 },
+  });
+  assert.equal(syncModeFor(done, true), 'update');
+});
+
+await check('a partial that outran the handover becomes the handover', () => {
+  // Scheduled while the candidate was still answering, debounce ran out after
+  // they finished. Delivering it as an update would leave the handover
+  // unrecorded and the candidate `pending` for good.
+  const justFinished = candidate({ stage: 'REGISTRATION_COMPLETED' });
+  assert.equal(syncModeFor(justFinished, true), 'handover');
+});
+
+await check('a duplicate handover job for a delivered record does nothing', () => {
+  const done = candidate({
+    stage: 'REGISTRATION_COMPLETED',
+    crmSync: { status: 'synced', candidateId: 'CND-1024', attempts: 1 },
+  });
+  assert.equal(syncModeFor(done, false), 'already_delivered');
+});
+
+await check('a registration still being answered is an update', () => {
+  assert.equal(syncModeFor(candidate({ stage: 'DOCUMENTS_PENDING' }), true), 'update');
+  assert.equal(syncModeFor(candidate({ stage: 'DOCUMENTS_PENDING' }), false), 'handover');
+});
+
+await check('a notice with no allocation time is still a stable key', () => {
+  // A candidate whose `assigned_at` the CRM has no record of. It must not key
+  // on undefined and produce a different string every call, which would send
+  // the message once per relay.
+  const first = staffNoticeKey({ candidateId: 'CND-9', staffId: 'ST-3' });
+  const second = staffNoticeKey({ candidateId: 'CND-9', staffId: 'ST-3', assignedAt: null });
+  assert.equal(first, second);
+  assert.ok(first.includes('CND-9') && first.includes('ST-3'));
 });
 
 /* ------------------------------------------------------------------ */

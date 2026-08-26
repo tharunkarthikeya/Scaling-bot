@@ -11,7 +11,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config, graphBaseUrl } from './config.js';
-import { accessTokenFor } from './conversation/lines.js';
+import { accessTokenFor, configuredLines } from './conversation/lines.js';
 
 type State = 'ok' | 'warn' | 'fail';
 
@@ -208,38 +208,39 @@ async function graphGet(
   return { ok: res.ok, status: res.status, body };
 }
 
-// Both numbers, where a second one is configured. A second line that is set to
-// an id the token cannot see is a flow nobody can reach and a candidate whose
-// replies fail to send — and it would otherwise show up only in production, on
-// the first message to that number.
-const lines: Array<{ label: string; id: string; variable: string }> = [
-  {
-    label: 'whatsapp number',
-    id: config.WHATSAPP_PHONE_NUMBER_ID,
-    variable: 'WHATSAPP_PHONE_NUMBER_ID',
+// Every number the agency runs. A line set to an id the token cannot see is a
+// number nobody can reach and a candidate whose replies fail to send — and it
+// would otherwise show up only in production, on the first message to it.
+//
+// The whole fleet rather than the first two: five lines checked and a sixth
+// left out is exactly the shape of the failure this is meant to catch, and the
+// number nobody verified is the one every message is lost on. Duplicates are
+// already refused by the config schema, so a repeated id cannot reach here.
+const lines: Array<{ label: string; id: string; variable: string }> = configuredLines().map(
+  (id) => {
+    if (id === config.WHATSAPP_PHONE_NUMBER_ID) {
+      return { label: 'whatsapp number', id, variable: 'WHATSAPP_PHONE_NUMBER_ID' };
+    }
+    if (id === config.WHATSAPP_PHONE_NUMBER_ID_SGMY) {
+      return {
+        label: 'whatsapp number (second line)',
+        id,
+        variable: 'WHATSAPP_PHONE_NUMBER_ID_SGMY',
+      };
+    }
+    return {
+      label: `whatsapp number (${id})`,
+      id,
+      variable: 'WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS',
+    };
   },
-  ...(config.WHATSAPP_PHONE_NUMBER_ID_SGMY
-    ? [
-        {
-          label: 'whatsapp number (second line)',
-          id: config.WHATSAPP_PHONE_NUMBER_ID_SGMY,
-          variable: 'WHATSAPP_PHONE_NUMBER_ID_SGMY',
-        },
-      ]
-    : []),
-];
+);
 
-if (lines.length === 1) {
-  record('ok', 'whatsapp lines', 'one number; WHATSAPP_PHONE_NUMBER_ID_SGMY is not set');
-} else if (lines[0]!.id === lines[1]!.id) {
-  record(
-    'fail',
-    'whatsapp lines',
-    'both numbers are the same id',
-    'WHATSAPP_PHONE_NUMBER_ID_SGMY must be the *other* number. Set to the same ' +
-      'id, the second number is not configured at all and nothing checks it.',
-  );
-}
+record(
+  'ok',
+  'whatsapp lines',
+  lines.length === 1 ? 'one number configured' : `${lines.length} numbers configured`,
+);
 
 for (const line of lines) {
   try {
@@ -269,9 +270,16 @@ for (const line of lines) {
 
 /* 7. Is Meta actually subscribed to send us anything? --------------------- */
 
-// Every WABA, because the two numbers are on two of them. Checking one would
-// report the fleet as subscribed while every message to the other number went
-// nowhere — the failure this loop exists to make visible.
+// Every WABA named by a variable. Checking one would report the fleet as
+// subscribed while every message to a number on the other went nowhere — the
+// failure this loop exists to make visible.
+//
+// A subscription is per-WABA, not per-number, so the lines in
+// WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS are covered by whichever WABA below
+// holds them — which for numbers added to an existing account is the main one.
+// A line on a *third* WABA has no variable naming it and is not checked here;
+// the warning after this loop says so rather than letting silence read as a
+// pass.
 const wabas: Array<{ label: string; id?: string; variable: string; line?: string }> = [
   { label: 'webhook subscription', id: config.WHATSAPP_WABA_ID, variable: 'WHATSAPP_WABA_ID' },
   ...(config.WHATSAPP_PHONE_NUMBER_ID_SGMY
@@ -316,6 +324,27 @@ for (const waba of wabas) {
     }
   } catch (err) {
     record('warn', waba.label, short(err));
+  }
+}
+
+// Said out loud rather than left to be inferred from a clean run. A number on a
+// WABA no variable names is subscribed or not, and this check cannot tell —
+// which is worth one line of warning, because an unsubscribed line looks
+// identical from the outside to the bot ignoring that number.
+{
+  const named = new Set(
+    [config.WHATSAPP_PHONE_NUMBER_ID, config.WHATSAPP_PHONE_NUMBER_ID_SGMY].filter(Boolean),
+  );
+  const extra = configuredLines().filter((id) => !named.has(id));
+  if (extra.length) {
+    record(
+      'warn',
+      'webhook subscription (further lines)',
+      `${extra.length} number(s) not covered by a WABA variable`,
+      'These are subscribed only if they sit under a WABA checked above — which is ' +
+        'the case for numbers added to an existing account. A line on its own WABA ' +
+        'needs verifying by hand in Meta -> WhatsApp -> Configuration.',
+    );
   }
 }
 
