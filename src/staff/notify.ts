@@ -104,25 +104,27 @@ export function staffPhoneToE164(raw: string | null | undefined): string | undef
 }
 
 /**
- * The template's three parameters, in the order the approved body expects.
+ * The template's four parameters, in the order the approved body expects.
  *
  * This array **is** the contract with Meta. The body submitted for approval is:
  *
  *     Hello, {{1}}
- *     Candidate Name: {{1}}
- *     Candidate ID: {{2}}
- *     Mobile Number: {{3}}
+ *     Candidate Name: {{2}}
+ *     Candidate ID: {{3}}
+ *     Mobile Number: {{4}}
  *
  * Reordering here without resubmitting there produces a message that sends
  * cleanly and says the wrong things, which is the worst shape this bug can
  * take - so the body is written out above rather than left in a wiki.
  */
 export function staffAssignmentParameters(fields: {
+  staffName?: string | null;
   fullName?: string | null;
   candidateId: string;
   phone?: string | null;
 }): string[] {
   return [
+    parameter(fields.staffName, 'Team Member'),
     parameter(fields.fullName, 'Unnamed candidate'),
     parameter(fields.candidateId),
     parameter(fields.phone, 'Not on file'),
@@ -188,6 +190,7 @@ export async function notifyStaffOfAssignment(params: {
     const result = await sendStaffAssignmentTemplate(
       to,
       staffAssignmentParameters({
+        staffName: staff.name,
         fullName: summary.full_name,
         candidateId: summary.candidate_id || candidateId,
         phone: summary.phone,
