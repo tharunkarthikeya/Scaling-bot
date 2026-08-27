@@ -771,7 +771,7 @@ passport, aadhaar, pan, driving_licence, certificate — each an array of versio
 oldest first, nothing ever removed (§22). The current version of anything is the
 last entry without a `supersededAt`. `b2b_documents` is the same shape for the
 three kinds only a business contact sends; see **Other → B2B enquiry** above for
-why those are filed apart.
+why those are filed at.
 
 **Deliveries are deduped.** Meta retries. `claimEvent()` inserts the `wamid`
 into a unique index, and a duplicate is dropped — otherwise a retry re-runs the
