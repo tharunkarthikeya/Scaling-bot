@@ -259,6 +259,91 @@ section('taxonomy (what the bot offers candidates)');
           'resolved from. A country with no name is a candidate the policy cannot rule on.',
       );
     }
+
+    /* Which rows a candidate can actually see -------------------------------- */
+    //
+    // The question an admin who has just added a job actually has, and the one
+    // this command could not answer before: is it on the list? Ten rows is a
+    // hard ceiling, so past a certain number of jobs the answer is no — and the
+    // fix is an edit to `bot_order`, not a deploy.
+    const { stepById } = await import('./conversation/flow.js');
+    const { acceptedChoices, choicesFor } = await import('./conversation/render.js');
+    const parked = {
+      waId: '910000000000',
+      profile: { lookingForOverseasJob: true },
+      documents: {},
+    } as unknown as import('./db/models.js').CandidateDoc;
+
+    const lists: Array<[string, string, string[]]> = [
+      ['job_category', 'jobs on the list', rows.jobs.map((j) => j.id)],
+      ['country_preference', 'countries on the list', rows.countries.map((c) => c.id)],
+    ];
+
+    for (const [stepId, label, ids] of lists) {
+      const step = stepById(stepId)!;
+      const shown = new Set(choicesFor(step, parked).map((c) => c.id));
+      const accepted = new Set(acceptedChoices(step, parked).map((c) => c.id));
+
+      const offList = ids.filter((id) => !shown.has(id));
+      const unreachable = ids.filter((id) => !accepted.has(id));
+
+      record(
+        'ok',
+        label,
+        offList.length
+          ? `${ids.length - offList.length} shown, ${offList.length} reached by typing (${offList.join(', ')})`
+          : `all ${ids.length} shown`,
+        offList.length
+          ? 'A row past the ceiling is not lost — a candidate who types it is understood — but it ' +
+              'is not on screen. Lower its bot_order in Data Management to bring it onto the list.'
+          : undefined,
+      );
+
+      if (unreachable.length) {
+        record(
+          'fail',
+          `${label}: unreachable`,
+          unreachable.join(', '),
+          'These are on the CRM’s list and cannot be chosen or typed. A candidate answering with ' +
+            'one is told it is not an option.',
+        );
+      }
+    }
+
+    /* The questions hanging off those jobs ----------------------------------- */
+    //
+    // One request per job. This is a diagnostic run by a person, not a hot path,
+    // and "which of my jobs actually ask anything?" is not answerable from the
+    // taxonomy alone.
+    const { fetchJobQuestions } = await import('./crm/taxonomy.js');
+    const counted = await Promise.all(
+      rows.jobs.map(async (job) => [job, await fetchJobQuestions(job.id)] as const),
+    );
+
+    const unanswerable = counted.filter(([, questions]) => questions === undefined);
+    const withQuestions = counted.filter(([, questions]) => questions?.length);
+
+    if (unanswerable.length) {
+      record(
+        'fail',
+        'GET /jobs/{id}/questions',
+        `${unanswerable.length} job(s) did not answer`,
+        'The screening questions an admin wrote will not be asked while this fails. The ' +
+          'registration itself is unaffected.',
+      );
+    } else {
+      record(
+        'ok',
+        'job questions',
+        withQuestions.length
+          ? withQuestions.map(([job, q]) => `${job.id}:${q!.length}`).join('  ')
+          : 'none configured on any job',
+        withQuestions.length
+          ? undefined
+          : 'Not a fault. Add them in Data Management → Questions and a candidate who picks that ' +
+              'job is asked them within five minutes.',
+      );
+    }
   }
 }
 

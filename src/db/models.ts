@@ -150,6 +150,45 @@ export interface GeneratedQuestion {
   options: string[];
 }
 
+/**
+ * One screening question an admin attached to a job in the CRM, as it read on
+ * the day this candidate was asked it.
+ *
+ * A copy, deliberately, and this is the whole reason the record exists rather
+ * than a list of ids. The question lives in the CRM's `job_questions` table and
+ * an admin rewords it, reorders it or retires it whenever the client's brief
+ * changes; a profile that rendered today's wording against last month's answer
+ * would be a record of a conversation that never happened. So the text travels
+ * with the answer, here and on to the CRM — which stores it the same way and
+ * for the same reason (see `JobAnswer` there).
+ *
+ * Written before the question is put to the candidate, exactly as
+ * `GeneratedQuestion` is, so what was asked is auditable and identical on a
+ * re-ask.
+ */
+export interface StoredJobQuestion {
+  /** The `job_questions` row id. Answers live at `profile.jobQuestionAnswers[id]`. */
+  id: string;
+  /** The job it was attached to, in the CRM's ids. */
+  jobId: string;
+  /** The question, in the admin's words. Never translated — see `render`. */
+  question: string;
+  /** `choice` when the admin supplied options, `text` when the candidate types. */
+  kind: 'text' | 'choice';
+  /** The options, already cut to what WhatsApp will render. Empty for `text`. */
+  choices: string[];
+  /**
+   * Whether the admin marked it required.
+   *
+   * Recorded and sent on; it does not gate the conversation. A screening
+   * question the client wants is not worth stalling a registration over, and
+   * the flow already re-asks anything unanswered before the confirmation.
+   */
+  required: boolean;
+  /** When it was written onto the record, which is when it was about to be asked. */
+  askedAt: string;
+}
+
 export interface CandidateProfile {
   /** §2 — answered before anything personal is collected. */
   lookingForOverseasJob?: boolean;
@@ -163,6 +202,25 @@ export interface CandidateProfile {
   tradeQuestions?: GeneratedQuestion[];
   /** The occupation those questions were written for, so a change rewrites them. */
   tradeQuestionsFor?: string;
+  /**
+   * The screening questions the CRM has attached to the job this candidate
+   * chose (see `crm/taxonomy.ts`), stored before they are asked.
+   *
+   * The counterpart of `tradeQuestions` for a question an admin wrote rather
+   * than the model: same slot mechanism in the flow, same reason for storing
+   * the text, and answers under the question's own id below.
+   */
+  jobQuestions?: StoredJobQuestion[];
+  /**
+   * The job those questions belong to, so changing the job re-reads them.
+   *
+   * The pairing `tradeQuestionsFor` has with `tradeQuestions`. Storing the
+   * questions without the job they were fetched for would leave a candidate who
+   * edits their job answering the previous job's screening questions.
+   */
+  jobQuestionsFor?: string;
+  /** Answers to them, keyed by the CRM's question id. */
+  jobQuestionAnswers?: Record<string, string[]>;
   /** Set once the §17 comparison has flagged a difference, so it is raised once. */
   identityFlagged?: boolean;
 

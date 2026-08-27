@@ -39,7 +39,7 @@ import type {
 } from '../db/models.js';
 import { documentsFor } from '../db/models.js';
 import { logger } from '../logger.js';
-import { choicesFor } from '../conversation/render.js';
+import { acceptedChoices } from '../conversation/render.js';
 import { labelFor, stepById, type FlowStep } from '../conversation/flow.js';
 import { TRADE_PACKS } from '../conversation/trades.js';
 import { destinationCountryOf } from '../conversation/flow.js';
@@ -589,9 +589,13 @@ function answerText(
 
   let options: Array<{ id: string; label: { en: string } }> = [];
   try {
-    options = choicesFor(step, candidate) as Array<{ id: string; label: { en: string } }>;
+    // Everything the step accepts, not only what it rendered. A country or a job
+    // past WhatsApp's ten-row ceiling is a perfectly ordinary answer — the
+    // candidate typed it — and reading it back from the rendered rows alone
+    // would put the option id on a recruiter's screen instead of its name.
+    options = acceptedChoices(step, candidate) as Array<{ id: string; label: { en: string } }>;
   } catch {
-    // `choicesFor` reaches into the taxonomy cache and the candidate's own
+    // `acceptedChoices` reaches into the taxonomy cache and the candidate's own
     // generated questions. A snapshot is never worth failing over, and the ids
     // below are still readable.
     options = [];

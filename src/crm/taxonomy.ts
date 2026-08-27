@@ -49,6 +49,19 @@ export interface TaxonomyCountry {
   order: number;
 }
 
+/**
+ * One screening question an admin attached to a job, as
+ * `GET /jobs/{job_id}/questions` returns it.
+ */
+export interface TaxonomyJobQuestion {
+  id: string;
+  text: string;
+  /** `text` for a typed answer, `choice` for a tap. */
+  kind: 'text' | 'choice';
+  choices: string[];
+  required: boolean;
+}
+
 interface Taxonomy {
   version: string;
   botListLimit: number;
@@ -65,6 +78,26 @@ interface Taxonomy {
 const DEFAULT_LIST_LIMIT = 10;
 
 let cache: Taxonomy | undefined;
+
+/**
+ * The admin's order, and the whole of what "configurable" means here.
+ *
+ * WhatsApp shows ten rows and an agency recruits for more than ten things, so
+ * which rows a candidate sees is decided by `bot_order` and nothing else. The
+ * CRM sorts on it too; this is not trust in that, it is the same rule applied
+ * where the list is used — a row arriving out of order from anywhere would
+ * otherwise silently change what nine jobs get shown.
+ *
+ * Ties break on the name, so two rows an admin left at the default order come
+ * out in a stable order rather than in whatever order Mongo returned them.
+ */
+function inAdminOrder<T extends { order?: number; title?: string; name?: string }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const by = (a.order ?? 100) - (b.order ?? 100);
+    if (by !== 0) return by;
+    return (a.title ?? a.name ?? '').localeCompare(b.title ?? b.name ?? '');
+  });
+}
 
 /** How often the list is re-read. Also the worst-case delay on a new job. */
 export const TAXONOMY_REFRESH_MS = 5 * 60_000;
@@ -113,8 +146,8 @@ export async function refreshTaxonomy(): Promise<Taxonomy | undefined> {
     cache = {
       version: body.version ?? '',
       botListLimit: body.bot_list_limit ?? DEFAULT_LIST_LIMIT,
-      jobs: [...jobs].sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
-      countries: [...countries].sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
+      jobs: inAdminOrder(jobs),
+      countries: inAdminOrder(countries),
       fetchedAt: new Date(),
     };
 
@@ -123,6 +156,25 @@ export async function refreshTaxonomy(): Promise<Taxonomy | undefined> {
         { version: cache.version, jobs: jobs.length, countries: countries.length },
         'crm taxonomy updated',
       );
+
+      // A job past the ceiling is not lost — `crmHiddenChoicesFor` keeps it
+      // answerable by typing — but it is not on the screen, and an admin who
+      // added one and cannot find it should be able to see why from the logs
+      // rather than from a candidate who never saw it.
+      const shown = Math.max(1, (cache.botListLimit || DEFAULT_LIST_LIMIT) - 1);
+      if (cache.jobs.length > shown) {
+        logger.warn(
+          { jobs: cache.jobs.length, shown, offList: cache.jobs.slice(shown).map((j) => j.id) },
+          'more jobs than WhatsApp will show in one list; the rest are reachable by typing. ' +
+            'Lower a job’s bot_order in the CRM to bring it onto the list.',
+        );
+      }
+
+      // The taxonomy moved, so an admin has been editing. Drop the per-job
+      // questions rather than serving them until their own TTL runs out — a
+      // candidate part-way through a set keeps the copy stored on their record,
+      // so nothing they are being asked changes underneath them.
+      questionCache.clear();
     }
     return cache;
   } catch (err) {
@@ -179,9 +231,180 @@ export function isTaxonomyJob(jobId: string): boolean {
   return !!cache?.jobs.some((j) => j.id === jobId);
 }
 
+/** The title an admin gave a job, for the record the CRM keeps of the choice. */
+export function taxonomyJobTitle(jobId: string): string | undefined {
+  return cache?.jobs.find((j) => j.id === jobId)?.title;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * The questions an admin attached to a job
+ *
+ * A second, smaller list, read from `GET /jobs/{job_id}/questions` and cached
+ * per job rather than fetched with the taxonomy. Two reasons for the split:
+ *
+ *   * Most jobs carry no questions and most candidates pick one of a handful of
+ *     jobs, so pulling every job's questions on a timer would be a request per
+ *     job every five minutes to fill a cache nobody reads.
+ *   * They are needed once per candidate — at the moment they pick a job — and
+ *     that moment is already asynchronous (`ensureJobQuestions` in the engine),
+ *     unlike the synchronous render path the jobs and countries are read from.
+ *
+ * So: fetched on demand, held for `JOB_QUESTIONS_TTL_MS`, shared between
+ * candidates who pick the same job, and one request per job however many of
+ * them are waiting.
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** How long a job's questions are held before they are re-read. */
+export const JOB_QUESTIONS_TTL_MS = 5 * 60_000;
+
+/**
+ * How long a failed read is left alone before it is tried again.
+ *
+ * This one is not about load, it is about the candidate's clock. Unlike the
+ * taxonomy, which is refreshed on a timer, these are read inside a turn — so a
+ * CRM that is down costs whoever is typing the full `CRM_TIMEOUT_MS` before
+ * their next question arrives. Retrying on every turn would spend that once per
+ * message for the rest of the outage; remembering the failure for a minute
+ * spends it once per minute, and the candidate is asked nothing different
+ * either way.
+ */
+const RETRY_AFTER_FAILURE_MS = 60_000;
+
+interface QuestionEntry {
+  questions: TaxonomyJobQuestion[];
+  fetchedAt: number;
+}
+
+const questionCache = new Map<string, QuestionEntry>();
+const failedAt = new Map<string, number>();
+const inFlight = new Map<string, Promise<TaxonomyJobQuestion[] | undefined>>();
+
+/**
+ * WhatsApp renders at most ten rows, and a question with one option is not a
+ * choice. Both are enforced here rather than trusted to the admin form, because
+ * what an over-long list costs is not a truncated question — it is a message
+ * Meta refuses outright and a candidate who receives nothing.
+ */
+const MAX_QUESTION_CHOICES = 10;
+
+function usableQuestion(raw: unknown): TaxonomyJobQuestion | undefined {
+  const q = (raw ?? {}) as Record<string, unknown>;
+  const id = typeof q.id === 'string' ? q.id.trim() : '';
+  const asked = typeof q.text === 'string' ? q.text.trim() : '';
+  if (!id || !asked) return undefined;
+
+  const choices = (Array.isArray(q.choices) ? q.choices : [])
+    .filter((c): c is string => typeof c === 'string')
+    .map((c) => c.trim())
+    .filter(Boolean)
+    .slice(0, MAX_QUESTION_CHOICES);
+
+  // An admin who wrote a single option wrote a leading question. It is asked as
+  // free text instead, which still records what they say.
+  const kind = q.kind === 'choice' && choices.length >= 2 ? 'choice' : 'text';
+
+  return { id, text: asked, kind, choices: kind === 'choice' ? choices : [], required: !!q.required };
+}
+
+/**
+ * The questions attached to one job, from the cache or from the CRM.
+ *
+ * Never throws and never stalls a registration.
+ *
+ * The return type carries a distinction the caller cannot do without.
+ * `[]` means the CRM answered and this job has no questions; `undefined` means
+ * we could not find out. They look the same to a candidate — neither is asked
+ * anything — and they are opposites to the record: the caller stores an empty
+ * list against the job, and a stored empty list is what stops this running
+ * again. Collapsing the two would let one unreachable minute record "this job
+ * has no screening questions" for a candidate permanently.
+ */
+export async function fetchJobQuestions(
+  jobId: string,
+): Promise<TaxonomyJobQuestion[] | undefined> {
+  if (!jobId) return [];
+
+  const held = questionCache.get(jobId);
+  if (held && Date.now() - held.fetchedAt < JOB_QUESTIONS_TTL_MS) return held.questions;
+
+  if (!crmConfigured()) return held?.questions;
+
+  const failed = failedAt.get(jobId);
+  if (failed !== undefined && Date.now() - failed < RETRY_AFTER_FAILURE_MS) {
+    return held?.questions;
+  }
+
+  const existing = inFlight.get(jobId);
+  if (existing) return existing;
+
+  const request = (async (): Promise<TaxonomyJobQuestion[] | undefined> => {
+    try {
+      const res = await fetch(
+        `${config.CRM_API_URL!.replace(/\/$/, '')}/jobs/${encodeURIComponent(jobId)}/questions`,
+        {
+          headers: { 'X-Service-Key': config.CRM_API_KEY! },
+          signal: AbortSignal.timeout(config.CRM_TIMEOUT_MS),
+        },
+      );
+
+      if (!res.ok) {
+        logger.warn(
+          { jobId, status: res.status },
+          'crm job questions fetch failed; keeping what was cached',
+        );
+        failedAt.set(jobId, Date.now());
+        return held?.questions;
+      }
+
+      const body = (await res.json()) as { questions?: unknown[] };
+      const questions = (body.questions ?? [])
+        .map(usableQuestion)
+        .filter((q): q is TaxonomyJobQuestion => !!q);
+
+      questionCache.set(jobId, { questions, fetchedAt: Date.now() });
+      failedAt.delete(jobId);
+      if (questions.length) {
+        logger.info({ jobId, questions: questions.length }, 'crm job questions loaded');
+      }
+      return questions;
+    } catch (err) {
+      logger.warn({ err, jobId }, 'crm job questions unreachable; keeping what was cached');
+      failedAt.set(jobId, Date.now());
+      return held?.questions;
+    } finally {
+      inFlight.delete(jobId);
+    }
+  })();
+
+  inFlight.set(jobId, request);
+  return request;
+}
+
+/** What is currently held for a job, without reaching for the network. */
+export function cachedJobQuestions(jobId: string): TaxonomyJobQuestion[] | undefined {
+  return questionCache.get(jobId)?.questions;
+}
+
 /** Test seam: drop the cache so a run starts from the built-in lists. */
 export function resetTaxonomy(): void {
   cache = undefined;
+  questionCache.clear();
+  failedAt.clear();
+  inFlight.clear();
+}
+
+/** Test seam: install a job's questions without going near the network. */
+export function setJobQuestionsForTests(
+  jobId: string,
+  questions: Array<Partial<TaxonomyJobQuestion> & { id: string; text: string }>,
+): void {
+  failedAt.delete(jobId);
+  questionCache.set(jobId, {
+    questions: questions
+      .map((q) => usableQuestion({ kind: 'text', choices: [], required: false, ...q }))
+      .filter((q): q is TaxonomyJobQuestion => !!q),
+    fetchedAt: Date.now(),
+  });
 }
 
 /** Test seam: install a list without going near the network. */
@@ -191,11 +414,14 @@ export function setTaxonomyForTests(value: {
   jobs?: TaxonomyJob[];
   countries?: TaxonomyCountry[];
 }): void {
+  // Sorted, exactly as a fetched list is. A seam that skipped this would let a
+  // test pass on an order production would never produce, which is the one
+  // thing a seam must not do.
   cache = {
     version: value.version ?? 'test',
     botListLimit: value.botListLimit ?? DEFAULT_LIST_LIMIT,
-    jobs: value.jobs ?? [],
-    countries: value.countries ?? [],
+    jobs: inAdminOrder(value.jobs ?? []),
+    countries: inAdminOrder(value.countries ?? []),
     fetchedAt: new Date(),
   };
 }

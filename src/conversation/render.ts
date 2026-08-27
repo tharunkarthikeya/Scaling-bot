@@ -33,7 +33,13 @@ import {
   SGMY_DESTINATIONS,
   type FlowStep,
 } from './flow.js';
-import { taxonomyCountries, taxonomyJobs } from '../crm/taxonomy.js';
+import {
+  taxonomy,
+  taxonomyCountries,
+  taxonomyCountryName,
+  taxonomyJobs,
+  taxonomyJobTitle,
+} from '../crm/taxonomy.js';
 import { documentSummary } from './checklist.js';
 import { DOCUMENTS } from './rules.js';
 import { translate } from './translate.js';
@@ -186,47 +192,162 @@ function crmChoicesFor(step: FlowStep): Choice[] | undefined {
     if (!countries) return undefined;
 
     const compiled = new Map((step.choices ?? []).map((c) => [c.id, c]));
+    const labelled = (id: string, name: string): Choice =>
+      compiled.get(id) ?? { id, label: { en: name, ta: name, hi: name, te: name, ml: name } };
 
-    // Singapore and Malaysia are rows an admin must not be able to take away.
-    // They are not merely two more destinations: choosing one is what puts a
-    // candidate on the route that does not ask for a CV up front (§10), and a
-    // fork with no way to reach it is a flow nobody can enter. They are pinned
-    // out of the CRM's list and back in below the ceiling.
-    const pinned = (step.choices ?? []).filter((c) => SGMY_DESTINATIONS.has(c.id));
-
-    // The region rows are not countries and do not come from the CRM's country
-    // table, but candidates still choose them — "the Gulf, anywhere" is a real
-    // answer. They are kept, after the named countries, exactly as before.
+    /* The row budget, in priority order. Ten rows, and more things that could
+     * fill one than there is room for — so what gets cut has to be a decision
+     * written down once rather than a slice() nobody reads.
+     *
+     * The version this replaces spent seven rows before it looked at the CRM's
+     * list at all: two pinned destinations and five compiled region rows. With
+     * eight countries on file that left three, and Kuwait, Oman and Bahrain —
+     * active, bot-visible, added by an admin who expected to see them — were
+     * dropped without a word. An admin's list losing to a hard-coded one is the
+     * feature failing at exactly the moment it is being used.
+     *
+     *   1. Singapore and Malaysia. Not merely two more destinations: choosing
+     *      one is what puts a candidate on the route that does not ask for a CV
+     *      up front (§10), and a fork with no way to reach it is a flow nobody
+     *      can enter. Kept even if an admin retires them from the CRM.
+     *   2. "Any country" and "Select countries". The first is what most
+     *      candidates actually mean; the second is the only way to name a
+     *      country that is not on the list. Losing either leaves an answer with
+     *      no row to give it.
+     *   3. The CRM's countries, in the admin's order. This is the list the
+     *      screen exists to publish.
+     *   4. The regions — the Gulf, Europe, Russia/CIS — with whatever is left.
+     *      Real answers, and they still are: everything cut here stays typable,
+     *      because `crmHiddenChoicesFor` puts it back in the answer space.
+     */
+    const essential = (step.choices ?? []).filter((c) => c.id === 'any' || c.id === 'select');
     const regions = (step.choices ?? []).filter(
-      (c) => !SGMY_DESTINATIONS.has(c.id) && !countries.some((x) => x.id === c.id),
+      (c) =>
+        !SGMY_DESTINATIONS.has(c.id) &&
+        c.id !== 'any' &&
+        c.id !== 'select' &&
+        !countries.some((x) => x.id === c.id),
     );
 
-    const named = countries
-      .filter((country) => !SGMY_DESTINATIONS.has(country.id))
-      .map((country) => {
-        const known = compiled.get(country.id);
-        if (known) return known;
-        return {
-          id: country.id,
-          label: {
-            en: country.name,
-            ta: country.name,
-            hi: country.name,
-            te: country.name,
-            ml: country.name,
-          },
-        };
-      });
+    // The CRM's own list, in the CRM's own order, Singapore and Malaysia among
+    // the rest rather than appended after it — an admin who ordered Kuwait
+    // above Qatar meant that, and an admin who put Singapore third meant that
+    // too. Either is pinned back on the end only if the CRM has dropped it.
+    const named = countries.map((country) => labelled(country.id, country.name));
+    for (const pin of (step.choices ?? []).filter((c) => SGMY_DESTINATIONS.has(c.id))) {
+      if (!named.some((row) => row.id === pin.id)) named.push(pin);
+    }
 
-    // WhatsApp's ten-row ceiling again, and the rows that carry meaning of their
-    // own have to survive it: dropping "Any country" would leave a candidate
-    // with no way to say the thing most of them mean, and dropping Singapore
-    // would close a route.
-    const room = Math.max(1, 10 - regions.length - pinned.length);
-    return [...named.slice(0, room), ...pinned, ...regions];
+    const room = Math.max(1, WA_LIMITS.listRows - essential.length);
+    const shown = named.slice(0, room);
+
+    return [...shown, ...regions.slice(0, Math.max(0, room - shown.length)), ...essential];
   }
 
   return undefined;
+}
+
+/**
+ * Answers the interpreter accepts for a taxonomy question but never renders.
+ *
+ * WhatsApp's ten rows are a limit on what can be *shown*, not on what an agency
+ * recruits for or where it sends people. Everything the ceiling cuts is put back
+ * here: a candidate who types "Kuwait" at a question that had no room for
+ * Kuwait is answering it, and until this existed they were told their answer was
+ * not one of the options — for a country an admin had added on purpose.
+ *
+ * Three kinds of thing go in:
+ *
+ *   * every taxonomy row that did not fit, so the id it resolves to is the
+ *     CRM's own id and lands in `destination_country` and `job_id` correctly;
+ *   * the compiled rows the CRM's list displaced, so "the Gulf" and "Europe"
+ *     keep working for a candidate who says them;
+ *   * a few shorthands people actually type — "UAE", "KSA" — which otherwise
+ *     cost a model call each to resolve, and are the two most common answers to
+ *     this question after Singapore.
+ *
+ * Every one of them is marked `hidden`, which keeps them out of the numbering:
+ * see `Choice.hidden`.
+ */
+function crmHiddenChoicesFor(step: FlowStep): Choice[] {
+  const shown = new Set(crmChoicesFor(step)?.map((c) => c.id) ?? []);
+  if (!shown.size) return [];
+
+  const hidden: Choice[] = [];
+  const add = (id: string, text: string) => {
+    hidden.push({
+      id,
+      label: { en: text, ta: text, hi: text, te: text, ml: text },
+      hidden: true,
+    });
+  };
+
+  if (step.id === 'job_category') {
+    for (const job of taxonomy()?.jobs ?? []) {
+      if (!shown.has(job.id)) add(job.id, job.title);
+    }
+  }
+
+  if (step.id === 'country_preference') {
+    for (const country of taxonomy()?.countries ?? []) {
+      // The name, only for a country that did not fit. The aliases for every
+      // country there is: "UAE" is typed at least as often as the row is
+      // tapped, and resolving it here rather than in the interpreter is the
+      // difference between an answer and a model call.
+      if (!shown.has(country.id)) add(country.id, country.name);
+      for (const alias of aliasesFor(country.name)) add(country.id, alias);
+    }
+  }
+
+  // Whatever the CRM's list pushed off the screen. These are ids already
+  // written into records that answered this question before the list moved, so
+  // they have to stay answerable as well as readable.
+  for (const compiled of step.choices ?? []) {
+    if (!shown.has(compiled.id)) hidden.push({ ...compiled, hidden: true });
+  }
+
+  return hidden;
+}
+
+/**
+ * The other things people call a country.
+ *
+ * Only two rules, both mechanical: the acronym of a multi-word name, which is
+ * how "United Arab Emirates" is written on nine tenths of the messages that
+ * mention it, and a short list of names that are not derivable from the CRM's
+ * spelling at all. Anything subtler — "Dubai", "the Emirates", a misspelling —
+ * is the interpreter's job, and it is given every id to choose from.
+ */
+function aliasesFor(name: string): string[] {
+  const out: string[] = [];
+  const words = name.split(/[^A-Za-z]+/).filter(Boolean);
+
+  if (words.length > 1) out.push(words.map((w) => w[0]!).join('').toUpperCase());
+
+  const known: Record<string, string[]> = {
+    'saudi arabia': ['KSA', 'Saudi'],
+    'united arab emirates': ['Emirates'],
+    'united kingdom': ['UK', 'Britain'],
+    'united states': ['USA', 'America'],
+  };
+  out.push(...(known[name.trim().toLowerCase()] ?? []));
+
+  return out;
+}
+
+/**
+ * The id stored when a candidate taps an option on a question that was written
+ * rather than compiled — a generated trade question, or one an admin attached
+ * to a job.
+ *
+ * Derived from the option's own text because there is nothing else to derive it
+ * from: neither kind of question has ids of its own. Exported because the CRM
+ * mapping has to run it backwards — an answer reaches the CRM as the words the
+ * candidate was shown, and this is the only thing that connects `tig_welding`
+ * to "TIG welding".
+ */
+export function generatedOptionId(option: string): string {
+  return option.toLowerCase().replace(/\s+/g, '_').slice(0, 40);
 }
 
 /**
@@ -244,7 +365,7 @@ export function choicesFor(step: FlowStep, candidate: CandidateDoc): Choice[] {
   // call, exactly as a hand-written label does.
   const base = generated
     ? generated.options.map((option) => ({
-        id: option.toLowerCase().replace(/\s+/g, '_').slice(0, 40),
+        id: generatedOptionId(option),
         label: { en: option, ta: option, hi: option, te: option, ml: option },
       }))
     : step.id === 'trade_disambiguation'
@@ -264,7 +385,37 @@ export function choicesFor(step: FlowStep, candidate: CandidateDoc): Choice[] {
 
 /** Options the interpreter may return, including any that are not rendered. */
 export function acceptedChoices(step: FlowStep, candidate: CandidateDoc): Choice[] {
-  return [...choicesFor(step, candidate), ...(step.hiddenChoices ?? [])];
+  const rendered = choicesFor(step, candidate);
+
+  // The rows the candidate can see, then everything else they could reasonably
+  // say. Order matters twice over: the rendered rows come first so that a reply
+  // of "3" means the third row on their screen, and everything after them is
+  // marked `hidden` so it can never be reached by a number at all.
+  const behind = [
+    ...crmHiddenChoicesFor(step),
+    ...(step.hiddenChoices ?? []).map((c) => ({ ...c, hidden: true })),
+  ];
+
+  // One entry per label, first occurrence winning. A duplicate *id* is expected
+  // and kept — that is what an alias is, a second name for the same answer — but
+  // one label meaning two things is not something the interpreter can resolve,
+  // and repeating a label the candidate can already tap adds a line to the
+  // model's prompt and nothing to what it can choose. First wins is what makes
+  // the order above the ranking: a rendered row beats a hidden one, and the
+  // CRM's own name for a row beats the compiled alias it displaced.
+  // Nothing rendered is ever dropped, whatever it repeats: those are the rows on
+  // the candidate's screen and their positions are what "3" means.
+  const claimed = new Set(rendered.map((c) => c.label.en.trim().toLowerCase()));
+
+  return [
+    ...rendered,
+    ...behind.filter((choice) => {
+      const key = choice.label.en.trim().toLowerCase();
+      if (claimed.has(key)) return false;
+      claimed.add(key);
+      return true;
+    }),
+  ];
 }
 
 export async function renderStep(step: FlowStep, candidate: CandidateDoc): Promise<Outbound> {
@@ -376,8 +527,17 @@ async function label(
   stepId?: string,
 ): Promise<string | undefined> {
   if (!optionId) return undefined;
+
   const found = labelFor(optionId, stepId);
-  return found ? say(found, candidate) : optionId;
+  if (found) return say(found, candidate);
+
+  // A row that exists only in the CRM has no compiled label to find, and the
+  // fallback below it is the option id — so a candidate who chose Kuwait read
+  // "kuwait" back on their own confirmation. The taxonomy is what named that row
+  // in the first place; asking it again is the difference between a summary and
+  // a database key. English, because that is all the CRM holds.
+  const named = taxonomyCountryName(optionId) ?? taxonomyJobTitle(optionId);
+  return named ?? optionId;
 }
 
 /** What the candidate is looking for, which §9 keeps separate from what they do. */

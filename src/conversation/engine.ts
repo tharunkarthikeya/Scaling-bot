@@ -52,7 +52,9 @@ import {
   type UploadOcr,
   type MessageDoc,
   type OcrField,
+  type StoredJobQuestion,
 } from '../db/models.js';
+import { fetchJobQuestions } from '../crm/taxonomy.js';
 import {
   downloadMedia,
   send,
@@ -70,6 +72,7 @@ import {
   inferTradePacks,
   desiredJobForLevel,
   occupationForQuestions,
+  MAX_JOB_QUESTIONS,
   nextStep,
   stepById,
   stepsInSection,
@@ -577,6 +580,90 @@ async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
 }
 
 /**
+ * Reads the screening questions an admin attached to the job this candidate
+ * chose, and stores them so the flow can ask them.
+ *
+ * The counterpart of `ensureTradeQuestions`, and it runs in the same place for
+ * the same reason: the scheduler is a synchronous walk over stored state, so
+ * anything a step's guard needs has to be on the record before it is consulted.
+ * The questions live in the CRM's `job_questions` table, which the bot reaches
+ * over HTTP — that read cannot happen inside `nextStep`.
+ *
+ * Stored rather than read per turn, which is what makes an admin's edit safe.
+ * A question reworded, reordered or retired half way through one candidate's
+ * registration changes nothing they are being asked and nothing their answers
+ * are filed against; the next candidate gets the new set. The CRM keeps its own
+ * copy of the text for exactly this reason, and this is the other half of it.
+ *
+ * Once per candidate per job. An empty list is stored like any other answer —
+ * "this job has no screening questions" — and that stored pair is what stops a
+ * request on every turn for the rest of the registration.
+ */
+async function ensureJobQuestions(candidate: CandidateDoc): Promise<void> {
+  // The staff intake is nine questions somebody already asked to be called
+  // about (§24). It has no trade questions for the same reason.
+  if (candidate.enquiry === 'staff') return;
+
+  const profile = candidate.profile ?? {};
+  const jobId = profile.jobCategory as string | undefined;
+
+  // Nothing chosen yet, or a job that is not one of the CRM's — "Other" is the
+  // row for a job the agency has no designation for, so there is nothing for a
+  // client to have attached questions to.
+  if (!jobId || jobId === 'other') return;
+  if (profile.jobQuestionsFor === jobId) return;
+
+  const questions = await fetchJobQuestions(jobId);
+
+  // The CRM could not be asked. Writing what comes next would store an empty
+  // list *and* the job it was fetched for, and that pair is what stops this ever
+  // running again — so a two-second outage would record "this job has no
+  // questions" for this candidate permanently. Leave it unset and try next turn.
+  if (!questions) {
+    logger.warn({ waId: candidate.waId, jobId }, 'job questions deferred: the CRM did not answer');
+    return;
+  }
+
+  const askedAt = new Date().toISOString();
+  const stored: StoredJobQuestion[] = questions.slice(0, MAX_JOB_QUESTIONS).map((question) => ({
+    id: question.id,
+    jobId,
+    question: question.text,
+    kind: question.kind,
+    choices: question.choices,
+    required: question.required,
+    askedAt,
+  }));
+
+  if (questions.length > MAX_JOB_QUESTIONS) {
+    logger.warn(
+      { jobId, attached: questions.length, asked: MAX_JOB_QUESTIONS },
+      'more screening questions on this job than the flow will ask; the rest are not put to candidates',
+    );
+  }
+
+  await recordsFor(candidate.enquiry).updateOne(
+    { _id: candidate._id },
+    {
+      $set: {
+        'profile.jobQuestions': stored,
+        'profile.jobQuestionsFor': jobId,
+        updatedAt: new Date(),
+      },
+    },
+  );
+  candidate.profile.jobQuestions = stored;
+  candidate.profile.jobQuestionsFor = jobId;
+
+  if (stored.length) {
+    logger.info(
+      { waId: candidate.waId, jobId, questions: stored.length },
+      'screening questions loaded for the job this candidate chose',
+    );
+  }
+}
+
+/**
  * Works out how much a CV would add for the job this candidate wants (§5).
  *
  * Only for a candidate bound for Singapore or Malaysia, where it decides one
@@ -670,6 +757,10 @@ async function askNextQuestion(
   }
 
   await ensureTradeQuestions(candidate);
+
+  // And the questions an admin attached to the job they picked, which are read
+  // from the CRM rather than written here.
+  await ensureJobQuestions(candidate);
 
   // Whether this candidate is asked for a CV at all, on the route where that is
   // a question. A no-op for every other destination.

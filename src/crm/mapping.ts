@@ -21,14 +21,33 @@
  */
 
 import { config } from '../config.js';
-import type { CandidateDoc } from '../db/models.js';
-import { destinationCountryOf, stepsFor } from '../conversation/flow.js';
+import type { CandidateDoc, StoredJobQuestion } from '../db/models.js';
+import { destinationCountryOf, labelFor, stepsFor } from '../conversation/flow.js';
+import { generatedOptionId } from '../conversation/render.js';
+import { taxonomyJobTitle } from './taxonomy.js';
 import type {
   CrmCvSection,
   CrmIdentitySection,
   CrmJobSection,
   CrmSnapshot,
 } from './snapshot.js';
+
+/**
+ * One screening answer, in the shape `JobAnswerIn` accepts.
+ *
+ * The question travels with the answer — see `StoredJobQuestion` for why, and
+ * note that the CRM's own model says the same thing in its own words. This is
+ * the one place the two systems agree on a structure rather than a field name,
+ * so it is worth keeping them written down next to each other.
+ */
+export interface CrmJobAnswer {
+  question_id: string;
+  question: string;
+  answer: string;
+  /** 'text' or 'choice' — what the candidate was offered, not what they said. */
+  kind: string;
+  asked_at?: string;
+}
 
 /** The profile shape `POST /candidates` accepts. Their names, not ours. */
 export interface CrmProfile {
@@ -42,6 +61,18 @@ export interface CrmProfile {
   destination_country?: string;
   job_preference?: string;
   job_category?: string;
+  /**
+   * The job designation they picked, as the CRM's own id and title.
+   *
+   * `job_category` has carried the id all along and is not enough on its own:
+   * it is validated against the policy table and read by the CV rules, and the
+   * CRM stores the title beside the id precisely so that a job retired next
+   * month still reads as the job this person applied for.
+   */
+  job_id?: string;
+  job_title?: string;
+  /** Their answers to the screening questions attached to that job. */
+  job_answers?: CrmJobAnswer[];
   trade_skills?: string[];
   skills?: string[];
   languages?: string[];
@@ -223,6 +254,56 @@ function list(values: unknown): string[] | undefined {
 }
 
 /**
+ * What the candidate said to the screening questions attached to their job.
+ *
+ * Built from the copy of the questions stored on the candidate, not from the
+ * CRM's current table, so an admin rewording a question does not rewrite the
+ * question a past answer was given to. Only answered questions travel: a
+ * question that has been stored but not yet reached is not an unanswered
+ * question on a recruiter's screen, it is a question the conversation has not
+ * got to, and the registration state already says how far that is.
+ *
+ * This is the *only* route these answers take to the CRM. They are deliberately
+ * not folded into the `job` section beside the flow's own questions, because
+ * `job_answers` is a field `WhatsAppProfileIn` accepts and refreshes on a
+ * partial — the section is not, and would be dropped at the door.
+ *
+ * Both strings are clipped to what the CRM's model accepts. A candidate who
+ * answers a free-text question with a paragraph must not have their whole
+ * submission refused for it.
+ */
+function jobAnswersOf(candidate: CandidateDoc): CrmJobAnswer[] | undefined {
+  const profile = candidate.profile ?? {};
+  const stored = (profile.jobQuestions ?? []) as StoredJobQuestion[];
+  const answers = (profile.jobQuestionAnswers ?? {}) as Record<string, string[]>;
+
+  const out: CrmJobAnswer[] = [];
+
+  for (const question of stored) {
+    const values = answers[question.id];
+    if (!values?.length) continue;
+
+    // The words the candidate was shown, not the ids we made out of them. A
+    // typed answer has no option behind it and stands as it was said.
+    const answer = values
+      .map((value) => question.choices.find((c) => generatedOptionId(c) === value) ?? value)
+      .join(', ')
+      .trim();
+    if (!answer) continue;
+
+    out.push({
+      question_id: question.id,
+      question: question.question.slice(0, 300),
+      answer: answer.slice(0, 1000),
+      kind: question.kind,
+      ...(question.askedAt ? { asked_at: question.askedAt } : {}),
+    });
+  }
+
+  return out.length ? out : undefined;
+}
+
+/**
  * Everything the CRM is given about one candidate.
  *
  * Note what is absent and stays absent: `aadhaarNumber` and `panNumber`. They
@@ -274,6 +355,16 @@ export function toCrmPayload(
     // their own words for a person to read (§27).
     job_category: trimmed(p.jobCategory),
     job_preference: trimmed(p.desiredOccupation) ?? trimmed(p.currentOccupation),
+
+    // And the same choice as a designation. "Other" is not one: it is the row
+    // for a job the agency has no designation for, so sending it as a `job_id`
+    // would claim they picked something off the list when they typed their own.
+    job_id: p.jobCategory && p.jobCategory !== 'other' ? trimmed(p.jobCategory) : undefined,
+    job_title:
+      p.jobCategory && p.jobCategory !== 'other'
+        ? taxonomyJobTitle(p.jobCategory) ?? trimmed(labelFor(p.jobCategory, 'job_category')?.en)
+        : undefined,
+    job_answers: jobAnswersOf(candidate),
 
     // Machinery first: on a blue-collar profile the machines someone has run
     // are the specific claim, and the general skills list is the fallback.

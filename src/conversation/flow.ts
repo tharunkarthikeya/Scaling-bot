@@ -19,7 +19,12 @@
  * Nothing here decides *phrasing*. The prompt is the phrasing.
  */
 
-import type { CandidateDoc, CandidateProfile, GeneratedQuestion } from '../db/models.js';
+import type {
+  CandidateDoc,
+  CandidateProfile,
+  GeneratedQuestion,
+  StoredJobQuestion,
+} from '../db/models.js';
 import type { Choice, Localised } from './language.js';
 import {
   CHOICE_STAFF,
@@ -181,6 +186,21 @@ export interface FlowStep {
 const p = (c: CandidateDoc): CandidateProfile => c.profile ?? {};
 const has = (v: unknown): boolean =>
   v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
+
+/**
+ * Most screening questions one job may attach to a registration.
+ *
+ * Six, and the number is a limit on the flow rather than on the admin form. A
+ * client who wants nine things asked about a welder is describing an interview,
+ * and a candidate who has already answered twenty questions answers the
+ * twenty-first badly or not at all. Anything past the sixth is still on file in
+ * the CRM for whoever calls them.
+ *
+ * Declared here rather than beside `jobQuestionStep`, where it belongs, because
+ * `PREFERENCE_STEPS` is built above that point and a `const` read before its
+ * declaration is a module that throws on import.
+ */
+export const MAX_JOB_QUESTIONS = 6;
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Predicates shared by several steps
@@ -1162,8 +1182,19 @@ const PREFERENCE_STEPS: FlowStep[] = [
       }
       return typed ? { jobCategory: 'other', desiredOccupation: typed } : {};
     },
-    clears: ['jobCategory', 'desiredOccupation'],
+    // The stored questions go with the job. Without this, a candidate who
+    // changes their mind from welding to driving would be left answering the
+    // welding questions, and their answers would be filed against a job they
+    // are no longer applying for.
+    clears: ['jobCategory', 'desiredOccupation', 'jobQuestions', 'jobQuestionsFor', 'jobQuestionAnswers'],
   },
+
+  // The questions the client attached to that job, asked immediately after it
+  // is chosen — while the job is the thing the candidate is thinking about, and
+  // early enough that somebody who stops answering half way through has still
+  // told the recruiter the thing the client actually asked about. Empty for
+  // every job an admin has written no questions for, which is most of them.
+  ...Array.from({ length: MAX_JOB_QUESTIONS }, (_, i) => jobQuestionStep(i)),
 
   {
     id: 'job_preference',
@@ -1649,6 +1680,57 @@ function generatedQuestionStep(index: number): FlowStep {
 }
 
 /**
+ * The slots the CRM's own job questions are served through.
+ *
+ * The same mechanism as `generatedQuestionStep`, for the same reason: `STEPS` is
+ * built once at module load and the scheduler walks it, so a question an admin
+ * wrote this morning cannot be a step of its own. Slot `n` applies when the
+ * candidate has an `n`th stored job question and disappears when they do not —
+ * and what is stored is a copy taken when they picked the job, so an admin
+ * editing the question mid-conversation never changes what this candidate is
+ * being asked or what their answer will be recorded against.
+ *
+ * `input` is `text` for the reason the generated slots are: a step's shape is
+ * fixed at load and an admin's question may or may not carry options. Where it
+ * does they are rendered as buttons by `choicesFor` and a tap resolves against
+ * them; where it does not, the candidate types. Either way a typed answer is
+ * accepted, which is the safe default for a question nobody wrote in advance.
+ *
+ * Not gated on `required`. An admin marking a question required is telling a
+ * recruiter it matters, not telling the bot to refuse a registration over it —
+ * and the flow re-walks anything unanswered before the confirmation anyway.
+ */
+function jobQuestionStep(index: number): FlowStep {
+  const at = (c: CandidateDoc): StoredJobQuestion | undefined =>
+    (p(c).jobQuestions as StoredJobQuestion[] | undefined)?.[index];
+
+  return {
+    id: `job_question:${index}`,
+    section: 'job_preference',
+    // Replaced at render time by the question the admin wrote, which `when`
+    // makes the only thing this step is ever rendered with.
+    prompt: { en: '', ta: '', hi: '', te: '', ml: '' },
+    input: 'text',
+    when: (c) => !!at(c),
+    satisfied: (c) => {
+      const question = at(c);
+      return !question || has((p(c).jobQuestionAnswers ?? {})[question.id]);
+    },
+    apply: (a, c) => {
+      const question = at(c);
+      if (!question) return {};
+      return {
+        jobQuestionAnswers: {
+          ...(p(c).jobQuestionAnswers ?? {}),
+          [question.id]: a.ids?.length ? a.ids : a.value ? [a.value] : [],
+        },
+      };
+    },
+    clears: ['jobQuestionAnswers'],
+  };
+}
+
+/**
  * The job to write trade questions about — the candidate's own words wherever
  * they exist (§8).
  *
@@ -1732,14 +1814,53 @@ export function desiredJobForLevel(c: CandidateDoc): string | undefined {
   return occupationForQuestions(c);
 }
 
-/** The generated question a slot is currently serving, for the renderer. */
+/** The index a dynamic slot id names, or undefined when it is not one. */
+function slotIndex(stepId: string, prefix: string): number | undefined {
+  if (!stepId.startsWith(prefix)) return undefined;
+  const index = Number(stepId.slice(prefix.length));
+  return Number.isInteger(index) ? index : undefined;
+}
+
+/**
+ * The CRM job question a slot is currently serving, as it was stored.
+ *
+ * The full record rather than the rendering of it, because the CRM wants what
+ * the renderer does not: the question's own id, its kind, and when it was asked.
+ */
+export function jobQuestionFor(stepId: string, c: CandidateDoc): StoredJobQuestion | undefined {
+  const index = slotIndex(stepId, 'job_question:');
+  if (index === undefined) return undefined;
+  return (p(c).jobQuestions as StoredJobQuestion[] | undefined)?.[index];
+}
+
+/**
+ * The question a dynamic slot is currently serving, for the renderer.
+ *
+ * Two kinds of question arrive through this, and the renderer deliberately
+ * cannot tell them apart: one the model wrote for a job no pack covers (§8),
+ * and one an admin attached to a job in the CRM. Both are text that exists only
+ * on this candidate's record, both may or may not carry options, and both are
+ * rendered and answered by exactly the same path.
+ *
+ * What that shared path also means, and it is worth saying plainly: an admin's
+ * question reaches the candidate in the words the admin typed. The generated
+ * ones are written in the candidate's language to begin with, and a candidate
+ * on a language the bot does not ship gets both translated by `say`. A Tamil
+ * speaker asked an English screening question reads English — so the admin
+ * writing questions for Tamil-speaking candidates should write them in Tamil.
+ * Translating here instead would put a model between an agency's client and
+ * their own screening question, and change the words the CRM records against
+ * the answer.
+ */
 export function generatedQuestionFor(
   stepId: string,
   c: CandidateDoc,
 ): GeneratedQuestion | undefined {
-  if (!stepId.startsWith('trade_extra:')) return undefined;
-  const index = Number(stepId.slice('trade_extra:'.length));
-  if (!Number.isInteger(index)) return undefined;
+  const job = jobQuestionFor(stepId, c);
+  if (job) return { id: job.id, prompt: job.question, options: job.choices };
+
+  const index = slotIndex(stepId, 'trade_extra:');
+  if (index === undefined) return undefined;
   return (p(c).tradeQuestions as GeneratedQuestion[] | undefined)?.[index];
 }
 

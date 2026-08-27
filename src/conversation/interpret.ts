@@ -146,6 +146,18 @@ export function detectGlobalCommand(
 }
 
 /**
+ * The options that were actually on the candidate's screen.
+ *
+ * `acceptedChoices` hands this file two kinds of option — the rows that were
+ * rendered, and everything else the candidate could reasonably say. Both are
+ * matchable by name; only the first kind is matchable by position, because a
+ * position is a fact about a message that was sent.
+ */
+function visible(choices: Choice[]): Choice[] {
+  return choices.filter((c) => !c.hidden);
+}
+
+/**
  * Resolves a reply without calling the model, when that is possible with
  * certainty. Returns undefined when it is not.
  */
@@ -181,10 +193,15 @@ function resolveLocally(params: InterpretParams): Interpretation | undefined {
     }
   }
 
-  // "2" means the second option shown.
+  // "2" means the second option shown — and *shown* is the load-bearing word.
+  // The list handed to this includes answers that were never rendered: the
+  // aliases, and every job and country past WhatsApp's ten-row ceiling. Counting
+  // those would make "12" a valid answer to a question that offered ten rows,
+  // and file a candidate against a country they never saw.
+  const shown = visible(choices);
   const asIndex = Number(normalised);
-  if (Number.isInteger(asIndex) && asIndex >= 1 && asIndex <= choices.length) {
-    return { kind: 'matched', ids: [choices[asIndex - 1]!.id], raw };
+  if (Number.isInteger(asIndex) && asIndex >= 1 && asIndex <= shown.length) {
+    return { kind: 'matched', ids: [shown[asIndex - 1]!.id], raw };
   }
 
   // A bare yes or no, where the step offers one.
@@ -254,6 +271,9 @@ const INTERPRET_TOOL: Anthropic.Tool = {
  */
 export function resolveOfferedIds(returned: unknown, choices: Choice[]): string[] {
   const valid = new Set(choices.map((c) => c.id));
+  // A position can only mean a row that was rendered, for the reason spelled
+  // out in `resolveLocally`.
+  const shown = visible(choices);
 
   return (Array.isArray(returned) ? returned : [])
     .map(String)
@@ -261,8 +281,8 @@ export function resolveOfferedIds(returned: unknown, choices: Choice[]): string[
       if (valid.has(id)) return id;
 
       const position = Number(id);
-      if (Number.isInteger(position) && position >= 1 && position <= choices.length) {
-        const recovered = choices[position - 1]!.id;
+      if (Number.isInteger(position) && position >= 1 && position <= shown.length) {
+        const recovered = shown[position - 1]!.id;
         logger.debug({ returned: id, recovered }, 'interpreter answered with a position');
         return recovered;
       }

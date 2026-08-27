@@ -56,6 +56,7 @@ import {
   disambiguationChoices,
   FLOWS,
   labelFor,
+  SGMY_DESTINATIONS,
   STAFF_STEPS,
   fieldsToClear,
   inferTradeAnswers,
@@ -69,6 +70,8 @@ import {
   stepsInSection,
   STEPS,
   TRADE_CHOICES,
+  type Answer,
+  type FlowStep,
 } from './conversation/flow.js';
 import { cvWorthAsking, levelFromTitle } from './conversation/jobLevel.js';
 import { validateCopy } from './conversation/validate.js';
@@ -100,7 +103,12 @@ import {
   profileFromIdentityDocument,
   splitAddress,
 } from './conversation/cv.js';
-import { acceptedChoices, choicesFor } from './conversation/render.js';
+import {
+  acceptedChoices,
+  choicesFor,
+  renderConfirmation,
+  renderStep,
+} from './conversation/render.js';
 import {
   looksLikeApplicationId,
   normaliseApplicationId,
@@ -115,7 +123,13 @@ import { syncModeFor } from './crm/sync.js';
 import { accessTokenFor, configuredLines, webhookSecrets } from './conversation/lines.js';
 import { staffNoticeKey } from './db/models.js';
 import { cvSectionFrom, jobSectionOf } from './crm/snapshot.js';
-import { resetTaxonomy, setTaxonomyForTests } from './crm/taxonomy.js';
+import {
+  cachedJobQuestions,
+  fetchJobQuestions,
+  resetTaxonomy,
+  setJobQuestionsForTests,
+  setTaxonomyForTests,
+} from './crm/taxonomy.js';
 import { FAQ, violatesGuardrails } from './conversation/faq.js';
 import {
   CHOICE_FORGOT_ID,
@@ -127,6 +141,7 @@ import {
   CANDIDATE_ID_PREFIX,
   ENQUIRY_ID_PREFIX,
   type DocumentUpload,
+  type StoredJobQuestion,
 } from './db/models.js';
 import { ATS_COLLECTIONS, LEGACY_AADHAAR_COLLECTION } from './ats/client.js';
 import { atsDocumentRoutes, atsRouteFor, b2bClientType } from './ats/export.js';
@@ -3911,6 +3926,590 @@ await check('the CRM can name a country it added, and refuses to name a region',
   const gulf = candidate({ profile: { lookingForOverseasJob: true, countryPreference: 'gcc' } });
   assert.equal(toCrmPayload(gulf).profile.destination_country, undefined);
   resetTaxonomy();
+});
+
+
+/* ------------------------------------------------------------------ */
+/* The taxonomy at the size a real agency runs it                      */
+/*                                                                     */
+/* The checks above prove the wiring with two jobs and two countries,  */
+/* which is the size at which nothing has to be cut. Every failure     */
+/* this feature actually had appeared at the size the CRM is actually  */
+/* loaded to: eleven jobs and eight countries against ten WhatsApp     */
+/* rows. So these run at that size, and the ones that matter most are  */
+/* about what happens to the rows that do not fit.                     */
+/* ------------------------------------------------------------------ */
+
+console.log('\nthe CRM taxonomy at the size a real agency runs it');
+
+/** The eleven job designations the live CRM holds, in the admin's order. */
+const ELEVEN_JOBS = [
+  { id: 'general_worker', title: 'General Worker', order: 1 },
+  { id: 'factory_warehouse', title: 'Factory / Warehouse', order: 2 },
+  { id: 'packing', title: 'Packing', order: 3 },
+  { id: 'cleaning_housekeeping', title: 'Cleaning / Housekeeping', order: 4 },
+  { id: 'construction', title: 'Construction', order: 5 },
+  { id: 'hospitality', title: 'Hospitality', order: 6 },
+  { id: 'sales_retail', title: 'Sales / Retail', order: 7 },
+  { id: 'driver_operator', title: 'Driver / Operator', order: 8 },
+  { id: 'fabrication_welding', title: 'Welding / Fabrication', order: 9 },
+  { id: 'electrical_mechanical', title: 'Electrical / Mechanical', order: 10 },
+  { id: 'technician', title: 'Technician', order: 11 },
+];
+
+/** The eight destinations it holds, likewise. */
+const EIGHT_COUNTRIES = [
+  { id: 'singapore', name: 'Singapore', order: 1 },
+  { id: 'malaysia', name: 'Malaysia', order: 2 },
+  { id: 'saudi_arabia', name: 'Saudi Arabia', order: 3 },
+  { id: 'united_arab_emirates', name: 'United Arab Emirates', order: 4 },
+  { id: 'qatar', name: 'Qatar', order: 5 },
+  { id: 'kuwait', name: 'Kuwait', order: 6 },
+  { id: 'oman', name: 'Oman', order: 7 },
+  { id: 'bahrain', name: 'Bahrain', order: 8 },
+];
+
+const countryStep = stepById('country_preference')!;
+
+/** The rows on the candidate's screen, and everything else the step accepts. */
+const shownFor = (step: FlowStep) => choicesFor(step, atJobStep()).map((c) => c.id);
+const typableFor = (step: FlowStep) =>
+  acceptedChoices(step, atJobStep())
+    .filter((c) => c.hidden)
+    .map((c) => c.id);
+
+await check('eleven jobs fill the list without overflowing it', () => {
+  setTaxonomyForTests({ jobs: ELEVEN_JOBS });
+  const shown = shownFor(jobStep);
+
+  assert.ok(shown.length <= 10, `${shown.length} rows would be refused by Meta`);
+  assert.ok(shown.includes('other'), '"Other" was crowded out by the eleven');
+  // Nine jobs and the way out, which is the most a list can carry.
+  assert.equal(shown.length, 10);
+  resetTaxonomy();
+});
+
+await check('the nine that are shown are the nine the admin ordered first', () => {
+  setTaxonomyForTests({ jobs: ELEVEN_JOBS });
+  assert.deepEqual(shownFor(jobStep).slice(0, 3), [
+    'general_worker',
+    'factory_warehouse',
+    'packing',
+  ]);
+  resetTaxonomy();
+});
+
+await check('a job an admin promotes to the top appears first', () => {
+  // The whole of "make the order configurable": an eleventh job is invisible
+  // until an admin says it matters, and then it is the first thing offered.
+  setTaxonomyForTests({
+    jobs: [...ELEVEN_JOBS, { id: 'cnc_operator', title: 'CNC Operator', order: 0 }],
+  });
+  assert.equal(shownFor(jobStep)[0], 'cnc_operator');
+  resetTaxonomy();
+});
+
+await check('the two jobs past the ceiling are still answerable by typing', () => {
+  // The failure this closes: `electrical_mechanical` and `technician` were on
+  // the CRM's list, off the WhatsApp list, and absent from what the interpreter
+  // was allowed to choose — so a candidate who typed "technician" was told
+  // their answer was not one of the options.
+  setTaxonomyForTests({ jobs: ELEVEN_JOBS });
+
+  const shown = shownFor(jobStep);
+  assert.ok(!shown.includes('technician'), 'the fixture no longer overflows');
+
+  const accepted = acceptedChoices(jobStep, atJobStep()).map((c) => c.id);
+  for (const job of ELEVEN_JOBS) {
+    assert.ok(accepted.includes(job.id), `${job.id} is on the CRM's list and cannot be answered`);
+  }
+  assert.ok(typableFor(jobStep).includes('technician'));
+  resetTaxonomy();
+});
+
+await check('eight countries all reach the candidate', () => {
+  // The bug this pins: seven of the ten rows went to two pinned destinations
+  // and five compiled region rows, leaving three for the CRM's list — so
+  // Kuwait, Oman and Bahrain were dropped without a word.
+  setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
+  const shown = shownFor(countryStep);
+
+  for (const country of EIGHT_COUNTRIES) {
+    assert.ok(shown.includes(country.id), `${country.id} never reached the candidate`);
+  }
+  assert.ok(shown.length <= 10, `${shown.length} rows would be refused by Meta`);
+  resetTaxonomy();
+});
+
+await check('and the two answers that are not countries survive with them', () => {
+  setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
+  const shown = shownFor(countryStep);
+
+  // "Any country" is what most candidates mean, and "Select countries" is the
+  // only row that leads anywhere for a destination the list does not carry.
+  assert.ok(shown.includes('any'), 'a candidate with no preference has no row to tap');
+  assert.ok(shown.includes('select'), 'the way to name an unlisted country was cut');
+  resetTaxonomy();
+});
+
+await check('Singapore and Malaysia survive a CRM that has dropped them', () => {
+  // Not two more destinations: choosing one is what puts a candidate on the
+  // route that does not ask for a CV up front, and a fork nobody can reach is
+  // a flow nobody can enter.
+  setTaxonomyForTests({
+    countries: EIGHT_COUNTRIES.filter((c) => !SGMY_DESTINATIONS.has(c.id)),
+  });
+  const shown = shownFor(countryStep);
+
+  assert.ok(shown.includes('singapore'));
+  assert.ok(shown.includes('malaysia'));
+  assert.ok(shown.length <= 10);
+  resetTaxonomy();
+});
+
+await check('the regions stay answerable once the countries have taken the rows', () => {
+  setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
+  const typable = typableFor(countryStep);
+
+  // "The Gulf, anywhere" is a real answer and always was. What changed is that
+  // it is now said rather than tapped — and a region a candidate cannot say at
+  // all would be a worse trade than the one this makes.
+  for (const region of ['gcc', 'europe', 'russia_cis']) {
+    assert.ok(typable.includes(region), `${region} can no longer be answered at all`);
+  }
+  resetTaxonomy();
+});
+
+await check('a short country list leaves room for the regions on screen', () => {
+  // The budget is a ranking, not a rule that always cuts: an agency placing
+  // into three countries has six rows to spare and the regions take them.
+  setTaxonomyForTests({ countries: EIGHT_COUNTRIES.slice(0, 3) });
+  const shown = shownFor(countryStep);
+
+  assert.ok(shown.includes('gcc'), 'a list with room to spare still hid a region');
+  assert.ok(shown.length <= 10);
+  resetTaxonomy();
+});
+
+await check('ten countries overflow, and the overflow is still answerable', () => {
+  setTaxonomyForTests({
+    countries: [
+      ...EIGHT_COUNTRIES,
+      { id: 'romania', name: 'Romania', order: 9 },
+      { id: 'serbia', name: 'Serbia', order: 10 },
+    ],
+  });
+
+  const shown = shownFor(countryStep);
+  assert.ok(shown.length <= 10, `${shown.length} rows would be refused by Meta`);
+  assert.ok(!shown.includes('serbia'), 'the fixture no longer overflows');
+
+  const accepted = acceptedChoices(countryStep, atJobStep()).map((c) => c.id);
+  assert.ok(accepted.includes('serbia'), 'a country an admin added cannot be answered at all');
+  resetTaxonomy();
+});
+
+/* ------------------------------------------------------------------ */
+/* Typing a country instead of tapping one                             */
+/* ------------------------------------------------------------------ */
+
+console.log('\ntyping a country the CRM knows');
+
+await check('a country typed by name resolves to the CRM’s own id', async () => {
+  setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
+
+  const result = await interpret({
+    step: countryStep,
+    choices: acceptedChoices(countryStep, atJobStep()),
+    text: 'Kuwait',
+  });
+
+  assert.equal(result.kind, 'matched');
+  assert.deepEqual(result.kind === 'matched' ? result.ids : [], ['kuwait']);
+  resetTaxonomy();
+});
+
+await check('a country past the ceiling resolves the same way', async () => {
+  setTaxonomyForTests({
+    countries: [...EIGHT_COUNTRIES, { id: 'romania', name: 'Romania', order: 9 }],
+  });
+
+  const result = await interpret({
+    step: countryStep,
+    choices: acceptedChoices(countryStep, atJobStep()),
+    text: 'romania',
+  });
+
+  assert.equal(result.kind, 'matched', 'a country nobody could see was not accepted either');
+  assert.deepEqual(result.kind === 'matched' ? result.ids : [], ['romania']);
+  resetTaxonomy();
+});
+
+await check('the shorthands people actually type resolve without a model call', async () => {
+  setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
+  const choices = acceptedChoices(countryStep, atJobStep());
+
+  for (const [typed, expected] of [
+    ['UAE', 'united_arab_emirates'],
+    ['KSA', 'saudi_arabia'],
+    ['saudi', 'saudi_arabia'],
+  ] as const) {
+    // Offline: `interpret` reaches the model only when the local resolver
+    // returns nothing, and this suite has no model to reach.
+    const result = await interpret({ step: countryStep, choices, text: typed });
+    assert.equal(result.kind, 'matched', `${typed} was not understood`);
+    assert.deepEqual(result.kind === 'matched' ? result.ids : [], [expected]);
+  }
+  resetTaxonomy();
+});
+
+await check('a number still means the row that number was on', () => {
+  // The regression this closes off: `acceptedChoices` now carries answers that
+  // were never rendered, and counting those would make "11" an answer to a
+  // question that offered ten rows — filing a candidate against a country they
+  // never saw.
+  setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
+  const accepted = acceptedChoices(countryStep, atJobStep());
+  const shown = choicesFor(countryStep, atJobStep());
+
+  assert.deepEqual(resolveOfferedIds(['3'], accepted), [shown[2]!.id]);
+  assert.deepEqual(
+    resolveOfferedIds([String(shown.length + 1)], accepted),
+    [],
+    'a position past the last row was resolved to a hidden answer',
+  );
+  resetTaxonomy();
+});
+
+await check('every option the candidate can see is countable, and nothing else is', () => {
+  setTaxonomyForTests({ jobs: ELEVEN_JOBS, countries: EIGHT_COUNTRIES });
+
+  for (const step of [jobStep, countryStep]) {
+    const accepted = acceptedChoices(step, atJobStep());
+    const visible = accepted.filter((c) => !c.hidden);
+    assert.deepEqual(
+      visible.map((c) => c.id),
+      choicesFor(step, atJobStep()).map((c) => c.id),
+      `the countable options of ${step.id} are not the rendered ones`,
+    );
+  }
+  resetTaxonomy();
+});
+
+await check('a country only the CRM knows is read back by name, not by id', async () => {
+  // The confirmation summary resolves an option id through the compiled labels
+  // and falls back to the id itself, so a candidate who chose Kuwait used to
+  // read "kuwait" back off their own summary.
+  setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
+
+  const chose = candidate({
+    profile: { lookingForOverseasJob: true, countryPreference: 'kuwait' },
+  });
+  const summary = await renderConfirmation(chose);
+  assert.ok(summary.body.includes('Kuwait'), 'the summary shows the option id');
+  assert.ok(!/\bkuwait\b/.test(summary.body), 'the summary shows the option id');
+  resetTaxonomy();
+});
+
+/* ------------------------------------------------------------------ */
+/* The questions an admin attaches to a job                            */
+/*                                                                     */
+/* Written in the CRM, read over HTTP, stored on the candidate before  */
+/* they are asked, and sent back as answers. The pieces are tested     */
+/* separately because the middle one needs a database and the rest do  */
+/* not.                                                                */
+/* ------------------------------------------------------------------ */
+
+console.log('\nthe screening questions an admin attaches to a job');
+
+const WELDING_QUESTIONS = [
+  {
+    id: 'q_processes',
+    text: 'Which welding processes have you worked with?',
+    kind: 'choice' as const,
+    choices: ['TIG', 'MIG', 'Arc'],
+    required: true,
+  },
+  {
+    id: 'q_years',
+    text: 'How many years of welding experience do you have?',
+    kind: 'text' as const,
+    choices: [],
+    required: false,
+  },
+];
+
+/** The questions as they are stored on a candidate once they have picked the job. */
+const STORED_WELDING: StoredJobQuestion[] = WELDING_QUESTIONS.map((q) => ({
+  id: q.id,
+  jobId: 'fabrication_welding',
+  question: q.text,
+  kind: q.kind,
+  choices: q.choices,
+  required: q.required,
+  askedAt: '2026-08-27T09:00:00.000Z',
+}));
+
+/** A welder part-way through, with the screening questions on their record. */
+function welder(overrides: Partial<CandidateDoc> = {}, answers: Record<string, string[]> = {}) {
+  return candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      fullName: 'Ravi Kumar',
+      countryPreference: 'qatar',
+      jobCategory: 'fabrication_welding',
+      jobQuestions: STORED_WELDING,
+      jobQuestionsFor: 'fabrication_welding',
+      jobQuestionAnswers: answers,
+    },
+    ...overrides,
+  });
+}
+
+await check('a job’s questions are cached, and read without a network call', async () => {
+  setJobQuestionsForTests('fabrication_welding', WELDING_QUESTIONS);
+  const held = await fetchJobQuestions('fabrication_welding');
+
+  assert.equal(held?.length, 2);
+  assert.equal(held![0]!.text, 'Which welding processes have you worked with?');
+  assert.deepEqual(held![0]!.choices, ['TIG', 'MIG', 'Arc']);
+  resetTaxonomy();
+});
+
+await check('a question with one option is asked as free text', () => {
+  // One option is not a choice, it is a leading question — and a button that
+  // can only be pressed one way collects nothing.
+  setJobQuestionsForTests('packing', [
+    { id: 'q', text: 'Can you start immediately?', kind: 'choice', choices: ['Yes'] },
+  ]);
+  const held = cachedJobQuestions('packing')!;
+
+  assert.equal(held[0]!.kind, 'text');
+  assert.deepEqual(held[0]!.choices, []);
+  resetTaxonomy();
+});
+
+await check('an admin who writes fourteen options gets ten', () => {
+  // Meta rejects the eleventh row and the whole message with it, so this is
+  // not a tidy-up: it is the difference between a question and silence.
+  setJobQuestionsForTests('packing', [
+    {
+      id: 'q',
+      text: 'Which shifts can you work?',
+      kind: 'choice',
+      choices: Array.from({ length: 14 }, (_, i) => `Shift ${i + 1}`),
+    },
+  ]);
+  assert.equal(cachedJobQuestions('packing')![0]!.choices.length, 10);
+  resetTaxonomy();
+});
+
+await check('the questions are asked after the job is chosen, before the rest', () => {
+  const ids = STEPS.map((s) => s.id);
+  const job = ids.indexOf('job_category');
+  const first = ids.indexOf('job_question:0');
+  const preference = ids.indexOf('job_preference');
+
+  assert.ok(first > job, 'a screening question is asked before the job it is about');
+  assert.ok(first < preference, 'the screening questions come after the preference questions');
+});
+
+await check('they are on both routes and on neither menu', () => {
+  assert.ok(
+    SGMY_STEPS.some((s) => s.id === 'job_question:0'),
+    'a candidate bound for Singapore is asked no screening questions',
+  );
+  assert.ok(
+    !STAFF_STEPS.some((s) => s.id.startsWith('job_question:')),
+    'the staff intake grew a screening question',
+  );
+});
+
+await check('a slot is a question only for a candidate who has one', () => {
+  const slot = stepById('job_question:0')!;
+
+  assert.equal(slot.when!(candidate()), false, 'a candidate with no questions was asked one');
+  assert.equal(slot.when!(welder()), true);
+  assert.equal(
+    stepById('job_question:2')!.when!(welder()),
+    false,
+    'a third slot applied to a candidate with two questions',
+  );
+});
+
+await check('an answered screening question is not asked again', () => {
+  const slot = stepById('job_question:0')!;
+
+  assert.equal(slot.satisfied(welder()), false);
+  assert.equal(slot.satisfied(welder({}, { q_processes: ['tig'] })), true);
+});
+
+await check('the candidate is asked the admin’s words, with the admin’s options', async () => {
+  const slot = stepById('job_question:0')!;
+  const rendered = await renderStep(slot, welder());
+
+  assert.ok(
+    rendered.body.includes('Which welding processes have you worked with?'),
+    'the candidate was not asked the question the admin wrote',
+  );
+  assert.deepEqual(
+    choicesFor(slot, welder()).map((c) => c.id),
+    ['tig', 'mig', 'arc'],
+  );
+});
+
+await check('a typed answer is recorded against the question’s own id', () => {
+  const slot = stepById('job_question:1')!;
+  const patch = slot.apply!({ value: '6 years', raw: '6 years' } as Answer, welder());
+
+  assert.deepEqual(patch.jobQuestionAnswers, { q_years: ['6 years'] });
+});
+
+await check('answering one question does not forget the other', () => {
+  const slot = stepById('job_question:1')!;
+  const patch = slot.apply!(
+    { value: '6 years' } as Answer,
+    welder({}, { q_processes: ['tig'] }),
+  );
+
+  assert.deepEqual(patch.jobQuestionAnswers, { q_processes: ['tig'], q_years: ['6 years'] });
+});
+
+await check('changing the job forgets the questions that came with it', () => {
+  // Otherwise a candidate who moves from welding to driving keeps answering
+  // welding questions, and their answers are filed against a job they are no
+  // longer applying for.
+  const cleared = fieldsToClear('job_preference');
+
+  for (const field of ['jobQuestions', 'jobQuestionsFor', 'jobQuestionAnswers']) {
+    assert.ok(cleared.includes(field), `${field} survives an edit of the job`);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* And what the CRM is told about it                                   */
+/* ------------------------------------------------------------------ */
+
+console.log('\nscreening answers reaching the CRM');
+
+await check('the answers travel as the words the candidate was shown', () => {
+  setTaxonomyForTests({ jobs: ELEVEN_JOBS });
+  const payload = toCrmPayload(welder({}, { q_processes: ['tig', 'mig'], q_years: ['6 years'] }));
+  const answers = payload.profile.job_answers ?? [];
+
+  assert.equal(answers.length, 2);
+  assert.equal(answers[0]!.question_id, 'q_processes');
+  assert.equal(answers[0]!.question, 'Which welding processes have you worked with?');
+  // Not "tig, mig" — the ids are ours and mean nothing on a recruiter's screen.
+  assert.equal(answers[0]!.answer, 'TIG, MIG');
+  assert.equal(answers[0]!.kind, 'choice');
+  assert.equal(answers[0]!.asked_at, '2026-08-27T09:00:00.000Z');
+  assert.equal(answers[1]!.answer, '6 years');
+  resetTaxonomy();
+});
+
+await check('the job travels as an id and a title, not only a category', () => {
+  setTaxonomyForTests({ jobs: ELEVEN_JOBS });
+  const payload = toCrmPayload(welder({}, { q_processes: ['tig'] }));
+
+  assert.equal(payload.profile.job_id, 'fabrication_welding');
+  assert.equal(payload.profile.job_title, 'Welding / Fabrication');
+  assert.equal(payload.profile.job_category, 'fabrication_welding');
+  resetTaxonomy();
+});
+
+await check('"Other" is not a designation, and is not sent as one', () => {
+  setTaxonomyForTests({ jobs: ELEVEN_JOBS });
+  const typed = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      fullName: 'Ravi Kumar',
+      jobCategory: 'other',
+      desiredOccupation: 'parota master',
+    },
+  });
+  const payload = toCrmPayload(typed);
+
+  assert.equal(payload.profile.job_id, undefined);
+  assert.equal(payload.profile.job_title, undefined);
+  // Their own words still travel, which is the whole point of the row.
+  assert.equal(payload.profile.job_preference, 'parota master');
+  resetTaxonomy();
+});
+
+await check('an unanswered question is not sent as an empty answer', () => {
+  const payload = toCrmPayload(welder({}, { q_processes: ['tig'] }));
+  const answers = payload.profile.job_answers ?? [];
+
+  assert.equal(answers.length, 1, 'a question the conversation has not reached was sent');
+  assert.equal(answers[0]!.question_id, 'q_processes');
+});
+
+await check('a candidate who has answered none sends no answers at all', () => {
+  assert.equal(toCrmPayload(welder()).profile.job_answers, undefined);
+});
+
+await check('a question reworded since it was asked keeps the wording it was asked in', () => {
+  // The reason the text is stored on the candidate rather than looked up. An
+  // admin rewords a question the week after somebody answered it, and a profile
+  // that renders today's wording against last week's answer is a record of a
+  // conversation that never happened.
+  setJobQuestionsForTests('fabrication_welding', [
+    { id: 'q_processes', text: 'REWORDED BY AN ADMIN', kind: 'choice', choices: ['TIG'] },
+  ]);
+
+  const payload = toCrmPayload(welder({}, { q_processes: ['tig'] }));
+  assert.equal(
+    payload.profile.job_answers![0]!.question,
+    'Which welding processes have you worked with?',
+  );
+  resetTaxonomy();
+});
+
+await check('a paragraph of an answer is clipped, not refused', () => {
+  // The CRM's model caps an answer at a thousand characters and a 422 fails the
+  // whole submission — one long reply must not cost a candidate their record.
+  const payload = toCrmPayload(welder({}, { q_years: ['x'.repeat(4000)] }));
+  assert.equal(payload.profile.job_answers![0]!.answer.length, 1000);
+});
+
+await check('a half-finished registration carries its screening answers', () => {
+  // The case that matters most: somebody who answered the client's question and
+  // then stopped is exactly the person a recruiter should be calling, and the
+  // answer has to be on the record before the conversation finishes.
+  const partial = welder(
+    { stage: 'BASIC_DETAILS_PENDING', status: 'profile_incomplete' },
+    { q_processes: ['tig'] },
+  );
+  const payload = toCrmPayload(partial);
+
+  assert.equal(payload.registration?.complete, false);
+  assert.equal(payload.registration?.assignable, true);
+  assert.equal(payload.profile.job_answers?.length, 1);
+  assert.equal(syncModeFor(partial, true), 'update', 'a partial stopped being an update');
+});
+
+await check('a finished registration carries the same answers', () => {
+  const done = welder(
+    { stage: 'REGISTRATION_COMPLETED', status: 'profile_registered', completedAt: new Date() },
+    { q_processes: ['tig', 'mig'], q_years: ['6 years'] },
+  );
+  const payload = toCrmPayload(done);
+
+  assert.equal(payload.registration?.complete, true);
+  assert.equal(payload.profile.job_answers?.length, 2);
+  assert.equal(syncModeFor(done, false), 'handover');
+});
+
+await check('none of it changes the key the CRM deduplicates on', () => {
+  // Everything above is added to one candidate's profile, and a payload that
+  // keyed differently because of it would file the same person twice.
+  const empty = welder();
+  const answered = welder({}, { q_processes: ['tig'], q_years: ['6 years'] });
+
+  assert.equal(idempotencyKeyFor(empty), idempotencyKeyFor(answered));
+  assert.equal(toCrmPayload(empty).idempotency_key, toCrmPayload(answered).idempotency_key);
+  assert.equal(assignableFor(empty), assignableFor(answered));
 });
 
 /* ------------------------------------------------------------------ */

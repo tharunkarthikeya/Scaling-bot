@@ -38,6 +38,17 @@ export interface Choice {
   label: Localised;
   /** Shown under the label in a list. Ignored when rendered as buttons. */
   description?: Localised;
+  /**
+   * An answer the interpreter accepts that was never on the screen.
+   *
+   * Set by `acceptedChoices` on everything it adds behind the rendered rows —
+   * the aliases, and the jobs and countries past WhatsApp's ten-row ceiling. It
+   * matters for one thing: a reply of "2" means the second row the candidate
+   * was *shown*, so anything carrying this is excluded from position matching.
+   * Without that, adding eight unlisted countries would silently make "11" an
+   * answer to a question that offered ten.
+   */
+  hidden?: boolean;
 }
 
 export const LANGUAGE_NAMES: Record<CoreLanguage, string> = {
