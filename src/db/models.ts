@@ -600,6 +600,8 @@ export interface CandidateDoc {
     status: 'pending' | 'synced' | 'failed' | 'needs_cv';
     /** The CRM's id for this candidate, which is not the same as ours. */
     candidateId?: string;
+    /** CRM-generated human id. Safe to show; unlike `candidateId`, never an internal key. */
+    candidateCode?: string;
     attempts: number;
     lastError?: string;
     lastAttemptAt?: Date;

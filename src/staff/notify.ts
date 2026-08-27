@@ -107,6 +107,15 @@ function parameter(value: string | null | undefined, fallback = NOT_STATED): str
   return text ? text.slice(0, 1024) : fallback;
 }
 
+/** Refuse the common database-id shapes even if CRM puts one in a public-code field. */
+function publicCode(value: string | null | undefined, fallback = ''): string {
+  const code = parameter(value, '');
+  if (!code) return fallback;
+  if (/^[a-f0-9]{24}$/i.test(code) || /^[a-f0-9]{32}$/i.test(code)) return fallback;
+  if (/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(code)) return fallback;
+  return code;
+}
+
 /**
  * A staff member's number as Meta wants it: digits, country code included.
  *
@@ -162,15 +171,21 @@ export function staffPhoneToE164(raw: string | null | undefined): string | undef
  */
 export function staffAssignmentParameters(fields: {
   staffName?: string | null;
+  staffCode?: string | null;
   fullName?: string | null;
-  candidateId: string;
+  candidateCode?: string | null;
   phone?: string | null;
 }): { header: string; body: string[] } {
+  const staff = [parameter(fields.staffName, 'Team Member'), publicCode(fields.staffCode)]
+    .filter(Boolean)
+    .map((value, index) => (index === 1 ? `(${value})` : value))
+    .join(' ');
+
   return {
-    header: parameter(fields.staffName, 'Team Member'),
+    header: staff,
     body: [
       parameter(fields.fullName, 'Unnamed candidate'),
-      parameter(fields.candidateId),
+      publicCode(fields.candidateCode, 'Candidate code unavailable'),
       parameter(fields.phone, 'Not on file'),
     ],
   };
@@ -184,8 +199,11 @@ export function staffAssignmentParameters(fields: {
  * screen that caused it.
  */
 export async function notifyStaffOfAssignment(params: {
+  /** Internal ids: lookup/dedupe only, never inserted into message text. */
   candidateId: string;
   staffId: string;
+  candidateCode?: string;
+  staffCode?: string;
 }): Promise<StaffNotifyOutcome> {
   const { candidateId, staffId } = params;
 
@@ -250,8 +268,9 @@ export async function notifyStaffOfAssignment(params: {
       to,
       staffAssignmentParameters({
         staffName: staff.name,
+        staffCode: staff.staff_code ?? params.staffCode,
         fullName: summary.full_name,
-        candidateId: summary.candidate_id || candidateId,
+        candidateCode: summary.candidate_code ?? params.candidateCode,
         phone: summary.phone,
       }),
     );
@@ -286,8 +305,10 @@ export interface SlaBreachFacts {
   threshold_hours: number;
   staff_count?: number;
   /** Present only when the sweep found exactly one - see `relay_sla_breach`. */
-  candidate_id?: string | null;
+  /** Human-readable CRM codes only. Internal database ids are never accepted here. */
+  candidate_code?: string | null;
   candidate_name?: string | null;
+  staff_code?: string | null;
   staff_name?: string | null;
   hours_overdue?: number | null;
   /** "unviewed" - never opened. "unevaluated" - opened, never judged. */
@@ -324,7 +345,10 @@ export function slaAlertParameters(facts: SlaBreachFacts): string[] {
   const threshold = Math.round(facts.threshold_hours);
 
   const overdue = single
-    ? [facts.candidate_name || 'An unnamed candidate', facts.candidate_id ? `(${facts.candidate_id})` : '']
+    ? [
+        facts.candidate_name || 'An unnamed candidate',
+        publicCode(facts.candidate_code) ? `(${publicCode(facts.candidate_code)})` : '',
+      ]
         .filter(Boolean)
         .join(' ')
     : plural(facts.count, 'candidate');
@@ -337,7 +361,12 @@ export function slaAlertParameters(facts: SlaBreachFacts): string[] {
       : `over ${threshold} hours`;
 
   const withWhom = single
-    ? facts.staff_name || 'a staff member'
+    ? [
+        facts.staff_name || 'a staff member',
+        publicCode(facts.staff_code) ? `(${publicCode(facts.staff_code)})` : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
     : facts.staff_count
       ? plural(facts.staff_count, 'staff member')
       : 'their staff';

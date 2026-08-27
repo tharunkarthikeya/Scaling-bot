@@ -191,6 +191,7 @@ export async function syncCandidateToCrm(payload: {
       ...candidate.crmSync,
       status: 'synced',
       candidateId: result.candidate_id,
+      candidateCode: result.candidate_code ?? candidate.crmSync?.candidateCode,
       attempts,
       lastAttemptAt: new Date(),
       syncedAt: new Date(),
@@ -351,6 +352,7 @@ async function syncPartial(candidate: CandidateDoc): Promise<void> {
     await setSync(candidate, {
       ...(candidate.crmSync ?? { status: 'pending', attempts: 0 }),
       candidateId: result.candidate_id,
+      candidateCode: result.candidate_code ?? candidate.crmSync?.candidateCode,
       partialSyncedAt: new Date(),
       partialError: undefined,
       ...(sent ? { resumeSha256: cv!.sha256 } : {}),

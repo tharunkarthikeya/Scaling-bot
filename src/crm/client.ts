@@ -26,7 +26,10 @@ import type { CrmCandidatePayload } from './mapping.js';
 
 export interface CrmCandidateResponse {
   success: boolean;
+  /** Internal record id used for subsequent CRM API calls. */
   candidate_id: string;
+  /** CRM-generated human id used in notifications and UI. */
+  candidate_code?: string;
   created: boolean;
   cv_required: boolean;
   cv_policy_version?: string;
@@ -173,7 +176,10 @@ export async function fetchCvRequirement(params: {
 
 /** The handful of facts the staff assignment message is built from. */
 export interface CrmAssignmentSummary {
+  /** Internal CRM id. Used for API relationships only; never shown in WhatsApp. */
   candidate_id: string;
+  /** CRM-generated human id, for example CND-000101. */
+  candidate_code?: string | null;
   source?: string;
   full_name?: string | null;
   destination_country?: string | null;
@@ -192,7 +198,10 @@ export interface CrmAssignmentSummary {
 
 /** One staff member's contact details, and whether they are still active. */
 export interface CrmStaffContact {
+  /** Internal CRM id. Used for API relationships only; never shown in WhatsApp. */
   id: string;
+  /** CRM-generated human id, for example STF-000012. */
+  staff_code?: string | null;
   name?: string | null;
   phone?: string | null;
   role?: string | null;

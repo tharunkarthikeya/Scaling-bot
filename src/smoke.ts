@@ -6480,7 +6480,7 @@ await check('a number too short to reach anybody is refused, not padded', () => 
 await check('every parameter is non-empty, whatever is missing from the record', () => {
   // Meta rejects an empty parameter, so a candidate who has answered almost
   // nothing must still produce one header and three sendable body values.
-  const params = staffAssignmentParameters({ candidateId: 'CND-1024' });
+  const params = staffAssignmentParameters({ candidateCode: 'CND-1024' });
   assert.equal(params.body.length, 3);
   for (const value of [params.header, ...params.body]) {
     assert.ok(value.length > 0, 'a blank parameter');
@@ -6495,12 +6495,13 @@ await check('the parameters are in the order the approved body expects', () => {
   assert.deepEqual(
     staffAssignmentParameters({
       staffName: 'Priya Sharma',
+      staffCode: 'STF-0012',
       fullName: 'John Doe',
-      candidateId: 'CND-1024',
+      candidateCode: 'CND-1024',
       phone: '+91 98765 43210',
     }),
     {
-      header: 'Priya Sharma',
+      header: 'Priya Sharma (STF-0012)',
       body: ['John Doe', 'CND-1024', '+91 98765 43210'],
     },
   );
@@ -6526,12 +6527,39 @@ await check('the greeting is a header parameter, not a fourth body parameter', (
   );
 });
 
+await check('database ids are never rendered as candidate or staff ids', () => {
+  const internalCandidateId = '6a901d88f1a8cb33943a1ea3';
+  const internalStaffId = '11400d70df114b12a7cac4a31aeb865f';
+  const params = staffAssignmentParameters({
+    staffName: 'Priya Sharma',
+    staffCode: internalStaffId,
+    fullName: 'John Doe',
+    candidateCode: internalCandidateId,
+  });
+
+  assert.equal(params.header, 'Priya Sharma');
+  assert.equal(params.body[1], 'Candidate code unavailable');
+  assert.ok(!JSON.stringify(params).includes(internalCandidateId));
+  assert.ok(!JSON.stringify(params).includes(internalStaffId));
+
+  const adminParams = slaAlertParameters({
+    count: 1,
+    threshold_hours: 48,
+    candidate_name: 'John Doe',
+    candidate_code: internalCandidateId,
+    staff_name: 'Priya Sharma',
+    staff_code: internalStaffId,
+  });
+  assert.ok(!JSON.stringify(adminParams).includes(internalCandidateId));
+  assert.ok(!JSON.stringify(adminParams).includes(internalStaffId));
+});
+
 await check('a value that arrived with a line break in it still sends', () => {
   // A CV's name field routinely carries one. Collapsing costs the formatting;
   // rejecting would cost the notification.
   const [name] = staffAssignmentParameters({
     fullName: 'John\n   Doe',
-    candidateId: 'CND-1',
+    candidateCode: 'CND-1',
   }).body;
   assert.equal(name, 'John Doe');
 });
@@ -6545,13 +6573,14 @@ await check('one overdue candidate is named, with who is holding it', () => {
     slaAlertParameters({
       count: 1,
       threshold_hours: 48,
-      candidate_id: 'CND-1024',
+      candidate_code: 'CND-1024',
       candidate_name: 'John Doe',
+      staff_code: 'STF-0012',
       staff_name: 'Priya Sharma',
       hours_overdue: 51.4,
       reason: 'unviewed',
     }),
-    ['John Doe (CND-1024)', '51 hours', 'Priya Sharma', 'opened'],
+    ['John Doe (CND-1024)', '51 hours', 'Priya Sharma (STF-0012)', 'opened'],
   );
 });
 
