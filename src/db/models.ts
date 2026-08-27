@@ -24,6 +24,7 @@ export type ConversationStage =
   | 'CONFIRMATION_PENDING'
   /** Mid-way through the B2B branch (§2): name, Aadhaar, company certificate. */
   | 'B2B_PENDING'
+  | 'B2B_COMPLETED'
   | 'REGISTRATION_COMPLETED'
   | 'HUMAN_HANDOFF'
   | 'NOT_ELIGIBLE'
@@ -1041,6 +1042,8 @@ export interface AuditEventDoc {
     | 'registration_completed'
     | 'registration_restarted'
     | 'nationality_not_supported'
+    | 'eligibility_blocked'
+    | 'document_rejected'
     | 'reminder_sent'
     | 'session_timed_out'
     | 'application_status_changed'

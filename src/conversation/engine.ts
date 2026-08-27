@@ -11,7 +11,8 @@
  *   1. Load the candidate and note they are still inside the 24-hour window.
  *   2. Take delivery of anything they sent — a file is stored and filed, a voice
  *      note is stored and transcribed where that is possible.
- *   3. Check the commands that work anywhere: UPDATE, DELETE, talk to staff.
+ *   3. Check the commands that work anywhere: UPDATE, DELETE, or route a typed
+ *      staff request to the Other menu.
  *   4. Read their reply against the question we actually asked.
  *   5. Record it, with its source and their own wording.
  *   6. Ask the next question, or finish.
@@ -511,6 +512,8 @@ function statusForStage(stage: ConversationStage, current: CandidateStatus): Can
     // contact in the queue of people whose registration needs chasing.
     case 'B2B_PENDING':
       return 'new_enquiry';
+    case 'B2B_COMPLETED':
+      return 'manual_review';
     case 'DOCUMENTS_PENDING':
       return 'documents_pending';
     case 'REGISTRATION_COMPLETED':
@@ -886,18 +889,13 @@ async function askNextQuestion(
  * ───────────────────────────────────────────────────────────────────────────*/
 
 /**
- * §24. Everything automated stops until staff hand the conversation back.
- *
- * `announce: false` is for callers that have already said something better
- * suited to the situation — the B2B greeting, for one. The handoff itself is
- * identical either way; only the sentence differs.
+ * §24. The only function allowed to pause automation for staff. It is called
+ * only after the intake reached through Other → Talk to staff is complete.
  */
-async function handOffToStaff(
+async function completeRequestedStaffHandoff(
   candidate: CandidateDoc,
   reason: string,
-  options: { announce?: boolean } = {},
 ): Promise<void> {
-  if (options.announce !== false) await tell(candidate, copy.STAFF_HANDOFF);
   await setState(candidate, {
     stage: 'HUMAN_HANDOFF',
     humanHandoff: { reason, at: new Date() },
@@ -934,29 +932,34 @@ async function startB2bEnquiry(candidate: CandidateDoc): Promise<void> {
 }
 
 /**
- * Closes it: everything asked for is in, and a person takes over.
+ * Closes it: everything asked for is in and CRM review can begin.
  *
  * Not `completeRegistration` — a business contact has no application, so there
  * is no Application ID to issue and nothing for §25 tracking to read. What they
- * get is the promise that someone will call, and §24 silence behind it.
+ * They receive a neutral submission confirmation. Approval and Sourcing Hub
+ * export remain CRM actions; this does not pause their chat for staff.
  */
 async function completeB2bEnquiry(candidate: CandidateDoc): Promise<void> {
+  if (candidate.stage === 'B2B_COMPLETED') {
+    await tell(candidate, copy.B2B_ALREADY_SUBMITTED);
+    return;
+  }
   const completedAt = candidate.completedAt ?? new Date();
   await setState(candidate, {
+    stage: 'B2B_COMPLETED',
     completedAt,
     status: 'manual_review',
     b2bReview: candidate.b2bReview ?? { status: 'pending', submittedAt: completedAt },
+    currentStep: undefined,
+    sessionEndedAt: completedAt,
   });
   await recordAudit({ waId: candidate.waId, event: 'b2b_enquiry_completed' });
   await tell(candidate, copy.B2B_COMPLETE);
 
   // The completed row is now visible in the CRM B2B review endpoint. Sourcing
   // export is deliberately not queued here: only CRM approval may do that.
-  await handOffToStaff(candidate, 'B2B enquiry: details and documents collected', {
-    announce: false,
-  });
   await closeOpenSession(candidate.waId);
-  logger.info({ waId: candidate.waId }, 'b2b enquiry collected and handed to staff');
+  logger.info({ waId: candidate.waId }, 'b2b enquiry collected for CRM review');
 }
 
 /** Staff returning the conversation to the bot (§24). */
@@ -1407,11 +1410,10 @@ async function completeStaffEnquiry(candidate: CandidateDoc): Promise<void> {
   // `assignable: true`, which is the whole truth about it.
   await scheduleCrmSync(candidate);
 
-  // `announce: false` — they have just been told staff will contact them, and
-  // the generic handover line underneath it would say the same thing twice.
-  await handOffToStaff(candidate, 'staff enquiry: details and documents collected', {
-    announce: false,
-  });
+  await completeRequestedStaffHandoff(
+    candidate,
+    'Other → Talk to staff intake: details and documents collected',
+  );
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1870,12 +1872,6 @@ async function handleSpecialStep(
           await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
           return true;
 
-        case 'staff':
-          // Typed rather than tapped — the option is not rendered here. It means
-          // the same thing as Other → Talk to staff, so it goes the same way.
-          await startStaffEnquiry(candidate);
-          return true;
-
         case 'track':
           await setState(candidate, { enquiry: 'track' });
           await startTracking(candidate);
@@ -2185,15 +2181,14 @@ async function handleMenuAnswer(
   choiceId: string,
 ): Promise<void> {
   switch (menu) {
-    // "Other" (§2). Two ways out: the B2B branch, or straight to a person.
+    // "Other" (§2). This is the only menu that can start a staff intake.
     case MENU.other:
       if (choiceId === 'b2b') {
         await startB2bEnquiry(candidate);
         return;
       }
-      // The one place a candidate chooses to reach a person. It collects the
-      // details that make the call useful before it hands over (§24).
-      await startStaffEnquiry(candidate);
+      if (choiceId === 'staff') await startStaffEnquiry(candidate);
+      else await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
       return;
 
     case MENU.returning:
@@ -2202,9 +2197,8 @@ async function handleMenuAnswer(
           await startTracking(candidate);
           return;
         case 'check_jobs':
-          // §27 forbids describing anyone's prospects, so this offers a person
-          // rather than an answer.
-          await ask(candidate, copy.JOBS_ANSWER, MENU_CHOICES[MENU.jobs]!, MENU.jobs);
+          await tell(candidate, copy.JOBS_ANSWER);
+          await showReturningMenu(candidate);
           return;
         case 'update':
           await ask(candidate, copy.UPDATE_PROMPT, copy.UPDATE_CHOICES, MENU.update);
@@ -2220,11 +2214,6 @@ async function handleMenuAnswer(
           await showReturningMenu(candidate);
           return;
       }
-
-    case MENU.jobs:
-      if (choiceId === 'yes') await handOffToStaff(candidate, 'asked about current openings');
-      else await showReturningMenu(candidate);
-      return;
 
     case MENU.update:
     case MENU.edit: {
@@ -2805,7 +2794,9 @@ export async function handleInboundMessage(payload: {
     return;
   }
   if (command === 'staff') {
-    await handOffToStaff(candidate, 'asked to speak to a person');
+    // Typing a request is not itself a handoff. The user must select the one
+    // current staff option, which exists only inside Other.
+    await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
     return;
   }
   // Not offered before consent — there is nothing recorded yet to update.
@@ -2985,7 +2976,7 @@ export async function handleInboundMessage(payload: {
       return;
     }
     if (interpretation.kind === 'staff') {
-      await handOffToStaff(candidate, interpretation.reason);
+      await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
       return;
     }
 
@@ -3010,7 +3001,7 @@ export async function handleInboundMessage(payload: {
         languageOther: candidate.languageOther,
       });
       if (answered.kind === 'staff') {
-        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
         return;
       }
       if (answered.kind === 'answered') answer = answered.text;
@@ -3023,7 +3014,7 @@ export async function handleInboundMessage(payload: {
         languageOther: candidate.languageOther,
       });
       if (replied.kind === 'staff') {
-        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
         return;
       }
       if (replied.kind === 'answered') answer = replied.text;
@@ -3126,7 +3117,7 @@ export async function handleInboundMessage(payload: {
 
   switch (interpretation.kind) {
     case 'staff':
-      await handOffToStaff(candidate, interpretation.reason);
+      await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
       return;
 
     case 'unavailable':
@@ -3161,7 +3152,7 @@ export async function handleInboundMessage(payload: {
       });
 
       if (replied.kind === 'staff') {
-        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
         return;
       }
 
@@ -3193,7 +3184,7 @@ export async function handleInboundMessage(payload: {
       });
 
       if (answered.kind === 'staff') {
-        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
         return;
       }
 
@@ -3223,7 +3214,7 @@ export async function handleInboundMessage(payload: {
       });
 
       if (asRemark.kind === 'staff') {
-        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
         return;
       }
 
@@ -3284,7 +3275,7 @@ export async function handleInboundMessage(payload: {
       });
 
       if (replied.kind === 'staff') {
-        await handOffToStaff(candidate, 'raised something the bot must not answer');
+        await ask(candidate, copy.OTHER_PROMPT, copy.OTHER_CHOICES, MENU.other);
         return;
       }
 
@@ -3762,19 +3753,33 @@ async function stopIfUnderAge(
   dateOfBirth: string,
   source: 'cv' | 'document',
 ): Promise<void> {
-  if (candidate.stage === 'HUMAN_HANDOFF' || candidate.ageFlagged) return;
+  if (candidate.stage === 'NOT_ELIGIBLE' || candidate.ageFlagged) return;
 
   const age = ageFrom(dateOfBirth);
   if (age === undefined || age >= TUNABLES.minimumAge) return;
 
-  await setState(candidate, { ageFlagged: true });
+  const now = new Date();
+  await setState(candidate, {
+    ageFlagged: true,
+    stage: 'NOT_ELIGIBLE',
+    status: 'not_eligible',
+    currentStep: undefined,
+    editQueue: [],
+    sessionEndedAt: now,
+  });
   logger.warn(
     { waId: candidate.waId, age, source },
     'the date of birth read off a document gives an age below the minimum',
   );
 
   await tell(candidate, copy.AGE_HANDOFF);
-  await handOffToStaff(candidate, `${source} gives a date of birth with an age of ${age}`);
+  await closeOpenSession(candidate.waId);
+  await recordAudit({
+    waId: candidate.waId,
+    candidateId: candidate.candidateId,
+    event: 'eligibility_blocked',
+    detail: `${source} gives a date of birth with an age of ${age}`,
+  });
 }
 
 /**
@@ -3890,10 +3895,12 @@ export async function resumeAfterDocument(
       // person instead of moving on.
       if (b2b) {
         await tell(candidate, copy.STUCK);
-        await handOffToStaff(
-          candidate,
-          `"${docType}" was still unreadable after ${slot.askedCount} attempts`,
-        );
+        await recordAudit({
+          waId: candidate.waId,
+          candidateId: candidate.candidateId,
+          event: 'document_rejected',
+          detail: `"${docType}" remained unreadable after ${slot.askedCount} attempts`,
+        });
         return;
       }
 

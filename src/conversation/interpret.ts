@@ -132,7 +132,6 @@ export function detectGlobalCommand(
   text: string | undefined,
   replyId?: string,
 ): 'update' | 'delete' | 'staff' | undefined {
-  if (replyId === 'staff') return 'staff';
   if (replyId === 'update') return 'update';
   if (replyId === 'delete') return 'delete';
 
@@ -167,10 +166,12 @@ function resolveLocally(params: InterpretParams): Interpretation | undefined {
 
   // A tap. The id came from the message we sent, so there is nothing to infer.
   if (replyId) {
-    if (replyId === 'staff') return { kind: 'staff', reason: 'tapped Talk to staff' };
     if (choices.some((c) => c.id === replyId) || replyId === '__done') {
       return { kind: 'matched', ids: [replyId], raw: raw || replyId };
     }
+    // A staff row is actionable only while it is one of the choices currently
+    // on screen. A stale row is sent through the current Other menu first.
+    if (replyId === 'staff') return { kind: 'staff', reason: 'stale Talk to staff option' };
   }
 
   if (!raw) return undefined;

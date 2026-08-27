@@ -26,14 +26,7 @@ import type {
   StoredJobQuestion,
 } from '../db/models.js';
 import type { Choice, Localised } from './language.js';
-import {
-  CHOICE_STAFF,
-  CONFIRM_CHOICES,
-  ENTRY_CHOICES,
-  OTHER,
-  WELCOME,
-  render,
-} from './copy.js';
+import { CONFIRM_CHOICES, ENTRY_CHOICES, OTHER, WELCOME, render } from './copy.js';
 import { DOCUMENTS, TUNABLES } from './rules.js';
 import { aadhaarFullyRead } from './checklist.js';
 import {
@@ -552,13 +545,8 @@ const START_STEPS: FlowStep[] = [
     // `choices` above — a duplicate would be numbered twice in the list the
     // interpreter sees and break "2 means the second option".
     //
-    // `staff` stays here and stays hidden. Someone who types "I want to talk to
-    // someone" at the opening menu means the same thing as someone who taps
-    // Other → Talk to staff, and `handleSpecialStep` sends both to the same
-    // place: the intake, not a bare handover.
     hiddenChoices: [
       { id: 'no', label: { en: 'No', ta: 'இல்லை', hi: 'नहीं', te: 'కాదు', ml: 'അല്ല' } },
-      CHOICE_STAFF,
     ],
     satisfied: (c) => p(c).lookingForOverseasJob === true,
     apply: (a) => ({ lookingForOverseasJob: a.ids?.[0] === 'apply' }),

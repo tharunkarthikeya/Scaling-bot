@@ -157,7 +157,6 @@ export function validateCopy(): void {
   // Carries a number and a two-clause instruction in five scripts; the one
   // most likely to outgrow a bubble if it is ever reworded.
   checkMessage('file too large', copy.FILE_TOO_LARGE);
-  checkMessage('staff handoff', copy.STAFF_HANDOFF);
   checkMessage('b2b welcome', copy.B2B_WELCOME);
   checkMessage('b2b complete', copy.B2B_COMPLETE);
   checkMessage('deleted', copy.DELETED);
