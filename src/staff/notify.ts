@@ -104,14 +104,14 @@ export function staffPhoneToE164(raw: string | null | undefined): string | undef
 }
 
 /**
- * The template's four parameters, in the order the approved body expects.
+ * The template's header parameter and three body parameters.
  *
  * This array **is** the contract with Meta. The body submitted for approval is:
  *
- *     Hello, {{1}}
- *     Candidate Name: {{2}}
- *     Candidate ID: {{3}}
- *     Mobile Number: {{4}}
+ *     HEADER: Hello, {{1}}
+ *     BODY:   Candidate Name: {{1}}
+ *             Candidate ID: {{2}}
+ *             Mobile Number: {{3}}
  *
  * Reordering here without resubmitting there produces a message that sends
  * cleanly and says the wrong things, which is the worst shape this bug can
@@ -122,13 +122,15 @@ export function staffAssignmentParameters(fields: {
   fullName?: string | null;
   candidateId: string;
   phone?: string | null;
-}): string[] {
-  return [
-    parameter(fields.staffName, 'Team Member'),
-    parameter(fields.fullName, 'Unnamed candidate'),
-    parameter(fields.candidateId),
-    parameter(fields.phone, 'Not on file'),
-  ];
+}): { header: string; body: string[] } {
+  return {
+    header: parameter(fields.staffName, 'Team Member'),
+    body: [
+      parameter(fields.fullName, 'Unnamed candidate'),
+      parameter(fields.candidateId),
+      parameter(fields.phone, 'Not on file'),
+    ],
+  };
 }
 
 /**

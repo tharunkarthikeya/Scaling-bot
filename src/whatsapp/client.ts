@@ -386,18 +386,44 @@ async function sendBodyTemplate(
  */
 export async function sendStaffAssignmentTemplate(
   to: string,
-  parameters: string[],
+  parameters: { header: string; body: string[] },
   from?: FromNumber,
 ): Promise<SendResult> {
   const name = config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE;
   if (!name) throw new Error('WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE is not configured');
-  return sendBodyTemplate(
-    to,
-    name,
-    config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE_LANG,
-    parameters,
+
+  if (config.SHADOW_MODE) {
+    logger.info({ to, template: name, parameters }, 'shadow mode: template suppressed');
+    return { shadowed: true };
+  }
+
+  await budgets.replies.acquire();
+
+  const json = await graphPost(
+    `${sendingNumberFor(from)}/messages`,
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name,
+        language: { code: config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE_LANG },
+        components: [
+          {
+            type: 'header',
+            parameters: [{ type: 'text', text: parameters.header }],
+          },
+          {
+            type: 'body',
+            parameters: parameters.body.map((text) => ({ type: 'text', text })),
+          },
+        ],
+      },
+    },
     from,
   );
+
+  return { wamid: json?.messages?.[0]?.id, shadowed: false };
 }
 
 /**

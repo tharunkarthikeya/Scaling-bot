@@ -6478,10 +6478,10 @@ await check('a number too short to reach anybody is refused, not padded', () => 
 
 await check('every parameter is non-empty, whatever is missing from the record', () => {
   // Meta rejects an empty parameter, so a candidate who has answered almost
-  // nothing must still produce four sendable values.
+  // nothing must still produce one header and three sendable body values.
   const params = staffAssignmentParameters({ candidateId: 'CND-1024' });
-  assert.equal(params.length, 4);
-  for (const value of params) {
+  assert.equal(params.body.length, 3);
+  for (const value of [params.header, ...params.body]) {
     assert.ok(value.length > 0, 'a blank parameter');
     assert.ok(!/[\n\t]/.test(value), `a line break in ${JSON.stringify(value)}`);
     assert.ok(!/ {4}/.test(value), `four spaces in ${JSON.stringify(value)}`);
@@ -6498,22 +6498,20 @@ await check('the parameters are in the order the approved body expects', () => {
       candidateId: 'CND-1024',
       phone: '+91 98765 43210',
     }),
-    [
-      'Priya Sharma',
-      'John Doe',
-      'CND-1024',
-      '+91 98765 43210',
-    ],
+    {
+      header: 'Priya Sharma',
+      body: ['John Doe', 'CND-1024', '+91 98765 43210'],
+    },
   );
 });
 
 await check('a value that arrived with a line break in it still sends', () => {
   // A CV's name field routinely carries one. Collapsing costs the formatting;
   // rejecting would cost the notification.
-  const [, name] = staffAssignmentParameters({
+  const [name] = staffAssignmentParameters({
     fullName: 'John\n   Doe',
     candidateId: 'CND-1',
-  });
+  }).body;
   assert.equal(name, 'John Doe');
 });
 
