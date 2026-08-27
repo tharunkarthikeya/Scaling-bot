@@ -68,22 +68,21 @@ export const FAQ: FaqEntry[] = [
     asks: 'Is there a fee? Do I have to pay anything? How much does registration cost?',
     answer:
       'Registering with Adira Enterprises is free. We never ask candidates to pay for a job ' +
-      'or for registration. If anyone asks you for money in our name, tell our staff immediately.',
+      'or for registration. If anyone asks you for money in our name, do not pay and keep the evidence.',
   },
   {
     id: 'salary',
     asks: 'What salary will I get? How much will they pay? What is the pay in Dubai/Europe?',
     answer:
       'Pay depends on the employer, the country and the role, so it is not something we can ' +
-      'state up front. Our staff confirm the exact salary and terms with you before you accept ' +
-      'any offer.',
+      'state up front. The exact salary and terms must be stated in an offer before it is accepted.',
   },
   {
     id: 'selection_chance',
     asks: 'Will I get selected? Am I suitable? What are my chances? Will I definitely get a job?',
     answer:
-      'Registering does not guarantee selection. Our staff review your profile against the ' +
-      'vacancies we are working on and contact you when something suitable comes up.',
+      'Registering does not guarantee selection. Profiles are reviewed against the vacancies ' +
+      'currently available.',
   },
   {
     id: 'how_long_registration',
@@ -96,8 +95,8 @@ export const FAQ: FaqEntry[] = [
     id: 'timeline',
     asks: 'When will I get a job? How long until you call me? When will I hear back?',
     answer:
-      'It depends on which vacancies are open and which ones match your profile. Our staff ' +
-      'contact you as soon as there is something suitable — you do not need to message repeatedly.',
+      'It depends on which vacancies are open and which ones match your profile. You can use ' +
+      'your Application ID to check the recorded status.',
   },
   {
     id: 'documents_needed',
@@ -112,8 +111,7 @@ export const FAQ: FaqEntry[] = [
     asks: 'Do I need a passport? Can I apply without a passport? My passport is expired.',
     answer:
       'You can register without a passport — the questions cover whether you have one, have ' +
-      'applied, or need to apply. A valid passport is needed before you can travel, and our ' +
-      'staff can tell you what to do next in your case.',
+      'applied, or need to apply. A valid passport is needed before you can travel.',
   },
   {
     id: 'no_cv',
@@ -127,8 +125,7 @@ export const FAQ: FaqEntry[] = [
     asks: 'Which countries do you send to? Do you have jobs in Dubai / Europe / Russia?',
     answer:
       'We work with employers in the Gulf countries, Europe, Russia and the CIS, and Singapore ' +
-      'and Malaysia. Which vacancies are open changes over time, so our staff will tell you what ' +
-      'is available for your trade.',
+      'and Malaysia. Which vacancies are open changes over time and depends on the trade.',
   },
   {
     id: 'visa_ticket',

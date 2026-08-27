@@ -933,6 +933,25 @@ await check('asking for a person is recognised without the model (§24)', async 
   assert.equal(result.kind, 'staff');
 });
 
+await check('only the current Other-menu staff row is an actionable choice', async () => {
+  const current = await interpret({
+    step: nameStep,
+    choices: [CHOICE_STAFF],
+    text: '',
+    replyId: CHOICE_STAFF.id,
+  });
+  assert.equal(current.kind, 'matched');
+
+  const stale = await interpret({
+    step: nameStep,
+    choices: [],
+    text: '',
+    replyId: CHOICE_STAFF.id,
+  });
+  assert.equal(stale.kind, 'staff');
+  assert.equal(detectGlobalCommand(undefined, CHOICE_STAFF.id), undefined);
+});
+
 /* ------------------------------------------------------------------ */
 
 console.log('\nprofile rules (§9 separation, §27 provenance)');
@@ -3016,9 +3035,7 @@ await check('the staff option is offered in one place and one place only', () =>
   );
 
   // Nowhere else. Not on the confirmation, not on the returning menu, and not
-  // on any step in any of the four flows — including the hidden choices a step
-  // offers the interpreter, with the single documented exception of the opening
-  // menu, where it is understood in words and sent to the same intake.
+  // on any step in any of the four flows, including hidden interpreter choices.
   assert.ok(!CONFIRM_CHOICES.some((o) => o.id === CHOICE_STAFF.id), 'confirmation');
   assert.ok(!RETURNING_CHOICES.some((o) => o.id === CHOICE_STAFF.id), 'returning menu');
 
@@ -3028,7 +3045,6 @@ await check('the staff option is offered in one place and one place only', () =>
         !(step.choices ?? []).some((o) => o.id === CHOICE_STAFF.id),
         `step "${step.id}" in the ${name} flow still renders a staff row`,
       );
-      if (step.id === 'entry') continue;
       assert.ok(
         !(step.hiddenChoices ?? []).some((o) => o.id === CHOICE_STAFF.id),
         `step "${step.id}" in the ${name} flow still offers staff to the interpreter`,

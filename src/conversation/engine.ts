@@ -988,6 +988,48 @@ export async function returnConversationToBot(waId: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Releases handoffs created by versions that automatically paused on unrelated
+ * answers, job-opening questions, B2B completion, eligibility checks, or typed
+ * staff phrases. A completed staff enquiry is the one historical handoff that
+ * came through the intended intake, so it remains paused until CRM returns it.
+ */
+async function releaseLegacyAutomaticHandoff(candidate: CandidateDoc): Promise<boolean> {
+  if (candidate.stage !== 'HUMAN_HANDOFF') return false;
+  if (candidate.enquiry === 'staff' && candidate.completedAt) return false;
+
+  const now = new Date();
+  const stage: ConversationStage = candidate.ageFlagged
+    ? 'NOT_ELIGIBLE'
+    : candidate.enquiry === 'b2b' && candidate.completedAt
+      ? 'B2B_COMPLETED'
+      : candidate.completedAt
+        ? 'REGISTRATION_COMPLETED'
+        : candidate.enquiry === 'b2b'
+          ? 'B2B_PENDING'
+          : 'BASIC_DETAILS_PENDING';
+
+  await setState(candidate, {
+    stage,
+    status: stage === 'NOT_ELIGIBLE' ? 'not_eligible' : statusForStage(stage, candidate.status),
+    humanHandoff: candidate.humanHandoff
+      ? { ...candidate.humanHandoff, returnedAt: now }
+      : undefined,
+    unclearCount: 0,
+  });
+  await recordAudit({
+    waId: candidate.waId,
+    candidateId: candidate.candidateId,
+    event: 'handoff_returned',
+    detail: 'legacy automatic handoff released by the explicit-Other-only rule',
+  });
+  logger.info(
+    { waId: candidate.waId, oldReason: candidate.humanHandoff?.reason, stage },
+    'legacy automatic staff handoff released',
+  );
+  return true;
+}
+
 async function completeRegistration(candidate: CandidateDoc): Promise<void> {
   // A queued CV/passport satisfies its document slot, but nationality has not
   // been decided yet. OCR completion resumes the flow.
@@ -2215,6 +2257,12 @@ async function handleMenuAnswer(
           return;
       }
 
+    case MENU.jobs:
+      // Compatibility for a yes/no jobs prompt sent by an older deployment.
+      // Neither answer may initiate a handoff now.
+      await showReturningMenu(candidate);
+      return;
+
     case MENU.update:
     case MENU.edit: {
       const section = SECTION_BY_MENU_CHOICE[choiceId];
@@ -2702,10 +2750,13 @@ export async function handleInboundMessage(payload: {
     windowExpiresAt: new Date(now.getTime() + WINDOW_MS),
   });
 
-  // §24 — nothing automated runs while a person has the conversation.
+  // §24 — only an explicitly requested staff intake may keep automation paused.
   if (candidate.stage === 'HUMAN_HANDOFF') {
-    logger.info({ waId: candidate.waId }, 'inbound left for staff: the bot is paused');
-    return;
+    const released = await releaseLegacyAutomaticHandoff(candidate);
+    if (!released) {
+      logger.info({ waId: candidate.waId }, 'inbound left for staff: the bot is paused');
+      return;
+    }
   }
 
   // A deleted candidate messaging again is starting over, not resuming (§23).

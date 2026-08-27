@@ -237,23 +237,22 @@ export const PAN_RECEIVED: Localised = {
  * Neither of these refuses anything or asks the candidate to do something they
  * cannot do in this conversation. A passport is renewed at a passport office,
  * not over WhatsApp; the useful thing the bot can do is tell them what it read
- * and let staff take it from there, which is why both end by saying someone will
- * be in touch rather than by demanding a new document.
+ * without demanding a new document in the same conversation.
  */
 export const PASSPORT_EXPIRED: Localised = {
-  en: 'Thank you. The passport you sent shows an expiry of {{expiry}}, so it has run out. You can still continue here — our team will guide you on renewing it.',
-  ta: 'நன்றி. நீங்கள் அனுப்பிய பாஸ்போர்ட்டின் காலாவதி {{expiry}} — அது முடிந்துவிட்டது. இங்கே தொடரலாம்; புதுப்பிப்பது குறித்து எங்கள் குழு வழிகாட்டும்.',
-  hi: 'धन्यवाद। आपने जो पासपोर्ट भेजा है उसकी वैधता {{expiry}} तक थी, यानी वह एक्सपायर हो चुका है। आप यहाँ आगे बढ़ सकते हैं — रिन्यूअल के बारे में हमारी टीम आपको बताएगी।',
-  te: 'ధన్యవాదాలు. మీరు పంపిన పాస్‌పోర్ట్ గడువు {{expiry}}, అంటే అది అయిపోయింది. మీరు ఇక్కడ కొనసాగవచ్చు — రెన్యువల్ గురించి మా టీమ్ మీకు చెప్తుంది.',
-  ml: 'നന്ദി. നിങ്ങൾ അയച്ച പാസ്‌പോർട്ടിന്റെ കാലാവധി {{expiry}} ആണ്, അത് കഴിഞ്ഞു. നിങ്ങൾക്ക് ഇവിടെ തുടരാം — പുതുക്കുന്നതിനെക്കുറിച്ച് ഞങ്ങളുടെ ടീം പറഞ്ഞുതരും.',
+  en: 'Thank you. The passport you sent expired on {{expiry}}. You can continue the registration, but a valid passport is required before travel.',
+  ta: 'நன்றி. நீங்கள் அனுப்பிய பாஸ்போர்ட் {{expiry}} அன்று காலாவதியானது. பதிவைத் தொடரலாம், ஆனால் பயணத்திற்கு முன் செல்லுபடியாகும் பாஸ்போர்ட் தேவை.',
+  hi: 'धन्यवाद। आपने जो पासपोर्ट भेजा है वह {{expiry}} को एक्सपायर हो चुका है। आप रजिस्ट्रेशन जारी रख सकते हैं, लेकिन यात्रा से पहले वैध पासपोर्ट आवश्यक है।',
+  te: 'ధన్యవాదాలు. మీరు పంపిన పాస్‌పోర్ట్ {{expiry}} న గడువు ముగిసింది. నమోదును కొనసాగించవచ్చు, కానీ ప్రయాణానికి ముందు చెల్లుబాటు అయ్యే పాస్‌పోర్ట్ అవసరం.',
+  ml: 'നന്ദി. നിങ്ങൾ അയച്ച പാസ്‌പോർട്ട് {{expiry}} ന് കാലഹരണപ്പെട്ടു. രജിസ്ട്രേഷൻ തുടരാം, പക്ഷേ യാത്രയ്ക്ക് മുമ്പ് സാധുവായ പാസ്‌പോർട്ട് ആവശ്യമാണ്.',
 };
 
 export const PASSPORT_EXPIRING_SOON: Localised = {
-  en: 'Thank you. The passport you sent expires on {{expiry}}, which is quite soon. You can still continue here — our team will let you know if it needs renewing before you travel.',
-  ta: 'நன்றி. நீங்கள் அனுப்பிய பாஸ்போர்ட் {{expiry}} அன்று காலாவதியாகிறது — விரைவில். இங்கே தொடரலாம்; பயணத்திற்கு முன் புதுப்பிக்க வேண்டுமா என்பதை எங்கள் குழு தெரிவிக்கும்.',
-  hi: 'धन्यवाद। आपने जो पासपोर्ट भेजा है वह {{expiry}} को एक्सपायर हो रहा है, जो काफ़ी नज़दीक है। आप यहाँ आगे बढ़ सकते हैं — यात्रा से पहले रिन्यूअल ज़रूरी है या नहीं, हमारी टीम बता देगी।',
-  te: 'ధన్యవాదాలు. మీరు పంపిన పాస్‌పోర్ట్ {{expiry}} న గడువు ముగుస్తుంది, అది చాలా దగ్గరలో ఉంది. మీరు ఇక్కడ కొనసాగవచ్చు — ప్రయాణానికి ముందు రెన్యువల్ కావాలా అనేది మా టీమ్ చెప్తుంది.',
-  ml: 'നന്ദി. നിങ്ങൾ അയച്ച പാസ്‌പോർട്ടിന്റെ കാലാവധി {{expiry}} ന് തീരും, അത് വളരെ അടുത്താണ്. നിങ്ങൾക്ക് ഇവിടെ തുടരാം — യാത്രയ്ക്ക് മുൻപ് പുതുക്കേണ്ടതുണ്ടോ എന്ന് ഞങ്ങളുടെ ടീം അറിയിക്കും.',
+  en: 'Thank you. The passport you sent expires on {{expiry}}, which is soon. You can continue the registration, but please check whether renewal is required before travel.',
+  ta: 'நன்றி. நீங்கள் அனுப்பிய பாஸ்போர்ட் {{expiry}} அன்று விரைவில் காலாவதியாகிறது. பதிவைத் தொடரலாம், ஆனால் பயணத்திற்கு முன் புதுப்பிக்க வேண்டுமா என்பதைச் சரிபார்க்கவும்.',
+  hi: 'धन्यवाद। आपने जो पासपोर्ट भेजा है वह {{expiry}} को जल्द एक्सपायर होगा। आप रजिस्ट्रेशन जारी रख सकते हैं, लेकिन यात्रा से पहले रिन्यूअल की आवश्यकता जाँच लें।',
+  te: 'ధన్యవాదాలు. మీరు పంపిన పాస్‌పోర్ట్ {{expiry}} న త్వరలో గడువు ముగుస్తుంది. నమోదును కొనసాగించవచ్చు, కానీ ప్రయాణానికి ముందు రెన్యువల్ అవసరమా అని తనిఖీ చేయండి.',
+  ml: 'നന്ദി. നിങ്ങൾ അയച്ച പാസ്‌പോർട്ട് {{expiry}} ന് ഉടൻ കാലഹരണപ്പെടും. രജിസ്ട്രേഷൻ തുടരാം, പക്ഷേ യാത്രയ്ക്ക് മുമ്പ് പുതുക്കൽ ആവശ്യമാണോ എന്ന് പരിശോധിക്കൂ.',
 };
 
 /**
@@ -1105,15 +1104,6 @@ export const VOICE_NOT_UNDERSTOOD: Localised = {
   hi: 'मैंने आपका वॉइस मैसेज स्टाफ के लिए सेव कर लिया है। सही रिकॉर्ड करने के लिए क्या आप कोई विकल्प चुन सकते हैं या जवाब टाइप कर सकते हैं?',
   te: 'మీ వాయిస్ మెసేజ్‌ని మా సిబ్బంది కోసం సేవ్ చేశాను. సరిగ్గా నమోదు చేయడానికి, దయచేసి ఒక ఆప్షన్ నొక్కండి లేదా జవాబు టైప్ చేయండి.',
   ml: 'നിങ്ങളുടെ വോയിസ് മെസ്സേജ് ഞങ്ങളുടെ സ്റ്റാഫിന് വേണ്ടി സേവ് ചെയ്തിട്ടുണ്ട്. ശരിയായി രേഖപ്പെടുത്താൻ, ഒരു ഓപ്ഷൻ ടാപ്പ് ചെയ്യുകയോ ഉത്തരം ടൈപ്പ് ചെയ്യുകയോ ചെയ്യാമോ?',
-};
-
-/** Sent when a candidate messages while staff have taken the conversation over (§24). */
-export const STAFF_IN_CHARGE: Localised = {
-  en: 'One of our staff is looking after this conversation. They will reply here.',
-  ta: 'இந்த உரையாடலை எங்கள் ஊழியர் ஒருவர் கவனித்து வருகிறார். அவர்கள் இங்கே பதிலளிப்பார்கள்.',
-  hi: 'हमारा एक स्टाफ मेंबर इस बातचीत को देख रहा है। वे यहीं जवाब देंगे।',
-  te: 'ఈ సంభాషణను మా సిబ్బందిలో ఒకరు చూసుకుంటున్నారు. వాళ్ళు ఇక్కడే జవాబు ఇస్తారు.',
-  ml: 'ഞങ്ങളുടെ സ്റ്റാഫിൽ ഒരാൾ ഈ സംഭാഷണം നോക്കുന്നുണ്ട്. അവർ ഇവിടെ മറുപടി തരും.',
 };
 
 /** §27 — below the minimum age the registration ends without a staff handoff. */
