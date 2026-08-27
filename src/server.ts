@@ -434,8 +434,14 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     /* --------------------------------------------------------------- */
 
     app.get('/api/b2b', async (req) => {
-      const q = req.query as { stage?: string; limit?: string };
-      const filter = q.stage ? { stage: q.stage as never } : {};
+      const q = req.query as { stage?: string; status?: string; limit?: string };
+      // The CRM review section contains submitted enquiries only. Partial B2B
+      // conversations remain safely stored but are not reviewable yet.
+      const filter = {
+        completedAt: { $exists: true },
+        ...(q.stage ? { stage: q.stage } : {}),
+        ...(q.status ? { 'b2bReview.status': q.status } : {}),
+      } as never;
       const limit = Math.min(Number(q.limit) || 50, 200);
 
       const rows = await b2bEnquiries()
@@ -460,6 +466,62 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       const documents = withoutRawOcr(record ? flattenUploads(record) : []);
 
       return { enquiry, documents, transcript };
+    });
+
+    /** CRM review decision. Approval is the sole trigger for sourcing export. */
+    app.patch('/api/b2b/:waId/review', async (req, res) => {
+      const { waId } = req.params as { waId: string };
+      const body = (req.body ?? {}) as { status?: string; by?: string; note?: string };
+      if (body.status !== 'approved' && body.status !== 'rejected') {
+        return res.code(400).send({ error: 'status must be one of: approved, rejected' });
+      }
+
+      const existing = await b2bEnquiries().findOne({ waId, completedAt: { $exists: true } });
+      if (!existing) return res.code(404).send({ error: 'completed enquiry not found' });
+
+      const now = new Date();
+      const review = {
+        status: body.status,
+        submittedAt: existing.b2bReview?.submittedAt ?? existing.completedAt ?? now,
+        reviewedAt: now,
+        ...(body.by ? { reviewedBy: body.by } : {}),
+        ...(body.note ? { note: body.note } : {}),
+        ...(existing.b2bReview?.sourcingQueuedAt
+          ? { sourcingQueuedAt: existing.b2bReview.sourcingQueuedAt }
+          : {}),
+      } as const;
+
+      const enquiry = await b2bEnquiries().findOneAndUpdate(
+        { waId, completedAt: { $exists: true } },
+        {
+          $set: {
+            b2bReview: review,
+            status: body.status === 'approved' ? 'job_ready' : 'archived',
+            updatedAt: now,
+          },
+        },
+        { returnDocument: 'after' },
+      );
+      if (!enquiry) return res.code(404).send({ error: 'completed enquiry not found' });
+
+      await recordAudit({
+        waId,
+        event: body.status === 'approved' ? 'b2b_enquiry_approved' : 'b2b_enquiry_rejected',
+        detail: `${body.status}${body.by ? ` by ${body.by}` : ''}`,
+      });
+
+      if (body.status === 'approved') {
+        await queue.enqueue('ats_export', { waId });
+        const queuedAt = new Date();
+        await b2bEnquiries().updateOne(
+          { waId, 'b2bReview.status': 'approved' },
+          { $set: { 'b2bReview.sourcingQueuedAt': queuedAt, updatedAt: queuedAt } },
+        );
+        enquiry.b2bReview = { ...enquiry.b2bReview!, sourcingQueuedAt: queuedAt };
+      }
+
+      logger.info({ waId, status: body.status, by: body.by }, 'b2b review decision set');
+      return { waId, review: enquiry.b2bReview, sourcing: body.status === 'approved' ? 'queued' : 'not_queued' };
     });
 
     /** The review queue: documents whose extraction a human must confirm. */

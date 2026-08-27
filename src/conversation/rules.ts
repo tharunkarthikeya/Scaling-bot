@@ -212,8 +212,8 @@ export const DOCUMENTS: DocumentRequirement[] = [
    * accepted both would have the second photo land in the next slot — which,
    * here, is the company's registration certificate.
    *
-   * Both read as an Aadhaar (`identityAs`), so the extractor judges them against
-   * Aadhaar markers and what it finds is filed as an Aadhaar number.
+   * B2B documents are evidence for a person to review. They are stored exactly
+   * as received and never sent to any extractor.
    */
   {
     id: 'b2b_aadhaar_front',
@@ -225,11 +225,10 @@ export const DOCUMENTS: DocumentRequirement[] = [
       ml: 'ആധാർ കാർഡ് (മുൻവശം)',
     },
     required: false,
-    keywords: [],
-    ocr: 'aadhaar',
+    keywords: ['aadhaar front', 'aadhar front', 'aadhaar', 'aadhar'],
+    ocr: 'none',
     sensitive: true,
     branch: 'b2b',
-    identityAs: 'aadhaar',
   },
   {
     id: 'b2b_aadhaar_back',
@@ -241,11 +240,28 @@ export const DOCUMENTS: DocumentRequirement[] = [
       ml: 'ആധാർ കാർഡ് (പിൻവശം)',
     },
     required: false,
-    keywords: [],
-    ocr: 'aadhaar',
+    keywords: ['aadhaar back', 'aadhar back'],
+    ocr: 'none',
     sensitive: true,
     branch: 'b2b',
-    identityAs: 'aadhaar',
+  },
+  {
+    id: 'b2b_id_proof',
+    label: {
+      en: 'identity proof',
+      ta: 'அடையாளச் சான்று',
+      hi: 'पहचान प्रमाण',
+      te: 'గుర్తింపు రుజువు',
+      ml: 'തിരിച്ചറിയൽ രേഖ',
+    },
+    required: false,
+    keywords: [
+      'id proof', 'identity proof', 'aadhaar', 'aadhar', 'passport', 'pan card',
+      'voter id', 'driving licence', 'driving license',
+    ],
+    ocr: 'none',
+    sensitive: true,
+    branch: 'b2b',
   },
   {
     /**
@@ -322,6 +338,10 @@ export const NEVER_OCR: ReadonlySet<string> = new Set([
   'driving_licence',
   // A company's registration certificate (§2). Filed, not read.
   'company_registration',
+  // Business enquiry documents are storage-only, including the agent's Aadhaar.
+  'b2b_aadhaar_front',
+  'b2b_aadhaar_back',
+  'b2b_id_proof',
 ]);
 
 /**

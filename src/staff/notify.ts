@@ -24,9 +24,7 @@
 import { config } from '../config.js';
 import type { CrmStaffContact } from '../crm/client.js';
 import { fetchAdminContacts, fetchAssignmentSummary, fetchStaffContact } from '../crm/client.js';
-import { registrationStateOf } from '../crm/mapping.js';
 import {
-  candidates,
   claimStaffNotice,
   confirmStaffNotice,
   releaseStaffNotice,
@@ -106,41 +104,14 @@ export function staffPhoneToE164(raw: string | null | undefined): string | undef
 }
 
 /**
- * How far the registration got, in the one word the message has room for.
- *
- * Read from *this* bot's own record rather than from the CRM, because the CRM
- * does not have it: `WhatsAppProfileIn` is an allow-list and drops the
- * `registration` block on the way in, deliberately. A candidate the CRM
- * ingested from a mailbox never had a registration at all, which is a third
- * answer rather than a missing one.
- */
-async function registrationLine(crmCandidateId: string, source?: string): Promise<string> {
-  if (source && source !== 'whatsapp') return 'Not applicable';
-
-  try {
-    const doc = await candidates().findOne({ 'crmSync.candidateId': crmCandidateId });
-    if (!doc) return NOT_STATED;
-    return registrationStateOf(doc).complete ? 'Complete' : 'Incomplete';
-  } catch (err) {
-    // The message is worth sending with one line short of perfect.
-    logger.warn({ err, crmCandidateId }, 'could not read the local record for registration state');
-    return NOT_STATED;
-  }
-}
-
-/**
- * The template's seven parameters, in the order the approved body expects.
+ * The template's three parameters, in the order the approved body expects.
  *
  * This array **is** the contract with Meta. The body submitted for approval is:
  *
- *     New Candidate Assigned
- *     Candidate: {{1}}
+ *     Hello, {{1}}
+ *     Candidate Name: {{1}}
  *     Candidate ID: {{2}}
- *     Country: {{3}}
- *     Job: {{4}}
- *     Phone: {{5}}
- *     Registration: {{6}}
- *     Documents: {{7}}
+ *     Mobile Number: {{3}}
  *
  * Reordering here without resubmitting there produces a message that sends
  * cleanly and says the wrong things, which is the worst shape this bug can
@@ -149,20 +120,12 @@ async function registrationLine(crmCandidateId: string, source?: string): Promis
 export function staffAssignmentParameters(fields: {
   fullName?: string | null;
   candidateId: string;
-  country?: string | null;
-  job?: string | null;
   phone?: string | null;
-  registration: string;
-  documents?: string[];
 }): string[] {
   return [
     parameter(fields.fullName, 'Unnamed candidate'),
     parameter(fields.candidateId),
-    parameter(fields.country),
-    parameter(fields.job),
     parameter(fields.phone, 'Not on file'),
-    parameter(fields.registration),
-    parameter((fields.documents ?? []).join(', '), 'None on file'),
   ];
 }
 
@@ -221,19 +184,13 @@ export async function notifyStaffOfAssignment(params: {
     return { sent: false, reason: 'already_notified' };
   }
 
-  const registration = await registrationLine(candidateId, summary.source);
-
   try {
     const result = await sendStaffAssignmentTemplate(
       to,
       staffAssignmentParameters({
         fullName: summary.full_name,
         candidateId: summary.candidate_id || candidateId,
-        country: summary.destination_country,
-        job: summary.job,
         phone: summary.phone,
-        registration,
-        documents: summary.documents,
       }),
     );
 

@@ -59,7 +59,16 @@ const SOURCE = 'whatsapp' as const;
  * differently — it is written to every row and read by nothing else in this
  * codebase.
  */
-const B2B_CLIENT_TYPE = 'b2b agents' as const;
+const B2B_CLIENT_TYPES = {
+  agent: 'b2b agents',
+  client: 'b2b clients',
+  association: 'b2b associations',
+} as const;
+
+/** Approval is the only state allowed to promote a B2B enquiry into sourcing. */
+export function b2bApprovedForSourcing(candidate: CandidateDoc): boolean {
+  return candidate.enquiry === 'b2b' && candidate.b2bReview?.status === 'approved';
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * The shapes
@@ -295,15 +304,16 @@ function exportedCandidate(candidate: CandidateDoc): Record<string, unknown> {
  * ATS, and `source` is how they reached us — the same `whatsapp` every other
  * row this file writes carries.
  *
- * What is deliberately thin: the B2B branch asks four questions, so there are
- * four things to say. Their Aadhaar and their company paperwork have rows of
- * their own; this names the person those rows belong to.
+ * Identity and company files have rows of their own; this record names the
+ * person and the contact type those rows belong to.
  */
 function exportedSourcingClient(candidate: CandidateDoc): Record<string, unknown> {
+  const contactType = candidate.profile?.b2bContactType ?? 'agent';
   return {
     source: SOURCE,
     /** Which kind of sourcing client. Set for every row the bot writes here. */
-    type: B2B_CLIENT_TYPE,
+    type: B2B_CLIENT_TYPES[contactType],
+    contactType,
 
     waId: candidate.waId,
     phone: candidate.phone,
@@ -405,9 +415,10 @@ const DOCUMENT_ROUTES: Record<string, { collection: string; ocr: boolean }> = {
   aadhaar_back: { collection: ATS_COLLECTIONS.aadhaarRecords, ocr: true },
   passport: { collection: ATS_COLLECTIONS.passportRecords, ocr: true },
 
-  // The agent's own Aadhaar, both sides, filed together.
-  b2b_aadhaar_front: { collection: ATS_COLLECTIONS.b2bAgentAadhaar, ocr: true },
-  b2b_aadhaar_back: { collection: ATS_COLLECTIONS.b2bAgentAadhaar, ocr: true },
+  // B2B identity files are reviewed by a person and never carry OCR output.
+  b2b_aadhaar_front: { collection: ATS_COLLECTIONS.b2bAgentAadhaar, ocr: false },
+  b2b_aadhaar_back: { collection: ATS_COLLECTIONS.b2bAgentAadhaar, ocr: false },
+  b2b_id_proof: { collection: ATS_COLLECTIONS.b2bIdentityDocuments, ocr: false },
 
   // Whatever company paperwork the contact sent — a registration certificate,
   // an MSME certificate, anything else. Stored exactly as it arrived: there is
@@ -445,6 +456,13 @@ export async function exportToAts(payload: { waId: string }): Promise<void> {
   }
 
   const b2b = candidate.enquiry === 'b2b';
+  if (b2b && !b2bApprovedForSourcing(candidate)) {
+    logger.info(
+      { waId, reviewStatus: candidate.b2bReview?.status ?? 'missing' },
+      'b2b sourcing export skipped: crm approval is required',
+    );
+    return;
+  }
   const documents = await documentsFor(waId);
 
   // A business contact is not a candidate and never gets a `candidates` row —
@@ -539,8 +557,10 @@ export function atsRouteFor(docType: string): { collection: string; ocr: boolean
 }
 
 /** The `type` written on every sourcing client this bot creates. For the smoke checks. */
-export function b2bClientType(): string {
-  return B2B_CLIENT_TYPE;
+export function b2bClientType(
+  contactType: keyof typeof B2B_CLIENT_TYPES = 'agent',
+): string {
+  return B2B_CLIENT_TYPES[contactType];
 }
 
 /** The routing table, for the smoke checks. */

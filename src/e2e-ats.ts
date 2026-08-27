@@ -92,6 +92,8 @@ const names = async (): Promise<Set<string>> =>
 
 const aadhaarRows = () => atsDb().collection(ATS_COLLECTIONS.aadhaarRecords);
 const agentAadhaarRows = () => atsDb().collection(ATS_COLLECTIONS.b2bAgentAadhaar);
+const b2bIdentityRows = () => atsDb().collection(ATS_COLLECTIONS.b2bIdentityDocuments);
+const sourcingRows = () => atsDb().collection(ATS_COLLECTIONS.sourcingClients);
 
 /** A finished conversation, as the engine would have left it. */
 function conversation(waId: string, enquiry: CandidateDoc['enquiry']): CandidateDoc {
@@ -104,12 +106,18 @@ function conversation(waId: string, enquiry: CandidateDoc['enquiry']): Candidate
     candidateId: enquiry === 'b2b' ? undefined : 'ADR-E2E-0001',
     stage: 'REGISTRATION_COMPLETED',
     status: 'documents_received',
-    profile: { fullName: 'E2E Aadhaar' },
+    profile: {
+      fullName: 'E2E Aadhaar',
+      ...(enquiry === 'b2b' ? { b2bContactType: 'agent' as const } : {}),
+    },
     fieldMeta: {},
     history: [],
     documents: {},
     createdAt: now,
     completedAt: now,
+    ...(enquiry === 'b2b'
+      ? { b2bReview: { status: 'approved' as const, submittedAt: now, reviewedAt: now } }
+      : {}),
     lastInboundAt: now,
     updatedAt: now,
   } as CandidateDoc;
@@ -264,6 +272,33 @@ await exportToAts({ waId: agent.waId });
 /* ────────────────────────────────────────────────────────────────────────────
  * 5. What `npm run inspect:ats` will show
  * ──────────────────────────────────────────────────────────────────────────*/
+
+heading('CRM approval gates B2B sourcing');
+
+const pendingClient = conversation('919000000103', 'b2b');
+pendingClient.profile.b2bContactType = 'client';
+pendingClient.b2bReview!.status = 'pending';
+await b2bEnquiries().insertOne(pendingClient);
+await exportToAts({ waId: pendingClient.waId });
+check(
+  (await sourcingRows().countDocuments({ waId: pendingClient.waId })) === 0,
+  'a pending CRM enquiry is not promoted to sourcing',
+);
+
+const association = conversation('919000000104', 'b2b');
+association.profile.b2bContactType = 'association';
+await b2bEnquiries().insertOne(association);
+await sendDocument(association, 'b2b_id_proof', 'association-id');
+await exportToAts({ waId: association.waId });
+
+const associationClient = await sourcingRows().findOne({ waId: association.waId });
+check(
+  associationClient?.type === 'b2b associations',
+  'an approved association reaches its sourcing type',
+);
+const associationId = await b2bIdentityRows().findOne({ waId: association.waId });
+check(!!associationId, 'the association ID reaches the B2B identity collection');
+check(!associationId?.ocr, 'the association ID carries no OCR output');
 
 heading('read back the way a recruiter would');
 

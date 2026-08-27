@@ -711,31 +711,53 @@ const CV_STEP: FlowStep = {
  * from `enquiry`, and the `when` guards here say the same thing a second time so
  * a stray lookup cannot cross the two.
  *
- * Three things, in the order a person ringing back needs them: who they are, an
- * identity document, and proof the company exists. Only the Aadhaar is read; the
- * registration certificate is filed as it arrived (`ocr: 'none'` in `rules.ts`).
+ * First asks whether the contact is an agent, client or association. All paths
+ * collect a name and identity document; company certification is explicitly
+ * optional. Every B2B file is stored as received and none is sent to OCR.
  *
- * They come as four questions, because the two sides of the Aadhaar are asked for
- * one at a time. A photo answers whichever question is open, so a single ask
- * would have the second photo land in the next slot — which here is the
- * company's certificate.
+ * Agents retain the existing two-sided Aadhaar path. Clients and associations
+ * share one generic government-ID path.
  * ─────────────────────────────────────────────────────────────────────────────*/
 
 const isB2b = (c: CandidateDoc): boolean => c.enquiry === 'b2b';
+const isB2bAgent = (c: CandidateDoc): boolean => isB2b(c) && p(c).b2bContactType === 'agent';
+const isB2bClientOrAssociation = (c: CandidateDoc): boolean =>
+  isB2b(c) && (p(c).b2bContactType === 'client' || p(c).b2bContactType === 'association');
 
 export const B2B_STEPS: FlowStep[] = [
+  {
+    id: 'b2b_contact_type',
+    section: 'b2b',
+    prompt: {
+      en: 'Who are you enquiring as?',
+      ta: 'நீங்கள் யாராக விசாரிக்கிறீர்கள்?',
+      hi: 'आप किस रूप में पूछताछ कर रहे हैं?',
+      te: 'మీరు ఏ హోదాలో విచారిస్తున్నారు?',
+      ml: 'നിങ്ങൾ ഏത് നിലയിലാണ് അന്വേഷിക്കുന്നത്?',
+    },
+    input: 'choice',
+    choices: [
+      { id: 'agent', label: { en: 'Agent', ta: 'முகவர்', hi: 'एजेंट', te: 'ఏజెంట్', ml: 'ഏജന്റ്' } },
+      { id: 'client', label: { en: 'Client', ta: 'வாடிக்கையாளர்', hi: 'क्लाइंट', te: 'క్లయింట్', ml: 'ക്ലയന്റ്' } },
+      { id: 'association', label: { en: 'Association', ta: 'சங்கம்', hi: 'एसोसिएशन', te: 'అసోసియేషన్', ml: 'അസോസിയേഷൻ' } },
+    ],
+    when: isB2b,
+    satisfied: (c) => has(p(c).b2bContactType),
+    apply: (a) => ({ b2bContactType: a.ids?.[0] as CandidateProfile['b2bContactType'] }),
+    clears: ['b2bContactType'],
+  },
   {
     id: 'b2b_name',
     section: 'b2b',
     prompt: {
-      en: 'May I have your full name?',
+      en: 'Please give the full name for this enquiry — the agent, client contact, or association representative.',
       ta: 'உங்கள் முழுப் பெயரைச் சொல்லுங்கள்.',
       hi: 'कृपया अपना पूरा नाम बताइए।',
       te: 'మీ పూర్తి పేరు చెప్పండి.',
       ml: 'നിങ്ങളുടെ പൂർണ്ണ പേര് പറയാമോ?',
     },
     input: 'text',
-    when: isB2b,
+    when: (c) => isB2b(c) && has(p(c).b2bContactType),
     satisfied: (c) => has(p(c).fullName),
     apply: (a) => ({ fullName: a.value }),
     clears: ['fullName'],
@@ -755,7 +777,7 @@ export const B2B_STEPS: FlowStep[] = [
     document: 'b2b_aadhaar_front',
     allowMedia: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
-    when: isB2b,
+    when: isB2bAgent,
     satisfied: (c) => b2bDocumentSatisfied(c, 'b2b_aadhaar_front'),
   },
 
@@ -773,19 +795,56 @@ export const B2B_STEPS: FlowStep[] = [
     document: 'b2b_aadhaar_back',
     allowMedia: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
-    // Not when the front already carried the whole card. A contact who sends a
-    // PDF, both images at once, or one photo of the card laid out flat has
-    // answered this question with the previous one, and asking again is asking
-    // for something already on file (§1).
-    when: (c) => isB2b(c) && !aadhaarFullyRead(c),
+    when: isB2bAgent,
     satisfied: (c) => b2bDocumentSatisfied(c, 'b2b_aadhaar_back'),
+  },
+
+  {
+    id: 'b2b_id_proof',
+    section: 'b2b',
+    prompt: {
+      en: 'Please send any government-issued ID proof as a clear photo or PDF.',
+      ta: 'அரசு வழங்கிய ஏதேனும் ஒரு அடையாளச் சான்றை தெளிவான படம் அல்லது PDF ஆக அனுப்பவும்.',
+      hi: 'कृपया सरकार द्वारा जारी कोई भी पहचान प्रमाण साफ़ फोटो या PDF में भेजें।',
+      te: 'ప్రభుత్వం జారీ చేసిన ఏదైనా గుర్తింపు రుజువును స్పష్టమైన ఫోటో లేదా PDFగా పంపండి.',
+      ml: 'സർക്കാർ നൽകിയ ഏതെങ്കിലും തിരിച്ചറിയൽ രേഖ വ്യക്തമായ ഫോട്ടോ അല്ലെങ്കിൽ PDF ആയി അയക്കൂ.',
+    },
+    input: 'document',
+    document: 'b2b_id_proof',
+    allowMedia: true,
+    when: isB2bClientOrAssociation,
+    satisfied: (c) => b2bDocumentSatisfied(c, 'b2b_id_proof'),
+  },
+
+  {
+    id: 'b2b_company_document_choice',
+    section: 'b2b',
+    prompt: {
+      en: 'Would you like to add a company registration certificate or any other company certification? This is optional.',
+      ta: 'நிறுவனப் பதிவு அல்லது வேறு நிறுவனச் சான்றிதழை சேர்க்க விரும்புகிறீர்களா? இது விருப்பமானது.',
+      hi: 'क्या आप कंपनी रजिस्ट्रेशन या कोई अन्य कंपनी प्रमाणपत्र जोड़ना चाहेंगे? यह वैकल्पिक है।',
+      te: 'కంపెనీ రిజిస్ట్రేషన్ లేదా ఇతర కంపెనీ సర్టిఫికేట్‌ను జోడించాలనుకుంటున్నారా? ఇది ఐచ్ఛికం.',
+      ml: 'കമ്പനി രജിസ്ട്രേഷൻ അല്ലെങ്കിൽ മറ്റൊരു കമ്പനി സർട്ടിഫിക്കറ്റ് ചേർക്കണോ? ഇത് ഐച്ഛികമാണ്.',
+    },
+    input: 'choice',
+    choices: [
+      { id: 'upload', label: { en: 'Upload document', ta: 'ஆவணம் அனுப்பு', hi: 'दस्तावेज़ भेजें', te: 'పత్రం పంపండి', ml: 'രേഖ അയക്കുക' } },
+      { id: 'skip', label: { en: 'Skip', ta: 'தவிர்க்கவும்', hi: 'छोड़ें', te: 'దాటవేయి', ml: 'ഒഴിവാക്കുക' } },
+    ],
+    when: isB2b,
+    satisfied: (c) =>
+      has(p(c).b2bCompanyDocumentChoice) || b2bDocumentSatisfied(c, 'company_registration'),
+    apply: (a) => ({
+      b2bCompanyDocumentChoice: a.ids?.[0] as CandidateProfile['b2bCompanyDocumentChoice'],
+    }),
+    clears: ['b2bCompanyDocumentChoice'],
   },
 
   {
     id: 'b2b_company_registration',
     section: 'b2b',
     prompt: {
-      en: 'Finally, please send your company registration certificate — a PDF or a clear photo.',
+      en: 'Please send the optional company registration certificate or other company certification — a PDF or clear photo.',
       ta: 'கடைசியாக, உங்கள் நிறுவனப் பதிவுச் சான்றிதழை PDF ஆகவோ தெளிவான புகைப்படமாகவோ அனுப்பவும்.',
       hi: 'आखिर में, अपनी कंपनी का रजिस्ट्रेशन सर्टिफिकेट भेजें — PDF या साफ़ फ़ोटो।',
       te: 'చివరగా, మీ కంపెనీ రిజిస్ట్రేషన్ సర్టిఫికెట్ పంపండి — PDF లేదా క్లియర్ ఫోటో.',
@@ -795,7 +854,7 @@ export const B2B_STEPS: FlowStep[] = [
     document: 'company_registration',
     allowMedia: true,
     hiddenChoices: DOCUMENT_FALLBACKS,
-    when: isB2b,
+    when: (c) => isB2b(c) && p(c).b2bCompanyDocumentChoice === 'upload',
     satisfied: (c) => b2bDocumentSatisfied(c, 'company_registration'),
   },
 ];

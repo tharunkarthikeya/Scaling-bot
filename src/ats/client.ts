@@ -60,8 +60,10 @@ export const ATS_COLLECTIONS = {
   b2bCompanyDocuments: 'b2b_company_documents',
   /** One per business contact: their whole conversation. */
   b2bMessages: 'b2b_messages',
-  /** The agent's own Aadhaar, both sides, with what was read off them. */
+  /** The agent's own Aadhaar, both sides, stored without extraction. */
   b2bAgentAadhaar: 'b2b_agent_aadhar',
+  /** A client or association contact's ID proof. Stored without extraction. */
+  b2bIdentityDocuments: 'b2b_identity_documents',
 } as const;
 
 export type AtsCollection = (typeof ATS_COLLECTIONS)[keyof typeof ATS_COLLECTIONS];
@@ -210,6 +212,7 @@ async function indexFor(db: Db, name: string): Promise<void> {
     [ATS_COLLECTIONS.b2bCompanyDocuments]: { uploadId: 1 },
     [ATS_COLLECTIONS.b2bMessages]: { waId: 1 },
     [ATS_COLLECTIONS.b2bAgentAadhaar]: { uploadId: 1 },
+    [ATS_COLLECTIONS.b2bIdentityDocuments]: { uploadId: 1 },
   };
 
   const spec = keys[name];

@@ -178,8 +178,6 @@ const GATED = new Set([
   'cv',
   'passport',
   'aadhaar',
-  'b2b_aadhaar_front',
-  'b2b_aadhaar_back',
 ]);
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -924,11 +922,17 @@ async function startB2bEnquiry(candidate: CandidateDoc): Promise<void> {
  * get is the promise that someone will call, and §24 silence behind it.
  */
 async function completeB2bEnquiry(candidate: CandidateDoc): Promise<void> {
+  const completedAt = candidate.completedAt ?? new Date();
+  await setState(candidate, {
+    completedAt,
+    status: 'manual_review',
+    b2bReview: candidate.b2bReview ?? { status: 'pending', submittedAt: completedAt },
+  });
+  await recordAudit({ waId: candidate.waId, event: 'b2b_enquiry_completed' });
   await tell(candidate, copy.B2B_COMPLETE);
 
-  // Their three collections in the ATS, and no candidate row: a business
-  // contact is filed apart here exactly as they are in our own database.
-  await queue.enqueue('ats_export', { waId: candidate.waId });
+  // The completed row is now visible in the CRM B2B review endpoint. Sourcing
+  // export is deliberately not queued here: only CRM approval may do that.
   await handOffToStaff(candidate, 'B2B enquiry: details and documents collected', {
     announce: false,
   });
@@ -3600,8 +3604,8 @@ export async function recordAadhaarCoverage(
   );
 }
 
-/** Every slot an Aadhaar can arrive in, across both branches. */
-const AADHAAR_KINDS = new Set(['aadhaar', 'aadhaar_back', 'b2b_aadhaar_front', 'b2b_aadhaar_back']);
+/** Candidate Aadhaar slots. B2B identity files are intentionally never read. */
+const AADHAAR_KINDS = new Set(['aadhaar', 'aadhaar_back']);
 
 
 /**
@@ -3876,8 +3880,6 @@ export async function resumeAfterDocument(
   const acknowledgement: Record<string, Localised> = {
     passport: copy.PASSPORT_RECEIVED,
     aadhaar: copy.AADHAAR_RECEIVED,
-    b2b_aadhaar_front: copy.AADHAAR_RECEIVED,
-    b2b_aadhaar_back: copy.AADHAAR_RECEIVED,
   };
 
   if (acknowledgement[docType]) await tell(candidate, acknowledgement[docType]!);

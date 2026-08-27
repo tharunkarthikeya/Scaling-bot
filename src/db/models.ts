@@ -227,6 +227,11 @@ export interface CandidateProfile {
   /** Set once the §17 comparison has flagged a difference, so it is raised once. */
   identityFlagged?: boolean;
 
+  /** The kind of business contact selected at the start of the B2B intake. */
+  b2bContactType?: 'agent' | 'client' | 'association';
+  /** Whether the contact chose to add optional company paperwork. */
+  b2bCompanyDocumentChoice?: 'upload' | 'skip';
+
   /* identity */
   fullName?: string;
   /** ISO yyyy-mm-dd. Stored normalised; the candidate always types DD/MM/YYYY. */
@@ -637,6 +642,16 @@ export interface CandidateDoc {
     identitySha256?: Record<string, string>;
   };
 
+  /** CRM review state for a completed B2B enquiry. Approval gates sourcing export. */
+  b2bReview?: {
+    status: 'pending' | 'approved' | 'rejected';
+    submittedAt: Date;
+    reviewedAt?: Date;
+    reviewedBy?: string;
+    note?: string;
+    sourcingQueuedAt?: Date;
+  };
+
   /**
    * An application lookup part-way through its identity check (§25, §27).
    *
@@ -930,6 +945,8 @@ export interface CandidateDocumentsDoc {
   certificate?: DocumentSection;
   b2b_aadhaar_front?: DocumentSection;
   b2b_aadhaar_back?: DocumentSection;
+  /** Any government-issued identity proof supplied by a B2B client or association. */
+  b2b_id_proof?: DocumentSection;
   company_registration?: DocumentSection;
   createdAt: Date;
   updatedAt: Date;
@@ -1009,6 +1026,9 @@ export interface AuditEventDoc {
     | 'passport_expiring_soon'
     /** A business contact chose the B2B branch (§2), so data collection began. */
     | 'b2b_enquiry_started'
+    | 'b2b_enquiry_completed'
+    | 'b2b_enquiry_approved'
+    | 'b2b_enquiry_rejected'
     /**
      * Somebody asked to speak to a person (§24), so the intake began.
      *
@@ -1208,6 +1228,7 @@ export async function ensureIndexes(): Promise<void> {
   await createIndexes(b2bEnquiries(), [
     { key: { waId: 1 }, unique: true, name: 'waId_unique' },
     { key: { stage: 1, updatedAt: -1 }, name: 'stage_updatedAt' },
+    { key: { 'b2bReview.status': 1, completedAt: -1 }, name: 'review_completedAt' },
     { key: { sessionEndedAt: 1, lastInboundAt: 1 }, name: 'session_sweep' },
   ]);
 
@@ -1245,10 +1266,6 @@ export async function ensureIndexes(): Promise<void> {
   await createIndexes(b2bDocuments(), [
     { key: { waId: 1 }, unique: true, name: 'waId_unique' },
     { key: { candidateId: 1 }, name: 'candidateId' },
-    ...DOCUMENTS.filter((d) => d.branch === 'b2b').map((d) => ({
-      key: { [`${d.id}.uploads.ocr.needsReview`]: 1 },
-      name: `${d.id}_needsReview`,
-    })),
   ]);
 
   await createIndexes(processedEvents(), [

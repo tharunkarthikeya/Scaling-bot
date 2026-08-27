@@ -150,7 +150,12 @@ import {
   type StoredJobQuestion,
 } from './db/models.js';
 import { ATS_COLLECTIONS, LEGACY_AADHAAR_COLLECTION } from './ats/client.js';
-import { atsDocumentRoutes, atsRouteFor, b2bClientType } from './ats/export.js';
+import {
+  atsDocumentRoutes,
+  atsRouteFor,
+  b2bApprovedForSourcing,
+  b2bClientType,
+} from './ats/export.js';
 import {
   identityBehindCv,
   inspectUpload,
@@ -371,12 +376,43 @@ await check('"Other" opens the second menu, not a branch of its own (§2)', () =
 
 await check('a B2B contact is asked the B2B questions and none of registration', () => {
   const contact = candidate({ enquiry: 'b2b', profile: {}, consent: undefined });
-  assert.equal(nextStep(contact)?.id, 'b2b_name');
+  assert.equal(nextStep(contact)?.id, 'b2b_contact_type');
 
   // Name in hand, the flow moves to the card rather than to the language or
   // consent questions — a business contact is not registering.
-  contact.profile = { fullName: 'Priya Raman' };
+  contact.profile = { b2bContactType: 'agent', fullName: 'Priya Raman' };
   assert.equal(nextStep(contact)?.id, 'b2b_aadhaar_front');
+});
+
+await check('clients and associations share the generic ID-proof workflow', () => {
+  for (const b2bContactType of ['client', 'association'] as const) {
+    const contact = candidate({
+      enquiry: 'b2b',
+      profile: { b2bContactType, fullName: 'Priya Raman' },
+      consent: undefined,
+    });
+    assert.equal(nextStep(contact)?.id, 'b2b_id_proof');
+  }
+});
+
+await check('company certification is an explicit optional B2B step', () => {
+  const contact = candidate({
+    enquiry: 'b2b',
+    profile: { b2bContactType: 'client', fullName: 'Priya Raman' },
+    consent: undefined,
+  });
+  contact.documents.b2b_id_proof = {
+    status: 'received',
+    askedCount: 1,
+    updatedAt: new Date(),
+  };
+  assert.equal(nextStep(contact)?.id, 'b2b_company_document_choice');
+
+  contact.profile.b2bCompanyDocumentChoice = 'skip';
+  assert.equal(nextStep(contact), undefined);
+
+  contact.profile.b2bCompanyDocumentChoice = 'upload';
+  assert.equal(nextStep(contact)?.id, 'b2b_company_registration');
 });
 
 await check('registration never reaches the B2B questions', () => {
@@ -393,7 +429,7 @@ await check('B2B records and uploads are routed to their own collections', () =>
   assert.equal(recordCollectionFor('apply'), 'candidates');
   assert.equal(recordCollectionFor(undefined), 'candidates');
 
-  for (const id of ['b2b_aadhaar_front', 'b2b_aadhaar_back', 'company_registration']) {
+  for (const id of ['b2b_aadhaar_front', 'b2b_aadhaar_back', 'b2b_id_proof', 'company_registration']) {
     assert.equal(documentCollectionFor(id), 'b2b_documents');
   }
   for (const id of ['cv', 'passport', 'aadhaar', 'pan', 'certificate']) {
@@ -401,21 +437,21 @@ await check('B2B records and uploads are routed to their own collections', () =>
   }
 });
 
-await check('only the Aadhaar sides are read; the certificate is filed as it arrived', () => {
-  // The Aadhaar endpoint, not the generic document one: it returns the number,
-  // the name and the date of birth under their own names.
-  assert.equal(requirementFor('b2b_aadhaar_front')?.ocr, 'aadhaar');
-  assert.equal(requirementFor('b2b_aadhaar_back')?.ocr, 'aadhaar');
+await check('all B2B identity and company documents are stored without OCR', () => {
+  assert.equal(requirementFor('b2b_aadhaar_front')?.ocr, 'none');
+  assert.equal(requirementFor('b2b_aadhaar_back')?.ocr, 'none');
+  assert.equal(requirementFor('b2b_id_proof')?.ocr, 'none');
   assert.equal(requirementFor('aadhaar')?.ocr, 'aadhaar');
   assert.equal(requirementFor('company_registration')?.ocr, 'none');
 });
 
-await check('an unreadable B2B document leaves its question open', () => {
-  // The bug this covers: the bot told the contact their Aadhaar was too blurred
-  // to read, then asked for the back of the card in the very next message —
-  // because running out of asks counted as an answer. It must not.
+await check('a B2B document question closes only after its storage status is received', () => {
+  // A failed or missing storage attempt cannot advance the conversation.
   const spent = (docId: string) => {
-    const c = candidate({ enquiry: 'b2b', profile: { fullName: 'Priya Raman' } });
+    const c = candidate({
+      enquiry: 'b2b',
+      profile: { b2bContactType: 'agent', fullName: 'Priya Raman' },
+    });
     c.documents[docId] = {
       status: 'incomplete',
       askedCount: TUNABLES.maxAsksPerB2bDocument + 1,
@@ -429,8 +465,8 @@ await check('an unreadable B2B document leaves its question open', () => {
   // And the flow stays on it rather than moving to the back of the card.
   assert.equal(nextStep(contact)?.id, 'b2b_aadhaar_front');
 
-  // A file that arrived and read is what closes the question.
-  contact.documents.b2b_aadhaar_front!.status = 'ocr_done';
+  // Arrival is sufficient; no OCR result is expected for any B2B file.
+  contact.documents.b2b_aadhaar_front!.status = 'received';
   assert.equal(nextStep(contact)?.id, 'b2b_aadhaar_back');
 });
 
@@ -3148,6 +3184,7 @@ await check('every collection asked for is named, and named once', () => {
     b2bCompanyDocuments: 'b2b_company_documents',
     b2bMessages: 'b2b_messages',
     b2bAgentAadhaar: 'b2b_agent_aadhar',
+    b2bIdentityDocuments: 'b2b_identity_documents',
   });
 
   // A name typed twice is a collection created empty beside the one in use.
@@ -3197,11 +3234,22 @@ await check('a business contact is a sourcing client, never a candidate', () => 
   // The row says what kind of sourcing client they are, and how they reached
   // us. Both are written on every one the bot creates.
   assert.equal(b2bClientType(), 'b2b agents');
+  assert.equal(b2bClientType('client'), 'b2b clients');
+  assert.equal(b2bClientType('association'), 'b2b associations');
 
   // And they must never land in the candidate list. That is the whole reason
   // they have a collection of their own rather than a `candidates` row with a
   // flag on it — a flag is something a query can forget to filter on.
   assert.notEqual(ATS_COLLECTIONS.sourcingClients, ATS_COLLECTIONS.candidates);
+});
+
+await check('a B2B enquiry reaches sourcing only after CRM approval', () => {
+  const contact = candidate({ enquiry: 'b2b' });
+  assert.equal(b2bApprovedForSourcing(contact), false);
+  contact.b2bReview = { status: 'pending', submittedAt: new Date() };
+  assert.equal(b2bApprovedForSourcing(contact), false);
+  contact.b2bReview.status = 'approved';
+  assert.equal(b2bApprovedForSourcing(contact), true);
 });
 
 await check('each document kind goes to its own collection, and reads or does not', () => {
@@ -3213,8 +3261,12 @@ await check('each document kind goes to its own collection, and reads or does no
   assert.deepEqual(routes.passport, { collection: 'passport_records', ocr: true });
 
   // Both sides of the agent's card, filed together.
-  assert.deepEqual(routes.b2b_aadhaar_front, { collection: 'b2b_agent_aadhar', ocr: true });
-  assert.deepEqual(routes.b2b_aadhaar_back, { collection: 'b2b_agent_aadhar', ocr: true });
+  assert.deepEqual(routes.b2b_aadhaar_front, { collection: 'b2b_agent_aadhar', ocr: false });
+  assert.deepEqual(routes.b2b_aadhaar_back, { collection: 'b2b_agent_aadhar', ocr: false });
+  assert.deepEqual(routes.b2b_id_proof, {
+    collection: 'b2b_identity_documents',
+    ocr: false,
+  });
 
   // The company's paperwork is stored and never read — no extractor, so no
   // `ocr` block, which would otherwise read as an extraction that found nothing.
@@ -3670,13 +3722,19 @@ await check('only the CV, the passport and the Aadhaar go to an extractor', () =
     // The other side of the same card, read by the same extractor. Asked for
     // only when the front did not already carry the whole card (§15).
     'aadhaar_back',
-    'b2b_aadhaar_back',
-    'b2b_aadhaar_front',
     'cv',
     'passport',
   ]);
 
-  const stored = ['pan', 'driving_licence', 'certificate', 'company_registration'];
+  const stored = [
+    'pan',
+    'driving_licence',
+    'certificate',
+    'b2b_aadhaar_front',
+    'b2b_aadhaar_back',
+    'b2b_id_proof',
+    'company_registration',
+  ];
   for (const id of stored) {
     assert.equal(requirementFor(id)?.ocr, 'none', `${id} must not be sent to an extractor`);
   }
@@ -3691,8 +3749,9 @@ await check('each kind goes to the extractor built for it, never a generic one',
   assert.equal(requirementFor('passport')?.ocr, 'passport');
   assert.equal(requirementFor('aadhaar')?.ocr, 'aadhaar');
   // Both sides of the B2B card are Aadhaars and are read as Aadhaars (§2).
-  assert.equal(requirementFor('b2b_aadhaar_front')?.ocr, 'aadhaar');
-  assert.equal(requirementFor('b2b_aadhaar_back')?.ocr, 'aadhaar');
+  assert.equal(requirementFor('b2b_aadhaar_front')?.ocr, 'none');
+  assert.equal(requirementFor('b2b_aadhaar_back')?.ocr, 'none');
+  assert.equal(requirementFor('b2b_id_proof')?.ocr, 'none');
 
   // There is deliberately no generic route left to fall back to.
   for (const d of DOCUMENTS) {
@@ -6419,9 +6478,9 @@ await check('a number too short to reach anybody is refused, not padded', () => 
 
 await check('every parameter is non-empty, whatever is missing from the record', () => {
   // Meta rejects an empty parameter, so a candidate who has answered almost
-  // nothing must still produce seven sendable values.
-  const params = staffAssignmentParameters({ candidateId: 'CND-1024', registration: 'Incomplete' });
-  assert.equal(params.length, 7);
+  // nothing must still produce three sendable values.
+  const params = staffAssignmentParameters({ candidateId: 'CND-1024' });
+  assert.equal(params.length, 3);
   for (const value of params) {
     assert.ok(value.length > 0, 'a blank parameter');
     assert.ok(!/[\n\t]/.test(value), `a line break in ${JSON.stringify(value)}`);
@@ -6436,20 +6495,12 @@ await check('the parameters are in the order the approved body expects', () => {
     staffAssignmentParameters({
       fullName: 'John Doe',
       candidateId: 'CND-1024',
-      country: 'Singapore',
-      job: 'Welder',
       phone: '+91 98765 43210',
-      registration: 'Incomplete',
-      documents: ['Passport', 'CV'],
     }),
     [
       'John Doe',
       'CND-1024',
-      'Singapore',
-      'Welder',
       '+91 98765 43210',
-      'Incomplete',
-      'Passport, CV',
     ],
   );
 });
@@ -6460,7 +6511,6 @@ await check('a value that arrived with a line break in it still sends', () => {
   const [name] = staffAssignmentParameters({
     fullName: 'John\n   Doe',
     candidateId: 'CND-1',
-    registration: 'Complete',
   });
   assert.equal(name, 'John Doe');
 });
