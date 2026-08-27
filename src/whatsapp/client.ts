@@ -325,15 +325,15 @@ export async function sendReengagementTemplate(
 /**
  * One approved template, with its body parameters filled in.
  *
- * Both callers below are templates for the same reason, and it is not a matter
- * of taste: neither a staff member nor an admin ever messages this number, so
+ * These sends are templates for the same reason, and it is not a matter of
+ * taste: neither a staff member nor an admin ever messages this number, so
  * the 24-hour window that free-form text needs is closed for them permanently
  * and always will be. Meta refuses such a send outright - the failure is a 400,
  * not a message that quietly does not arrive.
  *
- * Parameters are positional because a WhatsApp template's are: `{{1}}` is the
- * first element of the array and there is no way to name them. Each caller
- * documents its own order against the body submitted to Meta.
+ * Positional numbering restarts in each component: header `{{1}}` and body
+ * `{{1}}` are two different values. Each caller documents its order against
+ * the template submitted to Meta.
  */
 async function sendBodyTemplate(
   to: string,
@@ -408,22 +408,30 @@ export async function sendStaffAssignmentTemplate(
       template: {
         name,
         language: { code: config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE_LANG },
-        components: [
-          {
-            type: 'header',
-            parameters: [{ type: 'text', text: parameters.header }],
-          },
-          {
-            type: 'body',
-            parameters: parameters.body.map((text) => ({ type: 'text', text })),
-          },
-        ],
+        components: staffAssignmentTemplateComponents(parameters),
       },
     },
     from,
   );
 
   return { wamid: json?.messages?.[0]?.id, shadowed: false };
+}
+
+/** Exact Meta component boundary used by the approved staff template. */
+export function staffAssignmentTemplateComponents(parameters: {
+  header: string;
+  body: string[];
+}) {
+  return [
+    {
+      type: 'header' as const,
+      parameters: [{ type: 'text' as const, text: parameters.header }],
+    },
+    {
+      type: 'body' as const,
+      parameters: parameters.body.map((text) => ({ type: 'text' as const, text })),
+    },
+  ];
 }
 
 /**

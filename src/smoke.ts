@@ -35,6 +35,7 @@ import {
   outboundBudgets,
   readCappedBody,
   setMediaBaseUrlForTests,
+  staffAssignmentTemplateComponents,
 } from './whatsapp/client.js';
 import { isTerminalFailure } from './ingestion/ledger.js';
 import { render } from './conversation/copy.js';
@@ -6502,6 +6503,26 @@ await check('the parameters are in the order the approved body expects', () => {
       header: 'Priya Sharma',
       body: ['John Doe', 'CND-1024', '+91 98765 43210'],
     },
+  );
+});
+
+await check('the greeting is a header parameter, not a fourth body parameter', () => {
+  assert.deepEqual(
+    staffAssignmentTemplateComponents({
+      header: 'Priya Sharma',
+      body: ['John Doe', 'CND-1024', '+91 98765 43210'],
+    }),
+    [
+      { type: 'header', parameters: [{ type: 'text', text: 'Priya Sharma' }] },
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: 'John Doe' },
+          { type: 'text', text: 'CND-1024' },
+          { type: 'text', text: '+91 98765 43210' },
+        ],
+      },
+    ],
   );
 });
 
