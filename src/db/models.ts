@@ -551,6 +551,15 @@ export interface CandidateDoc {
   resumeStep?: string;
   /** Partial selection for a multi-select step, held until the candidate taps Done. */
   pendingMulti?: { step: string; selected: string[] };
+  /**
+   * Current page of a CRM-backed WhatsApp list.
+   *
+   * Jobs and countries can exceed Meta's ten-row ceiling. This is display
+   * state only: the selected answer remains the real taxonomy id, while this
+   * keeps typed row numbers and Back/More navigation tied to the page the
+   * candidate can currently see.
+   */
+  listPage?: { step: 'job_category' | 'country_preference'; page: number };
   /** Steps queued by an UPDATE or an edit request (§18, §22). Drains before normal flow. */
   editQueue?: string[];
   /**

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 280" role="img" aria-labelledby="title description">
+  <title id="title">Adira Enterprises logo — dark mode</title>
+  <desc id="description">The white Adira A symbol beside the company name and the tagline We find, you shine.</desc>
+  <defs>
+    <mask id="symbol-cutouts">
+      <rect width="260" height="280" fill="white"/>
+      <circle cx="127" cy="101" r="25" fill="black"/>
+      <path d="M89 132H165L127 196Z" fill="black"/>
+      <path d="M127 196L149 234H105Z" fill="black"/>
+    </mask>
+  </defs>
+
+  <path d="M127 27L23 234H231Z" fill="#FFFFFF" mask="url(#symbol-cutouts)"/>
+  <text x="271" y="139" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="76" font-weight="700" letter-spacing="-3.5">adira enterprises</text>
+  <text x="276" y="187" fill="#FFFFFF" opacity="0.92" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" letter-spacing="7">WE FIND, YOU SHINE</text>
+</svg>

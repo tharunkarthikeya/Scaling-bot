@@ -113,6 +113,7 @@ import {
 import {
   acceptedChoices,
   choicesFor,
+  listPageTarget,
   renderConfirmation,
   renderStep,
 } from './conversation/render.js';
@@ -3554,7 +3555,14 @@ await check('a new session field cannot be forgotten by a restart', () => {
   const patch = restartPatch(halfFinished());
   const cleared = new Set([...Object.keys(patch), ...RESTART_UNSETS]);
 
-  for (const field of ['editQueue', 'unclearCount', 'currentStep', 'resumeStep', 'pendingMulti']) {
+  for (const field of [
+    'editQueue',
+    'unclearCount',
+    'currentStep',
+    'resumeStep',
+    'pendingMulti',
+    'listPage',
+  ]) {
     assert.ok(cleared.has(field), `"${field}" is session state that a restart does not clear`);
   }
   // And what a restart must not touch is absent from the patch, not accidentally
@@ -3925,6 +3933,16 @@ function atJobStep(overrides: Partial<CandidateDoc['profile']> = {}): CandidateD
   } as CandidateDoc;
 }
 
+/** A candidate looking at one page of a CRM-backed list. */
+const atTaxonomyPage = (
+  step: 'job_category' | 'country_preference',
+  page = 0,
+): CandidateDoc => ({
+  ...atJobStep(),
+  currentStep: step,
+  listPage: { step, page },
+});
+
 await check('with no CRM list, the compiled-in jobs are offered', () => {
   resetTaxonomy();
   const ids = acceptedChoices(jobStep, atJobStep()).map((c) => c.id);
@@ -3966,11 +3984,15 @@ await check('the job list never exceeds what WhatsApp will accept', () => {
       order: i,
     })),
   });
-  const rendered = choicesFor(jobStep, atJobStep());
-  assert.ok(rendered.length <= 10, `a list of ${rendered.length} rows would be refused by Meta`);
-  // And "Other" survives the cut, because it is the way out for the twenty-one
-  // jobs that did not fit.
-  assert.ok(rendered.some((c) => c.id === 'other'), '"Other" was crowded out');
+  const reached = new Set<string>();
+  for (let page = 0; page < 10; page++) {
+    const rendered = choicesFor(jobStep, atTaxonomyPage('job_category', page));
+    assert.ok(rendered.length <= 10, `page ${page} has ${rendered.length} rows`);
+    assert.ok(rendered.some((c) => c.id === 'other'), '"Other" was crowded out');
+    for (const row of rendered) if (row.id.startsWith('job_')) reached.add(row.id);
+    if (!rendered.some((row) => row.id === `__list_page__:job_category:${page + 1}`)) break;
+  }
+  assert.equal(reached.size, 30, 'pagination did not expose every CRM job');
   resetTaxonomy();
 });
 
@@ -4046,10 +4068,21 @@ const EIGHT_COUNTRIES = [
 
 const countryStep = stepById('country_preference')!;
 
-/** The rows on the candidate's screen, and everything else the step accepts. */
-const shownFor = (step: FlowStep) => choicesFor(step, atJobStep()).map((c) => c.id);
-const typableFor = (step: FlowStep) =>
-  acceptedChoices(step, atJobStep())
+/** The rows on one screen, and everything else that screen accepts. */
+const shownFor = (step: FlowStep, page = 0) =>
+  choicesFor(
+    step,
+    step.id === 'job_category' || step.id === 'country_preference'
+      ? atTaxonomyPage(step.id, page)
+      : atJobStep(),
+  ).map((c) => c.id);
+const typableFor = (step: FlowStep, page = 0) =>
+  acceptedChoices(
+    step,
+    step.id === 'job_category' || step.id === 'country_preference'
+      ? atTaxonomyPage(step.id, page)
+      : atJobStep(),
+  )
     .filter((c) => c.hidden)
     .map((c) => c.id);
 
@@ -4059,18 +4092,59 @@ await check('eleven jobs fill the list without overflowing it', () => {
 
   assert.ok(shown.length <= 10, `${shown.length} rows would be refused by Meta`);
   assert.ok(shown.includes('other'), '"Other" was crowded out by the eleven');
-  // Nine jobs and the way out, which is the most a list can carry.
+  // Eight jobs, More options, and the way to type something unlisted.
   assert.equal(shown.length, 10);
+  assert.ok(shown.includes('__list_page__:job_category:1'));
   resetTaxonomy();
 });
 
-await check('the nine that are shown are the nine the admin ordered first', () => {
+await check('the first page follows the admin order', () => {
   setTaxonomyForTests({ jobs: ELEVEN_JOBS });
   assert.deepEqual(shownFor(jobStep).slice(0, 3), [
     'general_worker',
     'factory_warehouse',
     'packing',
   ]);
+  resetTaxonomy();
+});
+
+await check('More options reaches every remaining job and Back returns', async () => {
+  setTaxonomyForTests({ jobs: ELEVEN_JOBS });
+  const firstCandidate = atTaxonomyPage('job_category', 0);
+  const firstAccepted = acceptedChoices(jobStep, firstCandidate);
+  const moreId = '__list_page__:job_category:1';
+  const second = shownFor(jobStep, 1);
+
+  for (const job of ELEVEN_JOBS.slice(8)) {
+    assert.ok(second.includes(job.id), `${job.id} is missing from the second page`);
+  }
+  assert.ok(second.includes('__list_page__:job_category:0'));
+  assert.ok(second.includes('other'));
+  assert.ok(second.length <= 10);
+  const tapped = await interpret({
+    step: jobStep,
+    choices: firstAccepted,
+    text: 'More options',
+    replyId: moreId,
+  });
+  assert.equal(tapped.kind, 'matched');
+  assert.deepEqual(
+    listPageTarget(jobStep.id, tapped.kind === 'matched' ? tapped.ids : []),
+    {
+    step: 'job_category',
+    page: 1,
+    },
+  );
+  resetTaxonomy();
+});
+
+await check('the CRM list limit is respected below Meta’s ceiling', () => {
+  setTaxonomyForTests({ botListLimit: 6, jobs: ELEVEN_JOBS });
+  for (const page of [0, 1, 2]) {
+    const shown = shownFor(jobStep, page);
+    assert.ok(shown.length <= 6, `page ${page} has ${shown.length} rows`);
+    assert.ok(shown.includes('other'));
+  }
   resetTaxonomy();
 });
 
@@ -4084,7 +4158,7 @@ await check('a job an admin promotes to the top appears first', () => {
   resetTaxonomy();
 });
 
-await check('the two jobs past the ceiling are still answerable by typing', () => {
+await check('jobs on later pages are still answerable by typing', () => {
   // The failure this closes: `electrical_mechanical` and `technician` were on
   // the CRM's list, off the WhatsApp list, and absent from what the interpreter
   // was allowed to choose — so a candidate who typed "technician" was told
@@ -4102,28 +4176,37 @@ await check('the two jobs past the ceiling are still answerable by typing', () =
   resetTaxonomy();
 });
 
-await check('eight countries all reach the candidate', () => {
+await check('country pagination reaches every CRM country', () => {
   // The bug this pins: seven of the ten rows went to two pinned destinations
   // and five compiled region rows, leaving three for the CRM's list — so
   // Kuwait, Oman and Bahrain were dropped without a word.
   setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
-  const shown = shownFor(countryStep);
+  const first = shownFor(countryStep);
+  const second = shownFor(countryStep, 1);
+  const shown = new Set([...first, ...second]);
 
   for (const country of EIGHT_COUNTRIES) {
-    assert.ok(shown.includes(country.id), `${country.id} never reached the candidate`);
+    assert.ok(shown.has(country.id), `${country.id} never reached the candidate`);
   }
-  assert.ok(shown.length <= 10, `${shown.length} rows would be refused by Meta`);
+  assert.ok(first.includes('__list_page__:country_preference:1'));
+  assert.ok(second.includes('__list_page__:country_preference:0'));
+  assert.ok(first.length <= 10, `${first.length} rows would be refused by Meta`);
+  assert.ok(second.length <= 10, `${second.length} rows would be refused by Meta`);
   resetTaxonomy();
 });
 
 await check('and the two answers that are not countries survive with them', () => {
   setTaxonomyForTests({ countries: EIGHT_COUNTRIES });
-  const shown = shownFor(countryStep);
+  const first = shownFor(countryStep);
+  const second = shownFor(countryStep, 1);
 
   // "Any country" is what most candidates mean, and "Select countries" is the
-  // only row that leads anywhere for a destination the list does not carry.
-  assert.ok(shown.includes('any'), 'a candidate with no preference has no row to tap');
-  assert.ok(shown.includes('select'), 'the way to name an unlisted country was cut');
+  // only row that leads anywhere for a destination the list does not carry;
+  // both remain fixed on every page.
+  for (const shown of [first, second]) {
+    assert.ok(shown.includes('any'), 'a candidate with no preference has no row to tap');
+    assert.ok(shown.includes('select'), 'the way to name an unlisted country was cut');
+  }
   resetTaxonomy();
 });
 
@@ -4134,11 +4217,14 @@ await check('Singapore and Malaysia survive a CRM that has dropped them', () => 
   setTaxonomyForTests({
     countries: EIGHT_COUNTRIES.filter((c) => !SGMY_DESTINATIONS.has(c.id)),
   });
-  const shown = shownFor(countryStep);
+  const first = shownFor(countryStep);
+  const second = shownFor(countryStep, 1);
+  const shown = new Set([...first, ...second]);
 
-  assert.ok(shown.includes('singapore'));
-  assert.ok(shown.includes('malaysia'));
-  assert.ok(shown.length <= 10);
+  assert.ok(shown.has('singapore'));
+  assert.ok(shown.has('malaysia'));
+  assert.ok(first.length <= 10);
+  assert.ok(second.length <= 10);
   resetTaxonomy();
 });
 
@@ -4253,6 +4339,11 @@ await check('a number still means the row that number was on', () => {
     [],
     'a position past the last row was resolved to a hidden answer',
   );
+
+  const secondCandidate = atTaxonomyPage('country_preference', 1);
+  const secondAccepted = acceptedChoices(countryStep, secondCandidate);
+  const secondShown = choicesFor(countryStep, secondCandidate);
+  assert.deepEqual(resolveOfferedIds(['1'], secondAccepted), [secondShown[0]!.id]);
   resetTaxonomy();
 });
 
@@ -4260,13 +4351,19 @@ await check('every option the candidate can see is countable, and nothing else i
   setTaxonomyForTests({ jobs: ELEVEN_JOBS, countries: EIGHT_COUNTRIES });
 
   for (const step of [jobStep, countryStep]) {
-    const accepted = acceptedChoices(step, atJobStep());
-    const visible = accepted.filter((c) => !c.hidden);
-    assert.deepEqual(
-      visible.map((c) => c.id),
-      choicesFor(step, atJobStep()).map((c) => c.id),
-      `the countable options of ${step.id} are not the rendered ones`,
-    );
+    for (const page of [0, 1]) {
+      const viewing = atTaxonomyPage(
+        step.id as 'job_category' | 'country_preference',
+        page,
+      );
+      const accepted = acceptedChoices(step, viewing);
+      const visible = accepted.filter((c) => !c.hidden);
+      assert.deepEqual(
+        visible.map((c) => c.id),
+        choicesFor(step, viewing).map((c) => c.id),
+        `the countable options of ${step.id} page ${page} are not the rendered ones`,
+      );
+    }
   }
   resetTaxonomy();
 });

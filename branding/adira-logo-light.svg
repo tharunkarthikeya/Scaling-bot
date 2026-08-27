@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 280" role="img" aria-labelledby="title description">
+  <title id="title">Adira Enterprises logo — light mode</title>
+  <desc id="description">The Adira A symbol beside the company name and the tagline We find, you shine.</desc>
+  <defs>
+    <linearGradient id="navy" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#001A4D"/>
+      <stop offset="1" stop-color="#063778"/>
+    </linearGradient>
+    <linearGradient id="crimson" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#B60032"/>
+      <stop offset="1" stop-color="#E00043"/>
+    </linearGradient>
+    <mask id="symbol-cutouts">
+      <rect width="260" height="280" fill="white"/>
+      <circle cx="127" cy="101" r="25" fill="black"/>
+      <path d="M89 132H165L127 196Z" fill="black"/>
+      <path d="M127 196L149 234H105Z" fill="black"/>
+    </mask>
+    <clipPath id="left-half">
+      <rect width="127" height="280"/>
+    </clipPath>
+    <clipPath id="right-half">
+      <rect x="127" width="133" height="280"/>
+    </clipPath>
+  </defs>
+
+  <g mask="url(#symbol-cutouts)">
+    <path d="M127 27L23 234H231Z" fill="url(#navy)" clip-path="url(#left-half)"/>
+    <path d="M127 27L23 234H231Z" fill="url(#crimson)" clip-path="url(#right-half)"/>
+  </g>
+
+  <g fill="#00265F">
+    <text x="271" y="139" font-family="Arial, Helvetica, sans-serif" font-size="76" font-weight="700" letter-spacing="-3.5">adira enterprises</text>
+  </g>
+  <text x="276" y="187" fill="#BF0037" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" letter-spacing="7">WE FIND, YOU SHINE</text>
+</svg>

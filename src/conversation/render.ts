@@ -35,10 +35,9 @@ import {
 } from './flow.js';
 import {
   taxonomy,
-  taxonomyCountries,
   taxonomyCountryName,
-  taxonomyJobs,
   taxonomyJobTitle,
+  taxonomyListLimit,
 } from '../crm/taxonomy.js';
 import { documentSummary } from './checklist.js';
 import { DOCUMENTS } from './rules.js';
@@ -155,14 +154,94 @@ export async function choices(
  * compiled-in list is used instead. That is not a degraded mode so much as the
  * starting one: the CRM is seeded with exactly these rows.
  */
-function crmChoicesFor(step: FlowStep): Choice[] | undefined {
+const MORE_OPTIONS: Localised = {
+  en: 'More options',
+  ta: 'மேலும் விருப்பங்கள்',
+  hi: 'और विकल्प',
+  te: 'మరిన్ని ఎంపికలు',
+  ml: 'കൂടുതൽ ഓപ്ഷനുകൾ',
+};
+
+const PREVIOUS_OPTIONS: Localised = {
+  en: 'Back',
+  ta: 'பின்செல்',
+  hi: 'पीछे',
+  te: 'వెనుకకు',
+  ml: 'പിന്നോട്ട്',
+};
+
+const LIST_PAGE_PREFIX = '__list_page__';
+type PaginatedStepId = 'job_category' | 'country_preference';
+
+function pageChoice(step: PaginatedStepId, page: number, label: Localised): Choice {
+  return { id: `${LIST_PAGE_PREFIX}:${step}:${page}`, label };
+}
+
+/** The page selected by a Back/More row, if the matched ids contain one. */
+export function listPageTarget(
+  stepId: string,
+  ids: string[],
+): CandidateDoc['listPage'] | undefined {
+  if (stepId !== 'job_category' && stepId !== 'country_preference') return undefined;
+  const prefix = `${LIST_PAGE_PREFIX}:${stepId}:`;
+  const selected = ids.find((id) => id.startsWith(prefix));
+  if (!selected) return undefined;
+
+  const page = Number(selected.slice(prefix.length));
+  if (!Number.isSafeInteger(page) || page < 0) return undefined;
+  return { step: stepId, page };
+}
+
+/**
+ * Fits a taxonomy into Meta's ten-row list without turning navigation into an
+ * answer. Fixed rows (Other, Any country, Select countries) appear on every
+ * page. First and last pages use the spare navigation slot, while middle pages
+ * reserve one row each for Back and More.
+ */
+function paginateTaxonomy(
+  step: PaginatedStepId,
+  items: Choice[],
+  fixed: Choice[],
+  candidate: CandidateDoc,
+): Choice[] {
+  // A very small CRM value cannot fit the fixed answers and both navigation
+  // controls, so four is the practical floor for these paginated questions.
+  const rowLimit = Math.min(
+    WA_LIMITS.listRows,
+    Math.max(fixed.length + 2, taxonomyListLimit()),
+  );
+  const withoutNavigation = rowLimit - fixed.length;
+  if (items.length <= withoutNavigation) return [...items, ...fixed];
+
+  const edgeSize = Math.max(1, withoutNavigation - 1);
+  const middleSize = Math.max(1, withoutNavigation - 2);
+  const pages: Choice[][] = [];
+  let offset = 0;
+
+  pages.push(items.slice(offset, offset + edgeSize));
+  offset += edgeSize;
+
+  while (offset < items.length) {
+    const remaining = items.length - offset;
+    const size = remaining <= edgeSize ? edgeSize : middleSize;
+    pages.push(items.slice(offset, offset + size));
+    offset += size;
+  }
+
+  const requested = candidate.listPage?.step === step ? candidate.listPage.page : 0;
+  const page = Math.min(Math.max(0, requested), pages.length - 1);
+  const navigation: Choice[] = [];
+  if (page > 0) navigation.push(pageChoice(step, page - 1, PREVIOUS_OPTIONS));
+  if (page < pages.length - 1) navigation.push(pageChoice(step, page + 1, MORE_OPTIONS));
+
+  return [...pages[page]!, ...navigation, ...fixed];
+}
+
+function crmChoicesFor(step: FlowStep, candidate: CandidateDoc): Choice[] | undefined {
   if (step.id === 'job_category') {
-    // One row is kept back for "Other", which is what makes a list of nine
-    // usable when the agency recruits for thirty: a candidate whose job is not
-    // shown types it, and the interpreter maps what they typed onto a job id.
     const other = (step.choices ?? []).find((c) => c.id === 'other');
-    const jobs = taxonomyJobs(other ? 1 : 0);
-    if (!jobs) return undefined;
+    const jobs = taxonomy()?.jobs ?? [];
+    if (!jobs.length) return undefined;
 
     const compiled = new Map((step.choices ?? []).map((c) => [c.id, c]));
     const rows = jobs.map((job) => {
@@ -184,42 +263,21 @@ function crmChoicesFor(step: FlowStep): Choice[] | undefined {
       };
     });
 
-    return other ? [...rows, other] : rows;
+    return paginateTaxonomy('job_category', rows, other ? [other] : [], candidate);
   }
 
   if (step.id === 'country_preference') {
-    const countries = taxonomyCountries();
-    if (!countries) return undefined;
+    const countries = taxonomy()?.countries ?? [];
+    if (!countries.length) return undefined;
 
     const compiled = new Map((step.choices ?? []).map((c) => [c.id, c]));
     const labelled = (id: string, name: string): Choice =>
       compiled.get(id) ?? { id, label: { en: name, ta: name, hi: name, te: name, ml: name } };
 
-    /* The row budget, in priority order. Ten rows, and more things that could
-     * fill one than there is room for — so what gets cut has to be a decision
-     * written down once rather than a slice() nobody reads.
-     *
-     * The version this replaces spent seven rows before it looked at the CRM's
-     * list at all: two pinned destinations and five compiled region rows. With
-     * eight countries on file that left three, and Kuwait, Oman and Bahrain —
-     * active, bot-visible, added by an admin who expected to see them — were
-     * dropped without a word. An admin's list losing to a hard-coded one is the
-     * feature failing at exactly the moment it is being used.
-     *
-     *   1. Singapore and Malaysia. Not merely two more destinations: choosing
-     *      one is what puts a candidate on the route that does not ask for a CV
-     *      up front (§10), and a fork with no way to reach it is a flow nobody
-     *      can enter. Kept even if an admin retires them from the CRM.
-     *   2. "Any country" and "Select countries". The first is what most
-     *      candidates actually mean; the second is the only way to name a
-     *      country that is not on the list. Losing either leaves an answer with
-     *      no row to give it.
-     *   3. The CRM's countries, in the admin's order. This is the list the
-     *      screen exists to publish.
-     *   4. The regions — the Gulf, Europe, Russia/CIS — with whatever is left.
-     *      Real answers, and they still are: everything cut here stays typable,
-     *      because `crmHiddenChoicesFor` puts it back in the answer space.
-     */
+    // Named countries keep the admin's order. Singapore and Malaysia are pinned
+    // back into the complete list if the CRM has dropped them because they are
+    // route choices, not merely display data. Regions follow the named rows;
+    // Any country and Select countries stay available on every page.
     const essential = (step.choices ?? []).filter((c) => c.id === 'any' || c.id === 'select');
     const regions = (step.choices ?? []).filter(
       (c) =>
@@ -238,23 +296,25 @@ function crmChoicesFor(step: FlowStep): Choice[] | undefined {
       if (!named.some((row) => row.id === pin.id)) named.push(pin);
     }
 
-    const room = Math.max(1, WA_LIMITS.listRows - essential.length);
-    const shown = named.slice(0, room);
-
-    return [...shown, ...regions.slice(0, Math.max(0, room - shown.length)), ...essential];
+    return paginateTaxonomy(
+      'country_preference',
+      [...named, ...regions],
+      essential,
+      candidate,
+    );
   }
 
   return undefined;
 }
 
 /**
- * Answers the interpreter accepts for a taxonomy question but never renders.
+ * Answers the interpreter accepts for a taxonomy question but does not render
+ * on the candidate's current page.
  *
- * WhatsApp's ten rows are a limit on what can be *shown*, not on what an agency
- * recruits for or where it sends people. Everything the ceiling cuts is put back
- * here: a candidate who types "Kuwait" at a question that had no room for
- * Kuwait is answering it, and until this existed they were told their answer was
- * not one of the options — for a country an admin had added on purpose.
+ * WhatsApp's ten rows are a limit on what can be *shown at once*, not on what an
+ * agency recruits for or where it sends people. Every row from the other pages
+ * is put back here: a candidate who types "Kuwait" before navigating to its page
+ * is still answering with the CRM's own country id.
  *
  * Three kinds of thing go in:
  *
@@ -269,8 +329,8 @@ function crmChoicesFor(step: FlowStep): Choice[] | undefined {
  * Every one of them is marked `hidden`, which keeps them out of the numbering:
  * see `Choice.hidden`.
  */
-function crmHiddenChoicesFor(step: FlowStep): Choice[] {
-  const shown = new Set(crmChoicesFor(step)?.map((c) => c.id) ?? []);
+function crmHiddenChoicesFor(step: FlowStep, candidate: CandidateDoc): Choice[] {
+  const shown = new Set(crmChoicesFor(step, candidate)?.map((c) => c.id) ?? []);
   if (!shown.size) return [];
 
   const hidden: Choice[] = [];
@@ -370,7 +430,7 @@ export function choicesFor(step: FlowStep, candidate: CandidateDoc): Choice[] {
       }))
     : step.id === 'trade_disambiguation'
       ? disambiguationChoices(candidate)
-      : (crmChoicesFor(step) ?? step.choices ?? []);
+      : (crmChoicesFor(step, candidate) ?? step.choices ?? []);
 
   const options = [...base];
 
@@ -392,7 +452,7 @@ export function acceptedChoices(step: FlowStep, candidate: CandidateDoc): Choice
   // of "3" means the third row on their screen, and everything after them is
   // marked `hidden` so it can never be reached by a number at all.
   const behind = [
-    ...crmHiddenChoicesFor(step),
+    ...crmHiddenChoicesFor(step, candidate),
     ...(step.hiddenChoices ?? []).map((c) => ({ ...c, hidden: true })),
   ];
 

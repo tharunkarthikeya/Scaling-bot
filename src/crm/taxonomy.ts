@@ -90,6 +90,7 @@ let cache: Taxonomy | undefined;
  *
  * Ties break on the name, so two rows an admin left at the default order come
  * out in a stable order rather than in whatever order Mongo returned them.
+ * The renderer preserves this order across as many WhatsApp pages as needed.
  */
 function inAdminOrder<T extends { order?: number; title?: string; name?: string }>(rows: T[]): T[] {
   return [...rows].sort((a, b) => {
@@ -157,16 +158,14 @@ export async function refreshTaxonomy(): Promise<Taxonomy | undefined> {
         'crm taxonomy updated',
       );
 
-      // A job past the ceiling is not lost — `crmHiddenChoicesFor` keeps it
-      // answerable by typing — but it is not on the screen, and an admin who
-      // added one and cannot find it should be able to see why from the logs
-      // rather than from a candidate who never saw it.
-      const shown = Math.max(1, (cache.botListLimit || DEFAULT_LIST_LIMIT) - 1);
-      if (cache.jobs.length > shown) {
-        logger.warn(
-          { jobs: cache.jobs.length, shown, offList: cache.jobs.slice(shown).map((j) => j.id) },
-          'more jobs than WhatsApp will show in one list; the rest are reachable by typing. ' +
-            'Lower a job’s bot_order in the CRM to bring it onto the list.',
+      // Other and More options take two rows on the first page. The remaining
+      // jobs are not hidden: the renderer gives them subsequent pages while
+      // keeping every page below Meta's hard ceiling.
+      const firstPage = Math.max(1, taxonomyListLimit() - 2);
+      if (cache.jobs.length > firstPage) {
+        logger.info(
+          { jobs: cache.jobs.length, firstPage },
+          'crm job list spans multiple WhatsApp pages',
         );
       }
 
@@ -186,6 +185,12 @@ export async function refreshTaxonomy(): Promise<Taxonomy | undefined> {
 /** What is currently held, if anything has been fetched. */
 export function taxonomy(): Taxonomy | undefined {
   return cache;
+}
+
+/** The CRM's requested row ceiling, never allowed above Meta's hard limit. */
+export function taxonomyListLimit(): number {
+  const requested = cache?.botListLimit ?? DEFAULT_LIST_LIMIT;
+  return Math.min(DEFAULT_LIST_LIMIT, Math.max(1, requested));
 }
 
 /**

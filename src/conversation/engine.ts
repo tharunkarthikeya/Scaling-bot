@@ -102,6 +102,7 @@ import { explainWrongDocument, respondInContext } from './respond.js';
 import {
   acceptedChoices,
   choices as renderChoices,
+  listPageTarget,
   message as renderMessage,
   renderRetry,
   renderStep,
@@ -341,6 +342,18 @@ async function setState(candidate: CandidateDoc, patch: Partial<CandidateDoc>): 
   // Routed on what the contact chose, so a B2B enquiry is never written back
   // into the candidate collection it was moved out of.
   await recordsFor(candidate.enquiry).updateOne({ _id: candidate._id }, { $set: update });
+}
+
+/** Removes list navigation state without leaving a BSON null behind. */
+async function clearListPage(candidate: CandidateDoc): Promise<void> {
+  if (!candidate.listPage) return;
+  const now = new Date();
+  delete candidate.listPage;
+  candidate.updatedAt = now;
+  await recordsFor(candidate.enquiry).updateOne(
+    { _id: candidate._id },
+    { $unset: { listPage: '' }, $set: { updatedAt: now } },
+  );
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -820,6 +833,12 @@ async function askNextQuestion(
     }
     await completeRegistration(candidate);
     return;
+  }
+
+  // A list page belongs only to the open taxonomy question. Once the flow has
+  // moved on it must not affect a later edit or a fresh registration pass.
+  if (candidate.listPage && candidate.listPage.step !== step.id) {
+    await clearListPage(candidate);
   }
 
   await reply(
@@ -2389,6 +2408,7 @@ export const RESTART_UNSETS = [
   'currentStep',
   'resumeStep',
   'pendingMulti',
+  'listPage',
   'sessionEndedAt',
 ] as const;
 
@@ -2412,6 +2432,7 @@ export const RESTART_UNSETS = [
  *   resumeStep   the question a resume prompt interrupted (via RESTART_UNSETS)
  *   pendingMulti a half-made multi-select, which belongs to a question that is
  *                about to be recomputed
+ *   listPage     a page of display options, not an answer
  *
  * Everything a candidate has told us or sent us stays: `profile`, `fieldMeta`,
  * `documents`, `consent`, `language`, `history`, and `reminderSentAt` (§21
@@ -2466,6 +2487,7 @@ async function restartRegistration(candidate: CandidateDoc): Promise<void> {
     currentStep: undefined,
     resumeStep: undefined,
     pendingMulti: undefined,
+    listPage: undefined,
     sessionEndedAt: undefined,
   });
 
@@ -3090,6 +3112,18 @@ export async function handleInboundMessage(payload: {
     replyId: msg.replyId,
   });
 
+  // Back/More are navigation, not profile answers. They are ordinary rows so
+  // tapping their id, typing their label, or replying with their row number all
+  // resolve through the same interpreter path. Only this branch consumes them.
+  if (interpretation.kind === 'matched') {
+    const page = listPageTarget(step.id, interpretation.ids);
+    if (page) {
+      await setState(candidate, { listPage: page, unclearCount: 0 });
+      await reply(candidate, await renderStep(step, candidate), step.id);
+      return;
+    }
+  }
+
   switch (interpretation.kind) {
     case 'staff':
       await handOffToStaff(candidate, interpretation.reason);
@@ -3278,6 +3312,10 @@ export async function handleInboundMessage(payload: {
     default:
       break;
   }
+
+  // A real selection has been made. Page number is presentation state and must
+  // never follow the candidate into the next question or a later edit.
+  if (candidate.listPage?.step === step.id) await clearListPage(candidate);
 
   await setState(candidate, { unclearCount: 0 });
 
