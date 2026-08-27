@@ -22,6 +22,7 @@
 
 import { config } from '../config.js';
 import type { CandidateDoc, StoredJobQuestion } from '../db/models.js';
+import { contactNumbersFor, normalizePassportNumber } from '../identity.js';
 import { destinationCountryOf, labelFor, stepsFor } from '../conversation/flow.js';
 import { generatedOptionId } from '../conversation/render.js';
 import { taxonomyJobTitle } from './taxonomy.js';
@@ -54,6 +55,8 @@ export interface CrmProfile {
   full_name: string;
   phone?: string;
   phone_e164?: string;
+  /** Every known contact number. Passport/Aadhaar, never this list, decide identity. */
+  phone_numbers?: string[];
   email?: string;
   location?: string;
   city?: string;
@@ -338,6 +341,7 @@ export function toCrmPayload(
 
     phone: e164From(candidate.waId),
     phone_e164: e164From(candidate.waId),
+    phone_numbers: contactNumbersFor(candidate),
 
     // Residence. Three fields on our side, and their `location` is the readable
     // one-liner a recruiter actually looks at.
@@ -379,7 +383,7 @@ export function toCrmPayload(
     total_experience_years:
       typeof p.totalExperienceYears === 'number' ? p.totalExperienceYears : undefined,
 
-    passport_number: trimmed(p.passportNumber),
+    passport_number: normalizePassportNumber(p.passportNumber),
     passport_expiry: trimmed(p.passportExpiry),
   };
 

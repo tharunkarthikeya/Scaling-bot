@@ -74,6 +74,12 @@ import {
   type FlowStep,
 } from './conversation/flow.js';
 import { cvWorthAsking, levelFromTitle } from './conversation/jobLevel.js';
+import {
+  externalCandidateDeliveryBlocked,
+  nationalityBlocked,
+  nationalityCheckPending,
+  nationalityDecision,
+} from './conversation/eligibility.js';
 import { validateCopy } from './conversation/validate.js';
 import { coalesceKey, InProcessQueue } from './queue/index.js';
 import {
@@ -2046,6 +2052,15 @@ await check('a passport already on file is never asked for again (§1, §12)', (
   c.documents.passport = { status: 'ocr_queued', askedCount: 0, updatedAt: new Date() };
 
   assert.equal(stepById('passport_upload')!.satisfied(c), true);
+});
+
+await check('identity pages queued from a CV close both upload questions', () => {
+  const c = candidate({ profile: { lookingForOverseasJob: true, passportStatus: 'yes' } });
+  c.documents.passport = { status: 'ocr_queued', askedCount: 0, updatedAt: new Date() };
+  c.documents.aadhaar = { status: 'ocr_queued', askedCount: 0, updatedAt: new Date() };
+
+  assert.equal(stepById('passport_upload')!.satisfied(c), true);
+  assert.equal(stepById('aadhaar_upload')!.satisfied(c), true);
 });
 
 await check('one candidate pack is not evidence for that pack', () => {
@@ -6210,6 +6225,102 @@ await check('a passport scanned behind a CV is still found', () => {
     ],
   );
   assert.ok(behind.includes('passport'));
+});
+
+await check('one CV can route passport and Aadhaar to their own OCR endpoints', () => {
+  const behind = identityBehindCv(
+    {},
+    [{
+      key: 'all_pages',
+      value:
+        'REPUBLIC OF INDIA PASSPORT Passport No Z1234567 Date of Issue 12/05/2021 ' +
+        'Date of Expiry 11/05/2031 UIDAI AADHAAR 2345 6789 0123',
+      confidence: null,
+    }],
+  );
+
+  assert.deepEqual(behind, ['passport', 'aadhaar']);
+  assert.equal(requirementFor('passport')?.ocr, 'passport');
+  assert.equal(requirementFor('aadhaar')?.ocr, 'aadhaar');
+});
+
+console.log('\nnationality eligibility');
+
+await check('Indian passport and CV nationality aliases remain eligible', () => {
+  for (const value of [
+    'Indian',
+    'IND',
+    'India',
+    'Republic of India',
+    'Indian National',
+    'Nationality: Indian',
+  ]) {
+    assert.equal(nationalityDecision(value), 'indian', value);
+  }
+});
+
+await check('an explicit non-Indian nationality blocks candidate delivery', () => {
+  for (const value of ['Nepalese', 'Sri Lankan', 'British', 'Non-Indian']) {
+    assert.equal(nationalityDecision(value), 'non_indian', value);
+  }
+
+  const c = candidate({
+    stage: 'NOT_ELIGIBLE',
+    status: 'not_eligible',
+    nationalityCheck: {
+      status: 'not_eligible',
+      nationality: 'Nepalese',
+      source: 'passport',
+      at: new Date(),
+    },
+  });
+  assert.equal(nationalityBlocked(c), true);
+});
+
+await check('missing or unusable nationality OCR never rejects a candidate', () => {
+  for (const value of [undefined, '', 'N/A', 'Unknown', 'Not specified', '7']) {
+    assert.equal(nationalityDecision(value), 'unknown', String(value));
+  }
+});
+
+await check('CRM and ATS delivery wait while CV or passport OCR is queued', () => {
+  const cv = candidate();
+  cv.documents.cv = { status: 'ocr_queued', askedCount: 0, updatedAt: new Date() };
+  assert.equal(nationalityCheckPending(cv), true);
+
+  const passport = candidate();
+  passport.documents.passport = { status: 'ocr_queued', askedCount: 0, updatedAt: new Date() };
+  assert.equal(nationalityCheckPending(passport), true);
+
+  const aadhaarOnly = candidate();
+  aadhaarOnly.documents.aadhaar = { status: 'ocr_queued', askedCount: 0, updatedAt: new Date() };
+  assert.equal(nationalityCheckPending(aadhaarOnly), false);
+});
+
+await check('an application cannot reach CRM before nationality has been checked', () => {
+  const beforeCv = candidate({ enquiry: 'apply', stage: 'CV_PENDING' });
+  assert.equal(externalCandidateDeliveryBlocked(beforeCv), true);
+  assert.equal(
+    externalCandidateDeliveryBlocked(candidate({ enquiry: undefined, stage: 'CV_PENDING' })),
+    true,
+  );
+
+  const indian = candidate({
+    enquiry: 'apply',
+    nationalityCheck: {
+      status: 'indian',
+      nationality: 'IND',
+      source: 'passport',
+      at: new Date(),
+    },
+  });
+  assert.equal(externalCandidateDeliveryBlocked(indian), false);
+
+  const exhaustedWithoutValue = candidate({
+    enquiry: 'apply',
+    stage: 'REGISTRATION_COMPLETED',
+  });
+  assert.equal(externalCandidateDeliveryBlocked(exhaustedWithoutValue), false);
 });
 
 console.log('\npartial deliveries are collapsed, not sent one per answer');

@@ -29,6 +29,7 @@ import {
   type CandidateDoc,
 } from '../db/models.js';
 import { readFile } from '../storage/index.js';
+import { externalCandidateDeliveryBlocked } from '../conversation/eligibility.js';
 import {
   CrmError,
   createCandidate,
@@ -112,6 +113,11 @@ export async function syncCandidateToCrm(payload: {
   const candidate = await findConversation(waId);
   if (!candidate) {
     logger.warn({ waId }, 'crm sync for an unknown conversation');
+    return;
+  }
+
+  if (externalCandidateDeliveryBlocked(candidate)) {
+    logger.info({ waId }, 'crm sync skipped: nationality ineligible or still being checked');
     return;
   }
 

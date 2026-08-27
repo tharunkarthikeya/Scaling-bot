@@ -151,6 +151,7 @@ export function validateCopy(): void {
   // point is to catch a copy edit that pasted in a wall of text.
   checkMessage('welcome', copy.WELCOME);
   checkMessage('completion', copy.COMPLETED);
+  checkMessage('nationality not supported', copy.NATIONALITY_NOT_SUPPORTED);
   checkMessage('consent declined', copy.CONSENT_DECLINED);
   checkMessage('identity mismatch', copy.IDENTITY_MISMATCH);
   // Carries a number and a two-clause instruction in five scripts; the one

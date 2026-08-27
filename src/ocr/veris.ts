@@ -8,6 +8,7 @@ import {
   documentsFor,
   documentStoreFor,
   dueExtractions,
+  findConversationById,
   findUpload,
   flattenUploads,
   markUploadRefiled,
@@ -41,9 +42,11 @@ import {
   mergeExtractedProfile,
   recordAadhaarCoverage,
   resumeAfterDocument,
+  scheduleCrmSync,
   resyncSlotFromUploads,
   uploadStillCurrent,
 } from '../conversation/engine.js';
+import { nationalityBlocked } from '../conversation/eligibility.js';
 import {
   extractFromCv,
   identityFromDocument,
@@ -1218,7 +1221,7 @@ async function refileMisattributedUpload(params: {
   await restoreCurrentUpload(waId, docType);
   await resyncSlotFromUploads(candidateId, docType);
 
-  await markSlotFromOcr(candidateId, target, willOcr ? 'ocr_queued' : 'ocr_done');
+  await markSlotFromOcr(candidateId, target, willOcr ? 'ocr_queued' : 'ocr_done', movedId);
   if (willOcr) {
     await queue.enqueue('ocr', { waId, docType: target, uploadId: movedId.toHexString() });
   }
@@ -1248,10 +1251,9 @@ async function refileMisattributedUpload(params: {
  * there is one file with two records pointing at it.
  *
  * Deliberately narrow:
- *   - only when the CV's own text carries passport markers, so an ordinary CV
- *     mentioning the word "passport" does not trigger it;
- *   - only when the passport slot is empty, so a passport the candidate sent
- *     properly is never superseded by one scraped out of a CV.
+ *   - only when the CV text carries strong passport/Aadhaar markers;
+ *   - only when that identity slot is empty, so a separately uploaded document
+ *     is never superseded by one found behind the CV.
  */
 async function fileIdentityFoundInCv(
   waId: string,
@@ -1292,7 +1294,7 @@ async function fileIdentityFoundInCv(
       },
     });
 
-    await markSlotFromOcr(candidateId, docType, 'ocr_queued');
+    await markSlotFromOcr(candidateId, docType, 'ocr_queued', uploadId);
     await queue.enqueue('ocr', { waId, docType, uploadId: uploadId.toHexString() });
 
     logger.info(
@@ -1566,8 +1568,18 @@ async function applySuccessfulExtraction(params: {
         patch,
         extractor === 'resume' ? 'cv' : 'document',
         outcome.confidence,
+        extractor === 'resume'
+          ? 'cv'
+          : identityKind(docType) === 'passport'
+            ? 'passport'
+            : undefined,
       );
     }
+
+    // A conclusive non-Indian value is terminal. Keep the source document and
+    // its OCR result locally, but do not perform more extraction or sync work.
+    let latest = await findConversationById(candidateId);
+    if (!latest || nationalityBlocked(latest)) return;
 
     // A CV can carry a passport behind it. Read as a CV it is one document;
     // read again as a passport it is two, and §12 stops asking for something
@@ -1588,6 +1600,12 @@ async function applySuccessfulExtraction(params: {
         outcome.raw,
       );
     }
+
+    // CV extraction may just have created passport/Aadhaar child uploads. Wait
+    // until that is done before considering a partial CRM sync, so a passport
+    // nationality is never outrun by candidate creation.
+    latest = await findConversationById(candidateId);
+    if (latest) await scheduleCrmSync(latest);
 
     // Which of the card's four core fields this upload gave up, merged with
     // what earlier uploads gave. It is what decides whether the back page is

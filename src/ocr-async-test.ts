@@ -22,6 +22,10 @@ import path from 'node:path';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { ObjectId } from 'mongodb';
 
+// Never inherit a developer/production Redis URL. This suite is intentionally
+// isolated: in-memory Mongo, in-process queue, local HTTP OCR mock.
+process.env.REDIS_URL = '';
+
 const mongo = await MongoMemoryServer.create();
 
 process.env.MONGODB_URI = mongo.getUri();
@@ -50,11 +54,12 @@ process.env.VERIS_OCR_API_KEY = 'test';
 
 const { config } = await import('./config.js');
 const { connectDb, closeDb, getDb } = await import('./db/client.js');
-const { ensureIndexes, addUpload, findUpload, candidates, claimExtraction, dueExtractions } =
+const { ensureIndexes, addUpload, currentUpload, findUpload, candidates, claimExtraction, dueExtractions } =
   await import('./db/models.js');
 const { ensureStorageRoot, saveFile } = await import('./storage/index.js');
 const { processOcrJob, sweepRunningExtractions } = await import('./ocr/veris.js');
-const { SAMPLE_PASSPORT_PDF, SAMPLE_RESUME_PDF } = await import('./testing/fixtures.js');
+const { REALISTIC_PASSPORT_PDF, SAMPLE_PASSPORT_PDF, SAMPLE_RESUME_PDF } =
+  await import('./testing/fixtures.js');
 
 await connectDb();
 await ensureIndexes();
@@ -174,6 +179,162 @@ await check('a document is submitted, polled, and finishes as done', async () =>
   const read = await settle(waId + '9', 'aadhaar', aadhaar.uploadId);
   assert.equal(read?.ocr?.status, 'done');
   assert.ok((read?.ocr?.fields?.length ?? 0) > 0, 'a complete extraction stored no fields');
+});
+
+await check('a non-Indian passport ends registration and remains outside external delivery', async () => {
+  const waId = '919000200010';
+  const seeded = await seed({
+    waId,
+    docType: 'passport',
+    filename: 'nonindian.pdf',
+    body: REALISTIC_PASSPORT_PDF(),
+  });
+  await candidates().updateOne(
+    { _id: seeded.candidateId },
+    {
+      $set: {
+        consent: { given: true, at: new Date(), source: 'whatsapp_chat' },
+        'documents.passport': {
+          status: 'ocr_queued',
+          documentId: seeded.uploadId,
+          askedCount: 0,
+          updatedAt: new Date(),
+        },
+      },
+    },
+  );
+
+  await processOcrJob({
+    waId,
+    docType: 'passport',
+    uploadId: seeded.uploadId.toHexString(),
+  });
+  const read = await settle(waId, 'passport', seeded.uploadId);
+  assert.equal(read?.ocr?.status, 'done');
+
+  const candidate = await candidates().findOne({ waId });
+  assert.equal(candidate?.stage, 'NOT_ELIGIBLE');
+  assert.equal(candidate?.status, 'not_eligible');
+  assert.equal(candidate?.nationalityCheck?.source, 'passport');
+  assert.equal(candidate?.nationalityCheck?.status, 'not_eligible');
+  assert.equal(candidate?.candidateId, undefined, 'an Application ID was assigned');
+  assert.equal(candidate?.crmSync, undefined, 'a CRM delivery was scheduled');
+
+  const session = await getDb().collection('messages').findOne({
+    waId,
+    'turns.direction': 'outbound',
+  });
+  const outbound = (session?.turns as Array<{ direction?: string; text?: string }> | undefined)
+    ?.find((turn) => turn.direction === 'outbound');
+  assert.match(String(outbound?.text), /only to Indian nationals/i);
+});
+
+await check('a non-Indian nationality read from the CV also ends registration', async () => {
+  const waId = '919000200012';
+  const seeded = await seed({
+    waId,
+    docType: 'cv',
+    filename: 'nonindian-cv.pdf',
+    body: SAMPLE_RESUME_PDF('nonindian-cv'),
+  });
+  await candidates().updateOne(
+    { _id: seeded.candidateId },
+    {
+      $set: {
+        consent: { given: true, at: new Date(), source: 'whatsapp_chat' },
+        'documents.cv': {
+          status: 'ocr_queued',
+          documentId: seeded.uploadId,
+          askedCount: 0,
+          updatedAt: new Date(),
+        },
+      },
+    },
+  );
+
+  await processOcrJob({ waId, docType: 'cv', uploadId: seeded.uploadId.toHexString() });
+  await settle(waId, 'cv', seeded.uploadId);
+
+  const candidate = await candidates().findOne({ waId });
+  assert.equal(candidate?.stage, 'NOT_ELIGIBLE');
+  assert.equal(candidate?.nationalityCheck?.source, 'cv');
+  assert.equal(candidate?.nationalityCheck?.status, 'not_eligible');
+  assert.equal(candidate?.crmSync, undefined);
+});
+
+await check('passport and Aadhaar pages inside one CV use both dedicated extractors', async () => {
+  const waId = '919000200011';
+  const seeded = await seed({
+    waId,
+    docType: 'cv',
+    filename: 'embedded-identities.pdf',
+    // Multi-page bytes let the passport completeness rule retain its fields;
+    // the local OCR mock selects the resume payload from the requested mode.
+    body: REALISTIC_PASSPORT_PDF(),
+  });
+  await candidates().updateOne(
+    { _id: seeded.candidateId },
+    {
+      $set: {
+        consent: { given: true, at: new Date(), source: 'whatsapp_chat' },
+        'profile.passportStatus': 'yes',
+        'documents.cv': {
+          status: 'ocr_queued',
+          documentId: seeded.uploadId,
+          askedCount: 0,
+          updatedAt: new Date(),
+        },
+      },
+    },
+  );
+
+  await processOcrJob({ waId, docType: 'cv', uploadId: seeded.uploadId.toHexString() });
+  await settle(waId, 'cv', seeded.uploadId);
+
+  const passport = await currentUpload(waId, 'passport');
+  const aadhaar = await currentUpload(waId, 'aadhaar');
+  assert.ok(passport, 'passport pages were not filed from the CV');
+  assert.ok(aadhaar, 'Aadhaar pages were not filed from the CV');
+
+  let candidate = await candidates().findOne({ waId });
+  assert.equal(candidate?.documents?.passport?.status, 'ocr_queued');
+  assert.equal(candidate?.documents?.aadhaar?.status, 'ocr_queued');
+
+  await processOcrJob({
+    waId,
+    docType: 'passport',
+    uploadId: passport!.uploadId.toHexString(),
+  });
+  await processOcrJob({
+    waId,
+    docType: 'aadhaar',
+    uploadId: aadhaar!.uploadId.toHexString(),
+  });
+  await settle(waId, 'passport', passport!.uploadId);
+  await settle(waId, 'aadhaar', aadhaar!.uploadId);
+
+  const readPassport = await findUpload(waId, 'passport', passport!.uploadId);
+  const readAadhaar = await findUpload(waId, 'aadhaar', aadhaar!.uploadId);
+  assert.equal(readPassport?.ocr?.extractor, 'passport');
+  assert.equal(readAadhaar?.ocr?.extractor, 'aadhaar');
+
+  candidate = await candidates().findOne({ waId });
+  assert.ok(
+    ['ocr_done', 'needs_review'].includes(String(candidate?.documents?.passport?.status)),
+    `passport slot remained ${candidate?.documents?.passport?.status}`,
+  );
+  assert.ok(
+    ['ocr_done', 'needs_review'].includes(String(candidate?.documents?.aadhaar?.status)),
+    `Aadhaar slot remained ${candidate?.documents?.aadhaar?.status}`,
+  );
+  assert.equal(candidate?.nationalityCheck?.status, 'indian');
+  assert.equal(candidate?.nationalityCheck?.source, 'passport');
+  assert.equal(candidate?.profile?.aadhaarNumber, '2345 6789 0123');
+  assert.deepEqual(
+    [...(candidate?.profile?.aadhaarFieldsRead ?? [])].sort(),
+    ['aadhaar_number', 'address', 'date_of_birth', 'name'],
+    'complete Aadhaar pages would cause the bot to ask for the document again',
+  );
 });
 
 await check('the inspection survives from submission to the terminal poll', async () => {

@@ -88,6 +88,12 @@ import {
   withMissingSlots,
 } from './checklist.js';
 import { extractFromCv, normaliseDate, profileFromIdentityDocument } from './cv.js';
+import {
+  externalCandidateDeliveryBlocked,
+  nationalityBlocked,
+  nationalityCheckPending,
+  nationalityDecision,
+} from './eligibility.js';
 import { captureAttachment, ingestionForMessage } from '../ingestion/whatsapp.js';
 import { detectGlobalCommand, interpret } from './interpret.js';
 import { ModelUnavailableError } from './model.js';
@@ -280,13 +286,17 @@ export async function getOrCreateCandidate(params: {
  * carries on, because a candidate answering questions must never be held up by
  * a second system's availability.
  */
-async function scheduleCrmSync(candidate: CandidateDoc): Promise<void> {
+export async function scheduleCrmSync(candidate: CandidateDoc): Promise<void> {
   if (!config.CRM_PARTIAL_SYNC) return;
 
   // §4 — nothing personal travels before consent, and the CRM is not an
   // exception to that. Checked here as well as in the worker: the cheapest
   // place to not send something is before it is queued.
   if (!candidate.consent?.given) return;
+
+  // Hold candidate creation until CV/passport OCR can apply the India-only
+  // eligibility decision. This also closes the partial-sync upload race.
+  if (externalCandidateDeliveryBlocked(candidate)) return;
 
   // A business contact is not a candidate (§2), and a tracking lookup is not a
   // record. A staff enquiry is neither of those: it is somebody who gave their
@@ -953,6 +963,10 @@ export async function returnConversationToBot(waId: string): Promise<boolean> {
 }
 
 async function completeRegistration(candidate: CandidateDoc): Promise<void> {
+  // A queued CV/passport satisfies its document slot, but nationality has not
+  // been decided yet. OCR completion resumes the flow.
+  if (nationalityCheckPending(candidate) || nationalityBlocked(candidate)) return;
+
   const candidateId = candidate.candidateId ?? (await nextCandidateId());
   const now = new Date();
 
@@ -2715,7 +2729,11 @@ export async function handleInboundMessage(payload: {
     const transcript = await ingestVoiceNote(candidate, msg);
     if (transcript) text = transcript;
     else voiceNoteUnread = true;
-  } else if (msg.mediaId && ['image', 'document', 'video'].includes(msg.type)) {
+  } else if (
+    candidate.stage !== 'NOT_ELIGIBLE' &&
+    msg.mediaId &&
+    ['image', 'document', 'video'].includes(msg.type)
+  ) {
     ingested = await ingestDocument(candidate, msg);
   }
 
@@ -2734,12 +2752,34 @@ export async function handleInboundMessage(payload: {
 
   const command = detectGlobalCommand(text, msg.replyId);
 
-  if (command === 'staff') {
-    await handOffToStaff(candidate, 'asked to speak to a person');
-    return;
-  }
   if (command === 'delete') {
     await ask(candidate, copy.DELETE_CONFIRM, copy.DELETE_CHOICES, MENU.delete);
+    return;
+  }
+  // India-only eligibility is terminal. The deletion menu remains available
+  // for privacy, but registration, updates, handoff and new file storage stop.
+  if (candidate.stage === 'NOT_ELIGIBLE') {
+    if (candidate.currentStep === MENU.delete) {
+      const menu = pseudoStep(MENU.delete);
+      const options = MENU_CHOICES[MENU.delete] ?? [];
+      const interpretation = await interpret({
+        step: menu,
+        choices: options,
+        text,
+        replyId: msg.replyId,
+      });
+      if (interpretation.kind === 'matched') {
+        await handleMenuAnswer(candidate, MENU.delete, interpretation.ids[0]!);
+      } else {
+        await ask(candidate, copy.DELETE_CONFIRM, copy.DELETE_CHOICES, MENU.delete);
+      }
+    } else {
+      logger.info({ waId: candidate.waId }, 'inbound ignored: candidate is not eligible');
+    }
+    return;
+  }
+  if (command === 'staff') {
+    await handOffToStaff(candidate, 'asked to speak to a person');
     return;
   }
   // Not offered before consent — there is nothing recorded yet to update.
@@ -3429,13 +3469,20 @@ export async function markSlotFromOcr(
   candidateId: ObjectId,
   docType: string,
   status: 'ocr_queued' | 'ocr_done' | 'ocr_failed' | 'needs_review' | 'incomplete',
+  uploadId?: ObjectId,
 ): Promise<void> {
   const record = await findConversationById(candidateId);
   if (!record) return;
 
   await recordsFor(record.enquiry).updateOne(
     { _id: candidateId },
-    { $set: { [`documents.${docType}.status`]: status, updatedAt: new Date() } },
+    {
+      $set: {
+        [`documents.${docType}.status`]: status,
+        ...(uploadId ? { [`documents.${docType}.documentId`]: uploadId } : {}),
+        updatedAt: new Date(),
+      },
+    },
   );
 }
 
@@ -3569,6 +3616,7 @@ export async function mergeExtractedProfile(
   patch: Record<string, unknown>,
   source: 'cv' | 'document',
   confidence: number | null,
+  nationalitySource?: 'cv' | 'passport',
 ): Promise<void> {
   const candidate = await findConversationById(candidateId);
   if (!candidate) return;
@@ -3577,20 +3625,27 @@ export async function mergeExtractedProfile(
   candidate.fieldMeta ??= {};
 
   const write = buildProfileWrite(candidate, patch, { source, confidence });
-  if (!Object.keys(write.set).length) return;
+  if (Object.keys(write.set).length) {
+    await recordsFor(candidate.enquiry).updateOne(
+      { _id: candidateId },
+      {
+        $set: { ...write.set, updatedAt: new Date() },
+        $push: { history: { $each: write.changes } },
+      },
+    );
 
-  await recordsFor(candidate.enquiry).updateOne(
-    { _id: candidateId },
-    {
-      $set: { ...write.set, updatedAt: new Date() },
-      $push: { history: { $each: write.changes } },
-    },
-  );
+    logger.info(
+      { waId: candidate.waId, source, fields: Object.keys(patch).length },
+      'profile updated from an extracted document',
+    );
+  }
 
-  logger.info(
-    { waId: candidate.waId, source, fields: Object.keys(patch).length },
-    'profile updated from an extracted document',
-  );
+  // This is an eligibility fact even when provenance rules keep a stronger
+  // chat-entered nationality as the profile's display value.
+  if (
+    nationalitySource &&
+    (await stopIfNonIndianNationality(candidate, patch.nationality, nationalitySource))
+  ) return;
 
   // §27 — an automated overseas-work registration is not the right thing to run
   // with a minor, and this is now the only place a date of birth comes from.
@@ -3604,10 +3659,52 @@ export async function mergeExtractedProfile(
   const written = write.set['profile.dateOfBirth'];
   if (typeof written === 'string') await stopIfUnderAge(candidate, written, source);
 
-  // Everything the document gave up is on the record now, so the CRM is told —
-  // this is the call that carries a CV's employers, its education history and a
-  // passport's expiry date across while the candidate is still answering.
-  await scheduleCrmSync(candidate);
+}
+
+async function stopIfNonIndianNationality(
+  candidate: CandidateDoc,
+  nationality: unknown,
+  source: 'cv' | 'passport',
+): Promise<boolean> {
+  if (nationalityBlocked(candidate)) return true;
+
+  const decision = nationalityDecision(nationality);
+  if (decision === 'unknown') return false;
+
+  // Passport is the authoritative nationality document. A later CV extraction
+  // cannot weaken or replace a passport-based decision.
+  if (candidate.nationalityCheck?.source === 'passport' && source === 'cv') return false;
+
+  const check: NonNullable<CandidateDoc['nationalityCheck']> = {
+    status: decision === 'indian' ? 'indian' : 'not_eligible',
+    nationality: String(nationality).trim(),
+    source,
+    at: new Date(),
+  };
+
+  if (decision === 'indian') {
+    await setState(candidate, { nationalityCheck: check });
+    return false;
+  }
+
+  await setState(candidate, {
+    nationalityCheck: check,
+    stage: 'NOT_ELIGIBLE',
+    status: 'not_eligible',
+    currentStep: undefined,
+    editQueue: [],
+    sessionEndedAt: new Date(),
+  });
+  await tell(candidate, copy.NATIONALITY_NOT_SUPPORTED);
+  await closeOpenSession(candidate.waId);
+  await recordAudit({
+    waId: candidate.waId,
+    candidateId: candidate.candidateId,
+    event: 'nationality_not_supported',
+    detail: `nationality read from ${source}`,
+  });
+  logger.info({ waId: candidate.waId, source }, 'registration stopped: nationality not supported');
+  return true;
 }
 
 /**
@@ -3695,7 +3792,11 @@ export async function resumeAfterDocument(
   candidate.history ??= [];
 
   // Staff have it, or the record is gone — either way, do not interject.
-  if (candidate.stage === 'HUMAN_HANDOFF' || candidate.stage === 'DELETED') return;
+  if (
+    candidate.stage === 'HUMAN_HANDOFF' ||
+    candidate.stage === 'DELETED' ||
+    candidate.stage === 'NOT_ELIGIBLE'
+  ) return;
   if (!GATED.has(docType)) return;
 
   if (uploadId && !isCurrentUpload(candidate, docType, uploadId)) {

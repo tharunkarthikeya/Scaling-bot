@@ -19,14 +19,15 @@
  *           database and filed apart here, because an agent sourcing workers is
  *           not somebody applying for a job.
  *
- * Every row carries `source: 'whatsapp'`. Every write is an upsert on a natural
- * key. Re-exporting the same person updates their rows rather than adding more,
- * which is what makes this safe to run again after a failure, a redeploy, or a
- * document that arrived late.
+ * Every row carries `source: 'whatsapp'`. Documents upsert on upload id;
+ * candidates resolve on normalized passport first, Aadhaar second and phone
+ * only as a fallback. Re-exporting the same person therefore updates their row
+ * even when the document arrived late or they used another WhatsApp number.
  */
 
 import type { ObjectId } from 'mongodb';
 import { logger } from '../logger.js';
+import { externalCandidateDeliveryBlocked } from '../conversation/eligibility.js';
 import {
   documentsFor,
   findConversation,
@@ -39,7 +40,13 @@ import {
 } from '../db/models.js';
 import { messages as botSessions } from '../db/models.js';
 import { routeFor } from '../conversation/flow.js';
+import {
+  contactsFor,
+  normalizeAadhaarNumber,
+  normalizePassportNumber,
+} from '../identity.js';
 import { atsCollection, atsConfigured, ATS_COLLECTIONS } from './client.js';
+import { writeResolvedAtsCandidate } from './identity.js';
 
 /** What every row this file writes says about where it came from. */
 const SOURCE = 'whatsapp' as const;
@@ -251,7 +258,14 @@ function exportedCandidate(candidate: CandidateDoc): Record<string, unknown> {
 
     passportStatus: p.passportStatus,
     passportNumber: p.passportNumber,
+    passportNumberNormalized: normalizePassportNumber(p.passportNumber),
     passportExpiry: p.passportExpiry,
+    aadhaarNumber: p.aadhaarNumber,
+    aadhaarNumberNormalized: normalizeAadhaarNumber(p.aadhaarNumber),
+
+    // A CV number and the number used on WhatsApp remain separate contact
+    // routes on this one person. Neither is allowed to outrank a passport.
+    contacts: contactsFor(candidate),
 
     language: candidate.language,
     languageOther: candidate.languageOther,
@@ -425,17 +439,39 @@ export async function exportToAts(payload: { waId: string }): Promise<void> {
     return;
   }
 
+  if (externalCandidateDeliveryBlocked(candidate)) {
+    logger.info({ waId }, 'ats export skipped: nationality ineligible or still being checked');
+    return;
+  }
+
   const b2b = candidate.enquiry === 'b2b';
   const documents = await documentsFor(waId);
 
   // A business contact is not a candidate and never gets a `candidates` row —
   // a recruiter's candidate list is the one place somebody who wrote in to
   // source workers must not appear. They go to `sourcing_clients` instead.
-  await atsCollection(b2b ? ATS_COLLECTIONS.sourcingClients : ATS_COLLECTIONS.candidates).updateOne(
-    { waId, source: SOURCE },
-    { $set: b2b ? exportedSourcingClient(candidate) : exportedCandidate(candidate) },
-    { upsert: true },
-  );
+  let identityResolution: string | undefined;
+  if (b2b) {
+    await atsCollection(ATS_COLLECTIONS.sourcingClients).updateOne(
+      { waId, source: SOURCE },
+      { $set: exportedSourcingClient(candidate) },
+      { upsert: true },
+    );
+  } else {
+    const resolution = await writeResolvedAtsCandidate({
+      collection: atsCollection(ATS_COLLECTIONS.candidates),
+      row: exportedCandidate(candidate),
+      identity: {
+        waId,
+        passport: normalizePassportNumber(candidate.profile?.passportNumber),
+        aadhaar: normalizeAadhaarNumber(candidate.profile?.aadhaarNumber),
+        contacts: contactsFor(candidate),
+      },
+    });
+    identityResolution = resolution.status === 'matched'
+      ? `matched:${resolution.matchedBy}`
+      : resolution.status;
+  }
 
   await atsCollection(b2b ? ATS_COLLECTIONS.b2bMessages : ATS_COLLECTIONS.messages).updateOne(
     { waId, source: SOURCE },
@@ -451,6 +487,7 @@ export async function exportToAts(payload: { waId: string }): Promise<void> {
       applicationId: candidate.candidateId,
       enquiry: candidate.enquiry,
       documents: written,
+      identityResolution,
     },
     'conversation exported to the ats',
   );

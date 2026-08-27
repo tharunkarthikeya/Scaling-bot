@@ -14,6 +14,8 @@
  *   fail-retryable.pdf      queued -> running -> failed, retryable: true
  *   never.pdf               queued -> running -> running -> ... forever
  *   malformed.pdf           succeeded with a result nothing can normalise
+ *   nonindian.pdf           succeeded with a non-Indian passport nationality
+ *   embedded-identities.pdf resume result includes passport and Aadhaar pages
  *   queuefull.pdf           rejected at submission with 503
  *
  * `POST /__config {"queueFull": true}` makes every submission a 503, for the
@@ -168,6 +170,8 @@ function behaviourOf(filename: string): string {
   if (/fail-retryable/i.test(filename)) return 'fail-retryable';
   if (/never/i.test(filename)) return 'never';
   if (/malformed/i.test(filename)) return 'malformed';
+  if (/nonindian/i.test(filename)) return 'nonindian';
+  if (/embedded-identities/i.test(filename)) return 'embedded-identities';
   return 'succeed';
 }
 
@@ -242,6 +246,27 @@ function advance(job: Job): void {
 
   job.status = 'succeeded';
   job.result = (RESULTS[job.mode] ?? RESULTS.resume)!();
+  if (job.behaviour === 'nonindian' && job.mode === 'passport') {
+    const result = job.result as {
+      raw_mrz?: string;
+      mrz?: { issuing_country?: string; nationality?: string };
+    };
+    result.raw_mrz = result.raw_mrz?.replaceAll('IND', 'NPL');
+    if (result.mrz) {
+      result.mrz.issuing_country = 'NPL';
+      result.mrz.nationality = 'NPL';
+    }
+  }
+  if (job.behaviour === 'nonindian' && job.mode === 'resume') {
+    const result = job.result as { personal_info?: Record<string, unknown> };
+    result.personal_info ??= {};
+    result.personal_info.nationality = 'Nepalese';
+  }
+  if (job.behaviour === 'embedded-identities' && job.mode === 'resume') {
+    (job.result as Record<string, unknown>).identity_pages =
+      'REPUBLIC OF INDIA PASSPORT Passport No Z1234567 Date of Issue 12/05/2021 ' +
+      'Date of Expiry 11/05/2031 UIDAI AADHAAR 2345 6789 0123';
+  }
 }
 
 /* ------------------------------------------------------------------ */

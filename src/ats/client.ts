@@ -16,10 +16,10 @@
  *      already in `resume_ats` with data in them. `ensureAtsCollections` lists
  *      what is there and creates only what is missing — it never drops, never
  *      renames, and never alters a collection it did not create.
- *   2. NOTHING IS EVER OVERWRITTEN BLIND. Every write is an upsert on a natural
- *      key — the WhatsApp id for a person, the upload id for a document — so a
- *      retry, a redeploy or a second export of the same candidate updates one
- *      row rather than adding another.
+ *   2. NOTHING IS EVER OVERWRITTEN BLIND. Candidate writes resolve normalized
+ *      passport first, then Aadhaar and finally contact number; document writes
+ *      use the upload id. A retry or a second WhatsApp number therefore updates
+ *      the same person without treating a phone number as their identity.
  *
  * The export is a copy, not a move. The bot's own database stays the record of
  * what happened in the conversation; this is what the ATS reads.

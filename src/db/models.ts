@@ -26,6 +26,7 @@ export type ConversationStage =
   | 'B2B_PENDING'
   | 'REGISTRATION_COMPLETED'
   | 'HUMAN_HANDOFF'
+  | 'NOT_ELIGIBLE'
   | 'CONSENT_REFUSED'
   | 'DELETED';
 
@@ -58,6 +59,7 @@ export const CANDIDATE_STATUSES = [
   'deployed',
   'temporarily_unavailable',
   'not_interested',
+  'not_eligible',
   'consent_withdrawn',
   'archived',
 ] as const;
@@ -92,6 +94,7 @@ export const BOT_SETTABLE_STATUSES: ReadonlySet<CandidateStatus> = new Set<Candi
   'documents_incomplete',
   'manual_review',
   'not_interested',
+  'not_eligible',
   'consent_withdrawn',
 ]);
 
@@ -564,6 +567,14 @@ export interface CandidateDoc {
    */
   ageFlagged?: boolean;
 
+  /** India-only service decision, made only from CV/passport nationality OCR. */
+  nationalityCheck?: {
+    status: 'indian' | 'not_eligible';
+    nationality: string;
+    source: 'cv' | 'passport';
+    at: Date;
+  };
+
   /**
    * How this candidate's handover to the recruitment CRM is going.
    *
@@ -984,6 +995,7 @@ export interface AuditEventDoc {
     | 'handoff_returned'
     | 'registration_completed'
     | 'registration_restarted'
+    | 'nationality_not_supported'
     | 'reminder_sent'
     | 'session_timed_out'
     | 'application_status_changed'
