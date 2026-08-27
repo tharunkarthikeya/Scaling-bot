@@ -15,6 +15,8 @@ import {
   storedDocuments,
   uploadsFor,
   flattenUploads,
+  isStaffWhatsAppNumber,
+  rememberStaffAssignmentReply,
   recordAudit,
   APPLICATION_STATUSES,
   type ApplicationStatus,
@@ -171,6 +173,20 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       const fresh = await claimEvent(msg.wamid);
       if (!fresh) {
         logger.debug({ wamid: msg.wamid }, 'duplicate delivery ignored');
+        continue;
+      }
+
+      // Staff and admins may reply to an assignment/SLA template, but they are
+      // CRM users rather than candidates. Acknowledge their message and stop:
+      // do not create a candidate, store an attachment, or send an automated
+      // registration prompt back to them.
+      const knownStaff = await isStaffWhatsAppNumber(msg.waId);
+      const assignmentReply = knownStaff
+        ? false
+        : await rememberStaffAssignmentReply(msg.contextWamid, msg.waId);
+      if (knownStaff || assignmentReply) {
+        logger.info({ waId: msg.waId, wamid: msg.wamid }, 'staff inbound ignored');
+        void markAsRead(msg.wamid, msg.phoneNumberId);
         continue;
       }
 

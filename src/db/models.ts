@@ -994,6 +994,23 @@ export interface StaffNoticeDoc {
 }
 
 /**
+ * CRM staff numbers that must never enter the candidate conversation engine.
+ *
+ * Learned whenever the CRM relays an assignment or SLA alert. Kept separately
+ * from notices because notices expire, while a staff number remains internal
+ * until the CRM reports a different number for that staff id.
+ */
+export interface StaffDirectoryDoc {
+  _id?: ObjectId;
+  staffId: string;
+  waId: string;
+  name?: string;
+  role?: string;
+  active?: boolean;
+  updatedAt: Date;
+}
+
+/**
  * Audit trail for the events §23 and §27 require us to be able to prove:
  * consent given, consent withdrawn, deletion requested, staff takeover.
  * Survives candidate deletion by design — it holds no document content.
@@ -1065,6 +1082,8 @@ export const processedEvents = (): Collection<ProcessedEventDoc> =>
   getDb().collection<ProcessedEventDoc>('processed_events');
 export const staffNotices = (): Collection<StaffNoticeDoc> =>
   getDb().collection<StaffNoticeDoc>('staff_notices');
+export const staffDirectory = (): Collection<StaffDirectoryDoc> =>
+  getDb().collection<StaffDirectoryDoc>('staff_directory');
 export const auditEvents = (): Collection<AuditEventDoc> =>
   getDb().collection<AuditEventDoc>('audit_events');
 /** Single-document counter behind the human-facing candidate id. */
@@ -1288,6 +1307,11 @@ export async function ensureIndexes(): Promise<void> {
     { key: { claimedAt: 1 }, expireAfterSeconds: 60 * 60 * 24 * 90, name: 'claimedAt_ttl' },
   ]);
 
+  await createIndexes(staffDirectory(), [
+    { key: { staffId: 1 }, unique: true, name: 'staffId_unique' },
+    { key: { waId: 1 }, name: 'waId' },
+  ]);
+
   await createIndexes(auditEvents(), [
     { key: { waId: 1, at: -1 }, name: 'waId_at' },
     { key: { event: 1, at: -1 }, name: 'event_at' },
@@ -1351,6 +1375,58 @@ export function staffNoticeKey(params: {
   assignedAt?: string | null;
 }): string {
   return `${params.candidateId}/${params.staffId}/${params.assignedAt ?? 'unknown'}`;
+}
+
+/** Remember one CRM staff contact so inbound WhatsApp cannot create a candidate. */
+export async function rememberStaffContact(params: {
+  staffId: string;
+  waId: string;
+  name?: string | null;
+  role?: string | null;
+  active?: boolean;
+}): Promise<void> {
+  const waId = params.waId.replace(/\D/g, '');
+  if (!params.staffId || !waId) return;
+
+  await staffDirectory().updateOne(
+    { staffId: params.staffId },
+    {
+      $set: {
+        waId,
+        ...(params.name ? { name: params.name } : {}),
+        ...(params.role ? { role: params.role } : {}),
+        ...(params.active !== undefined ? { active: params.active } : {}),
+        updatedAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+}
+
+/** True when this WhatsApp sender is a CRM staff/admin contact, not a candidate. */
+export async function isStaffWhatsAppNumber(waId: string): Promise<boolean> {
+  const normalized = waId.replace(/\D/g, '');
+  if (!normalized) return false;
+  return !!(await staffDirectory().findOne({ waId: normalized }, { projection: { _id: 1 } }));
+}
+
+/**
+ * Recognise a reply to an assignment sent before the staff directory existed.
+ * The first such reply also backfills the sender, so later standalone messages
+ * from the same staff number are suppressed without needing reply context.
+ */
+export async function rememberStaffAssignmentReply(
+  contextWamid: string | undefined,
+  waId: string,
+): Promise<boolean> {
+  if (!contextWamid) return false;
+  const notice = await staffNotices().findOne(
+    { wamid: contextWamid },
+    { projection: { staffId: 1 } },
+  );
+  if (!notice?.staffId) return false;
+  await rememberStaffContact({ staffId: notice.staffId, waId });
+  return true;
 }
 
 /**

@@ -27,6 +27,7 @@ import { fetchAdminContacts, fetchAssignmentSummary, fetchStaffContact } from '.
 import {
   claimStaffNotice,
   confirmStaffNotice,
+  rememberStaffContact,
   releaseStaffNotice,
   staffNoticeKey,
 } from '../db/models.js';
@@ -164,6 +165,20 @@ export async function notifyStaffOfAssignment(params: {
 
   const to = staffPhoneToE164(staff.phone);
   if (!to) return { sent: false, reason: 'staff_has_no_usable_phone' };
+
+  // The same CRM contact may reply to this notification. Persist the number
+  // before sending so that reply is never mistaken for a new candidate.
+  try {
+    await rememberStaffContact({
+      staffId: staff.id,
+      waId: to,
+      name: staff.name,
+      role: staff.role,
+      active: staff.active,
+    });
+  } catch (err) {
+    logger.warn({ err, staffId }, 'could not remember staff contact for inbound suppression');
+  }
 
   // The relay is best-effort and arrives on its own schedule, so it can land
   // after a rebalance has already moved this candidate to somebody else.
@@ -324,6 +339,25 @@ export async function notifyAdminsOfSlaBreach(facts: SlaBreachFacts): Promise<Sl
     );
   }
   if (!reachable.length) return { sent: false, reason: 'no_admin_with_a_usable_phone' };
+
+  await Promise.all(
+    reachable.map(async ({ admin, to }) => {
+      try {
+        await rememberStaffContact({
+          staffId: admin.id,
+          waId: to,
+          name: admin.name,
+          role: admin.role,
+          active: admin.active,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, adminId: admin.id },
+          'could not remember admin contact for inbound suppression',
+        );
+      }
+    }),
+  );
 
   const parameters = slaAlertParameters(facts);
   let recipients = 0;
