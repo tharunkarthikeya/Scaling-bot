@@ -34,6 +34,7 @@
 
 import type {
   CandidateDoc,
+  CandidateDocumentsDoc,
   DocumentUpload,
   GeneratedQuestion,
 } from '../db/models.js';
@@ -183,6 +184,14 @@ export interface CrmIdentityDocument {
   filename?: string;
   mime_type?: string;
   sha256?: string;
+  /**
+   * The WhatsApp message the file arrived on.
+   *
+   * Provenance, and the same slot the email pipeline fills with a Gmail
+   * message id. "Where did this Aadhaar come from" has to have an answer on
+   * this path or the answer is worth nothing on either.
+   */
+  message_id?: string;
   uploaded_at?: string;
   extracted_at?: string;
   result: unknown;
@@ -810,36 +819,123 @@ export function jobSectionOf(candidate: CandidateDoc): CrmJobSection | undefined
  * Assembly
  * ───────────────────────────────────────────────────────────────────────────*/
 
-/** Slots whose contents are an Aadhaar, whatever the slot is called. */
-const AADHAAR_SLOTS = ['aadhaar', 'aadhaar_back'] as const;
+/**
+ * The document slots that become CRM identity records, and what each one is.
+ *
+ * Two Aadhaar slots and one type: the front and the back of a card are one
+ * document in two files on our side, and two records over there — same type,
+ * different `slot`, so a documentation officer can tell which face they are
+ * looking at.
+ *
+ * This list is the single selection. The section the CRM is *told* about and
+ * the files that are *sent* to it are both derived from it, because a document
+ * described but never uploaded is a row with a download button that 404s, and
+ * one uploaded but never described has nothing to attach to.
+ */
+const IDENTITY_SLOTS = [
+  { slot: 'aadhaar', documentType: 'aadhaar' },
+  { slot: 'aadhaar_back', documentType: 'aadhaar' },
+  { slot: 'passport', documentType: 'passport' },
+] as const;
+
+type IdentitySlot = (typeof IDENTITY_SLOTS)[number];
+
+interface SelectedIdentityUpload {
+  slot: IdentitySlot['slot'];
+  documentType: IdentitySlot['documentType'];
+  upload: DocumentUpload;
+}
+
+/**
+ * The current Aadhaar and passport uploads worth telling the CRM about.
+ *
+ * "Worth telling" means something was read off it. A slot holding a file the
+ * OCR has not got to yet is a document we have and cannot describe; a row over
+ * there with no fields would say the extraction failed, which it has not — it
+ * has not run. The next sync, after it has, sends the same upload id and the
+ * row fills in.
+ */
+function selectedIdentityUploads(record: CandidateDocumentsDoc): SelectedIdentityUpload[] {
+  return IDENTITY_SLOTS.flatMap(({ slot, documentType }) => {
+    const upload = current(record[slot]?.uploads);
+    return upload?.ocr?.raw ? [{ slot, documentType, upload }] : [];
+  });
+}
 
 /** The current upload in a section — the last one nothing has superseded. */
 function current(uploads: DocumentUpload[] | undefined): DocumentUpload | undefined {
   return [...(uploads ?? [])].reverse().find((upload) => !upload.supersededAt);
 }
 
-function identityDocument(
-  slot: string,
-  documentType: 'aadhaar' | 'passport',
-  upload: DocumentUpload | undefined,
-): CrmIdentityDocument | undefined {
-  // Nothing was read off it, so there is nothing for the CRM to file. The slot
-  // still shows on our side as holding a document; a row over there with no
-  // fields would say the extraction failed, which it may not have — it may
-  // simply not have run yet.
-  if (!upload?.ocr?.raw) return undefined;
-
+function identityDocument({
+  slot,
+  documentType,
+  upload,
+}: SelectedIdentityUpload): CrmIdentityDocument {
   return {
     document_type: documentType,
+    // Our upload id, which doubles as the CRM's `_id` for the record. Stable
+    // across every re-send, which is what makes a partial sync overwrite its
+    // own row instead of adding one — and what lets the file be uploaded in a
+    // second request that knows which row to attach to.
     record_id: upload.uploadId.toHexString(),
     slot,
     filename: upload.originalFilename,
     mime_type: upload.mimeType,
     sha256: upload.sha256,
+    message_id: upload.wamid,
     uploaded_at: iso(upload.createdAt),
-    extracted_at: iso(upload.ocr.finishedAt),
-    result: upload.ocr.raw,
+    extracted_at: iso(upload.ocr?.finishedAt),
+    result: upload.ocr?.raw,
   };
+}
+
+/**
+ * One identity file, located on our own storage, ready to be handed over.
+ *
+ * Internal: `storageKey` names a file on a disk the CRM cannot read, and this
+ * shape never goes on the wire. `sync.ts` turns it into bytes.
+ */
+export interface IdentityUpload {
+  documentType: 'aadhaar' | 'passport';
+  recordId: string;
+  storageKey: string;
+  filename: string;
+  mimeType: string;
+  /** The digest, so a file already handed over is not handed over twice. */
+  sha256: string;
+}
+
+/**
+ * The identity files this candidate has sent, for uploading to the CRM.
+ *
+ * Deliberately the same selection `snapshotFor` describes — same slots, same
+ * "only once something was read off it" rule — so every file sent has a record
+ * waiting for it on the other side.
+ *
+ * Never throws. A document we cannot locate must not stop a profile the CRM
+ * can already use.
+ */
+export async function identityUploadsFor(candidate: CandidateDoc): Promise<IdentityUpload[]> {
+  try {
+    const record = await documentsFor(candidate.waId, 'cv');
+    if (!record) return [];
+
+    return selectedIdentityUploads(record).map(({ documentType, upload }) => ({
+      documentType,
+      recordId: upload.uploadId.toHexString(),
+      storageKey: upload.storageKey,
+      filename: upload.originalFilename ?? `${documentType}.jpg`,
+      mimeType: upload.mimeType,
+      sha256: upload.sha256,
+    }));
+  } catch (err) {
+    logger.error(
+      { err, waId: candidate.waId },
+      'the candidate’s identity documents could not be listed',
+    );
+    return [];
+  }
 }
 
 /**
@@ -866,15 +962,15 @@ export async function snapshotFor(candidate: CandidateDoc): Promise<CrmSnapshot>
     const cv = current(record.cv?.uploads);
     if (cv) snapshot.cv = cvSectionFrom(cv);
 
-    const aadhaar = AADHAAR_SLOTS.map((slot) =>
-      identityDocument(slot, 'aadhaar', current(record[slot]?.uploads)),
-    ).filter((entry): entry is CrmIdentityDocument => !!entry);
-
-    const passport = identityDocument('passport', 'passport', current(record.passport?.uploads));
+    const documents = selectedIdentityUploads(record).map(identityDocument);
+    const byType = (type: 'aadhaar' | 'passport') => {
+      const found = documents.filter((entry) => entry.document_type === type);
+      return found.length ? found : undefined;
+    };
 
     const identity = pruned<CrmIdentitySection>({
-      aadhaar: aadhaar.length ? aadhaar : undefined,
-      passport: passport ? [passport] : undefined,
+      aadhaar: byType('aadhaar'),
+      passport: byType('passport'),
     });
     if (identity) snapshot.identity = identity;
   } catch (err) {

@@ -341,6 +341,58 @@ export async function uploadResume(params: {
   }
 }
 
+/**
+ * Hands over the scan behind one identity record the CRM already holds.
+ *
+ * Two requests, for the same reason the CV is two: the record travels with
+ * every submission because it is small, and the bytes travel once because they
+ * are not. `crmSync.identitySha256` is what makes "once" true — a partial sync
+ * runs on every answered question, and a passport photograph on each of them
+ * would be twenty megabytes for one registration.
+ *
+ * The record has to exist over there first, which it does: the same sync sends
+ * the submission describing it immediately before this. A 404 means it did not
+ * land, and the next sync sends both again in the same order.
+ */
+export async function uploadIdentityFile(params: {
+  candidateId: string;
+  documentType: 'aadhaar' | 'passport';
+  recordId: string;
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+}): Promise<void> {
+  if (!crmConfigured()) throw new CrmError('CRM is not configured', 0, true);
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([new Uint8Array(params.buffer)], { type: params.mimeType }),
+    params.filename,
+  );
+
+  const path =
+    `/candidates/${encodeURIComponent(params.candidateId)}/identity/` +
+    `${params.documentType}/${encodeURIComponent(params.recordId)}/file`;
+
+  let res: Response;
+  try {
+    res = await fetch(url(path), {
+      method: 'POST',
+      headers: headers(),
+      body: form,
+      signal: AbortSignal.timeout(config.CRM_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new CrmError(err instanceof Error ? err.message : String(err), 0, true);
+  }
+
+  if (!res.ok) {
+    const { detail, code } = await readError(res);
+    throw new CrmError(detail, res.status, isRetryable(res.status), false, code);
+  }
+}
+
 /** Liveness, for the doctor and the harness. */
 export async function crmHealth(): Promise<{ ok: boolean; detail: string }> {
   if (!crmConfigured()) return { ok: false, detail: 'CRM_API_URL / CRM_API_KEY not set' };

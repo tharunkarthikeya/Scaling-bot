@@ -609,6 +609,21 @@ export interface CandidateDoc {
      * what notices that the new one has not been sent.
      */
     resumeSha256?: string;
+    /**
+     * The digest of each identity scan the CRM has been given, by upload id.
+     *
+     * Same job as `resumeSha256` and a map rather than one value because a
+     * candidate has up to three of these — an Aadhaar front, an Aadhaar back
+     * and a passport — and they arrive at different points in the
+     * conversation. Keyed on the upload id, which is also the CRM's id for the
+     * record the file hangs on, so "have they got this one?" is a lookup
+     * rather than a comparison against whichever was sent last.
+     *
+     * A candidate who replaces a blurred passport gets a new upload id and a
+     * new entry; the old one stays, harmlessly, naming a record that still
+     * exists over there.
+     */
+    identitySha256?: Record<string, string>;
   };
 
   /**

@@ -22,6 +22,7 @@
     "test": "npm run typecheck && npm run smoke && npm run test:scaling",
     "harness": "tsx src/harness.ts",
     "test:ocr-async": "tsx src/ocr-async-test.ts",
+    "test:crm-identity": "tsx src/crm-identity-test.ts",
     "bench:inspect": "node --expose-gc --import tsx src/bench-inspect.ts",
     "loadtest:mongo": "docker compose -f loadtest/docker-compose.yml up -d",
     "loadtest:mongo:down": "docker compose -f loadtest/docker-compose.yml down -v",

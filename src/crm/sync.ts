@@ -33,11 +33,12 @@ import {
   CrmError,
   createCandidate,
   crmConfigured,
+  uploadIdentityFile,
   uploadResume,
   type CrmCandidateResponse,
 } from './client.js';
 import { toCrmPayload } from './mapping.js';
-import { snapshotFor } from './snapshot.js';
+import { identityUploadsFor, snapshotFor, type IdentityUpload } from './snapshot.js';
 
 /**
  * What one scheduled sync should actually do.
@@ -176,6 +177,10 @@ export async function syncCandidateToCrm(payload: {
       await uploadCv(candidate, result.candidate_id, cv);
     }
 
+    // And the Aadhaar and passport scans, for the records the submission above
+    // just created or refreshed.
+    const identity = await sendIdentityFiles(candidate, result.candidate_id);
+
     await setSync(candidate, {
       ...candidate.crmSync,
       status: 'synced',
@@ -187,6 +192,10 @@ export async function syncCandidateToCrm(payload: {
       // Whatever went with the submission or straight after it, the CRM now
       // holds this file — so a later partial does not send it again.
       resumeSha256: cv?.sha256 ?? candidate.crmSync?.resumeSha256,
+      // Merged rather than replaced: what landed this time joins what landed
+      // before it, and a scan that failed today keeps its slot empty so the
+      // next sync offers it again.
+      identitySha256: { ...(candidate.crmSync?.identitySha256 ?? {}), ...identity },
     });
 
     logger.info(
@@ -328,16 +337,30 @@ async function syncPartial(candidate: CandidateDoc): Promise<void> {
         ? await uploadCv(candidate, result.candidate_id, cv)
         : false;
 
+    // The identity scans, on the same terms as the CV: once each, and only
+    // once the record they attach to exists. A candidate who sends their
+    // passport on Friday reaches the record created on Tuesday through here.
+    const identity = await sendIdentityFiles(candidate, result.candidate_id);
+
     await setSync(candidate, {
       ...(candidate.crmSync ?? { status: 'pending', attempts: 0 }),
       candidateId: result.candidate_id,
       partialSyncedAt: new Date(),
       partialError: undefined,
       ...(sent ? { resumeSha256: cv!.sha256 } : {}),
+      ...(Object.keys(identity).length
+        ? { identitySha256: { ...(candidate.crmSync?.identitySha256 ?? {}), ...identity } }
+        : {}),
     });
 
     logger.info(
-      { waId, crmId: result.candidate_id, stage: candidate.stage, cv: sent },
+      {
+        waId,
+        crmId: result.candidate_id,
+        stage: candidate.stage,
+        cv: sent,
+        identity: Object.keys(identity).length,
+      },
       candidate.stage === 'REGISTRATION_COMPLETED'
         ? 'a change after registration delivered to the crm'
         : 'registration in progress delivered to the crm',
@@ -479,6 +502,97 @@ async function uploadCv(
     // file being *there* rather than the upload having failed — so it counts as
     // delivered and no partial sync offers it again.
     return conflict;
+  }
+}
+
+/**
+ * Hands over every identity scan the CRM does not already hold.
+ *
+ * Returns the digests that landed, to be merged into `crmSync.identitySha256`.
+ * An empty object means there was nothing new — which is the normal answer,
+ * because a partial sync runs on every answered question and the documents
+ * arrive once.
+ *
+ * Runs after the submission and never before it: the record each file attaches
+ * to is created by the submission, so uploading first would be a 404 every
+ * time. Nothing here throws — a scan the CRM refused must not fail a
+ * registration that has already landed, and the next sync offers it again.
+ */
+async function sendIdentityFiles(
+  candidate: CandidateDoc,
+  crmCandidateId: string,
+): Promise<Record<string, string>> {
+  const already = candidate.crmSync?.identitySha256 ?? {};
+  const uploads = await identityUploadsFor(candidate);
+  const outstanding = uploads.filter((upload) => already[upload.recordId] !== upload.sha256);
+  if (!outstanding.length) return {};
+
+  const delivered: Record<string, string> = {};
+  for (const upload of outstanding) {
+    if (await sendIdentityFile(candidate, crmCandidateId, upload)) {
+      delivered[upload.recordId] = upload.sha256;
+    }
+  }
+  return delivered;
+}
+
+/** One scan. True when the CRM has it afterwards. */
+async function sendIdentityFile(
+  candidate: CandidateDoc,
+  crmCandidateId: string,
+  upload: IdentityUpload,
+): Promise<boolean> {
+  let buffer: Buffer;
+  try {
+    buffer = await readFile(upload.storageKey);
+  } catch (err) {
+    // A missing byte on our side. Worth an error line and nothing more: the
+    // record describing the document has already reached the CRM, and the
+    // profile is not worth less for the scan being unreadable here.
+    logger.error(
+      { err, waId: candidate.waId, recordId: upload.recordId },
+      'an identity document could not be read from storage; syncing without the file',
+    );
+    return false;
+  }
+
+  try {
+    await uploadIdentityFile({
+      candidateId: crmCandidateId,
+      documentType: upload.documentType,
+      recordId: upload.recordId,
+      buffer,
+      filename: upload.filename,
+      mimeType: upload.mimeType,
+    });
+    logger.info(
+      {
+        waId: candidate.waId,
+        crmId: crmCandidateId,
+        documentType: upload.documentType,
+        recordId: upload.recordId,
+      },
+      'identity document uploaded to crm',
+    );
+    return true;
+  } catch (err) {
+    // A 404 is the record not being there yet — the submission that describes
+    // it has not landed, or landed after this. Not delivered, not an error to
+    // shout about: the next sync sends both again, in order.
+    const missing = err instanceof CrmError && err.status === 404;
+    logger[missing ? 'info' : 'error'](
+      {
+        err,
+        waId: candidate.waId,
+        crmId: crmCandidateId,
+        documentType: upload.documentType,
+        recordId: upload.recordId,
+      },
+      missing
+        ? 'the crm has no identity record for this document yet; it will go with the next sync'
+        : 'identity document upload to crm failed; the candidate is synced without it',
+    );
+    return false;
   }
 }
 
