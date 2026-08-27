@@ -16,6 +16,7 @@ import { describePlan, planFor } from './roles.js';
 import { Lease, scheduleWithLease } from './scheduler/leader.js';
 import { closeRedis, pingRedis, redisEnabled, requireRedisUrl } from './redis/index.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './metrics/index.js';
+import { refreshStaffDirectoryFromCrm } from './staff/notify.js';
 
 /** How often the §21 reminder sweep runs. The claim is per candidate, not per sweep. */
 const REMINDER_SWEEP_MS = 15 * 60 * 1000;
@@ -138,6 +139,15 @@ async function main(): Promise<void> {
 
   await connectDb();
   await ensureIndexes();
+
+  if (plan.webhook) {
+    try {
+      const remembered = await refreshStaffDirectoryFromCrm();
+      logger.info({ remembered }, 'staff directory refreshed for inbound suppression');
+    } catch (err) {
+      logger.warn({ err }, 'could not refresh staff directory; assignment callbacks will backfill it');
+    }
+  }
   // Only the ones that are not there yet — see `ats/client.ts`. Never throws:
   // an ATS that cannot be prepared is a failed export, not a bot that refuses
   // to answer anybody.

@@ -1429,6 +1429,11 @@ export async function rememberStaffAssignmentReply(
   return true;
 }
 
+/** Staff ids seen in durable assignment notices, including pre-directory rows. */
+export async function staffIdsWithNotices(): Promise<string[]> {
+  return staffNotices().distinct('staffId', { staffId: { $type: 'string' } });
+}
+
 /**
  * Takes the right to send this notice, or reports that somebody already has.
  *

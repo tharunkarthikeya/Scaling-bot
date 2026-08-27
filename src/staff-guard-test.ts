@@ -16,6 +16,7 @@ const {
   isStaffWhatsAppNumber,
   rememberStaffContact,
   rememberStaffAssignmentReply,
+  staffIdsWithNotices,
   staffDirectory,
   staffNotices,
 } = await import('./db/models.js');
@@ -70,6 +71,7 @@ await check('replying to an older assignment backfills the staff directory', asy
   );
   assert.equal(await isStaffWhatsAppNumber('919822222222'), true);
   assert.equal(await rememberStaffAssignmentReply('candidate-wamid', '919833333333'), false);
+  assert.deepEqual(await staffIdsWithNotices(), ['staff-9']);
 });
 
 await closeDb();

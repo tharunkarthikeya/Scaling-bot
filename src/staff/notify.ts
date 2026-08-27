@@ -29,6 +29,7 @@ import {
   confirmStaffNotice,
   rememberStaffContact,
   releaseStaffNotice,
+  staffIdsWithNotices,
   staffNoticeKey,
 } from '../db/models.js';
 import { logger } from '../logger.js';
@@ -45,6 +46,47 @@ import { sendSlaAlertTemplate, sendStaffAssignmentTemplate } from '../whatsapp/c
 export type StaffNotifyOutcome =
   | { sent: true; wamid?: string; shadowed: boolean }
   | { sent: false; reason: string };
+
+/**
+ * Seed inbound suppression for assignments created before the staff directory.
+ * Best-effort by design: a CRM outage must not stop the WhatsApp webhook from
+ * starting, and the next assignment callback will remember that contact too.
+ */
+export async function refreshStaffDirectoryFromCrm(): Promise<number> {
+  const [staffIds, admins] = await Promise.all([staffIdsWithNotices(), fetchAdminContacts()]);
+  const contacts = new Map<string, CrmStaffContact>();
+  for (const admin of admins) contacts.set(admin.id, admin);
+
+  // Keep startup traffic bounded even after a large historical reassignment.
+  for (let offset = 0; offset < staffIds.length; offset += 10) {
+    const batch = staffIds.slice(offset, offset + 10);
+    const rows = await Promise.all(batch.map((staffId) => fetchStaffContact(staffId)));
+    for (const row of rows) if (row) contacts.set(row.id, row);
+  }
+
+  let remembered = 0;
+  for (const contact of contacts.values()) {
+    const waId = staffPhoneToE164(contact.phone);
+    if (!waId) continue;
+    try {
+      await rememberStaffContact({
+        staffId: contact.id,
+        waId,
+        name: contact.name,
+        role: contact.role,
+        active: contact.active,
+      });
+      remembered++;
+    } catch (err) {
+      logger.warn(
+        { err, staffId: contact.id },
+        'could not backfill staff contact for inbound suppression',
+      );
+    }
+  }
+
+  return remembered;
+}
 
 /** Meta rejects a template parameter that is empty, so nothing may be blank. */
 const NOT_STATED = 'Not stated';
