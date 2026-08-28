@@ -701,6 +701,14 @@ export interface CandidateDoc {
   windowExpiresAt?: Date;
   lastInboundAt?: Date;
   lastOutboundAt?: Date;
+  /**
+   * The first inbound event that won the atomic right to start this conversation.
+   *
+   * Set before the welcome is sent. Multiple webhook jobs may all have loaded
+   * the same `NEW` record, so `stage` alone is not a safe once-only guard.
+   * `null` means a deliberately restarted conversation may claim it again.
+   */
+  welcomeTriggeredAt?: Date | null;
   /** §21 allows exactly one reminder. This is what enforces "exactly one". */
   reminderSentAt?: Date;
 

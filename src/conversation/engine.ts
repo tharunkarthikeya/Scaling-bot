@@ -269,6 +269,47 @@ export async function getOrCreateCandidate(params: {
 }
 
 /**
+ * Atomically starts one new conversation and sends its welcome once.
+ *
+ * The per-candidate lock remains the normal ordering boundary, but the claim is
+ * deliberately a conditional MongoDB update as well. That makes the invariant
+ * survive two workers or instances that both loaded the record while it still
+ * said `NEW`: exactly one changes `welcomeTriggeredAt` from missing/null to a
+ * date, and only that caller is allowed to send.
+ *
+ * Returns true only for the winning caller. Losing first-message events have
+ * already passed through attachment ingestion before reaching this function;
+ * returning false therefore suppresses only the duplicate welcome, not a photo.
+ */
+export async function initializeConversationOnce(
+  candidate: CandidateDoc,
+  text: string,
+): Promise<boolean> {
+  const triggeredAt = new Date();
+  const claimed = await recordsFor(candidate.enquiry).updateOne(
+    {
+      _id: candidate._id,
+      stage: 'NEW',
+      welcomeTriggeredAt: null,
+    },
+    { $set: { welcomeTriggeredAt: triggeredAt, updatedAt: triggeredAt } },
+  );
+
+  if (claimed.modifiedCount !== 1) return false;
+
+  candidate.welcomeTriggeredAt = triggeredAt;
+  candidate.updatedAt = triggeredAt;
+
+  const detected = detectLanguage(text);
+  // Only chooses the language of the welcome message; section 3 asks them to
+  // confirm on the next turn, so a wrong guess costs nothing.
+  if (detected && !candidate.language) await setState(candidate, { language: detected });
+
+  await askNextQuestion(candidate);
+  return true;
+}
+
+/**
  * Tells the CRM what has just changed, once the answers stop arriving.
  *
  * Called wherever the record actually changes — an answer recorded, a document
@@ -2782,6 +2823,9 @@ export async function handleInboundMessage(payload: {
       // Starting over means picking a language again, not inheriting the one
       // attached to a profile that no longer exists.
       languageChosen: undefined,
+      // A deleted record starts a new conversation. Null is intentional: the
+      // atomic welcome filter treats missing/null as unclaimed.
+      welcomeTriggeredAt: null,
     });
   }
 
@@ -2806,11 +2850,7 @@ export async function handleInboundMessage(payload: {
   /* ---- the opening turn (§2) ---- */
 
   if (created || candidate.stage === 'NEW') {
-    const detected = detectLanguage(text);
-    // Only chooses the language of the welcome message; §3 asks them to confirm
-    // on the very next turn, so a wrong guess costs nothing.
-    if (detected && !candidate.language) await setState(candidate, { language: detected });
-    await askNextQuestion(candidate);
+    await initializeConversationOnce(candidate, text);
     return;
   }
 
