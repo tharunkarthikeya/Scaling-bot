@@ -207,6 +207,16 @@ const schema = z.object({
   WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE_LANG: z.string().default('en'),
 
   /**
+   * Approved template for an assigned staff-enquiry callback.
+   *
+   * This is deliberately separate from the ordinary assignment template: a
+   * candidate who explicitly asked to speak to somebody needs the destination
+   * and job in the notification, not the ordinary registration wording.
+   */
+  WHATSAPP_STAFF_ENQUIRY_TEMPLATE: blankable(z.string().min(1).optional()),
+  WHATSAPP_STAFF_ENQUIRY_TEMPLATE_LANG: z.string().default('en'),
+
+  /**
    * Approved template for telling the admins that work has gone unattended.
    *
    * The other half of the same arrangement, and a template for the same reason:

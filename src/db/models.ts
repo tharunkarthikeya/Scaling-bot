@@ -1241,6 +1241,9 @@ export async function ensureIndexes(): Promise<void> {
     },
     { key: { stage: 1, updatedAt: -1 }, name: 'stage_updatedAt' },
     { key: { status: 1, updatedAt: -1 }, name: 'status_updatedAt' },
+    // Lets an assignment callback recover which local conversation created the
+    // CRM record even when an older CRM summary omits the enquiry discriminator.
+    { key: { 'crmSync.candidateId': 1 }, name: 'crm_candidate_id' },
     { key: { windowExpiresAt: 1 }, name: 'windowExpiresAt' },
     // Drives the §21 reminder sweep: incomplete, gone quiet, not yet reminded.
     { key: { reminderSentAt: 1, lastInboundAt: 1 }, name: 'reminder_sweep' },

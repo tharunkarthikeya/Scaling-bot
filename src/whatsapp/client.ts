@@ -417,6 +417,23 @@ export async function sendStaffAssignmentTemplate(
   return { wamid: json?.messages?.[0]?.id, shadowed: false };
 }
 
+/** Sends the approved four-field notification for an explicit staff enquiry. */
+export async function sendStaffEnquiryTemplate(
+  to: string,
+  parameters: string[],
+  from?: FromNumber,
+): Promise<SendResult> {
+  const name = config.WHATSAPP_STAFF_ENQUIRY_TEMPLATE;
+  if (!name) throw new Error('WHATSAPP_STAFF_ENQUIRY_TEMPLATE is not configured');
+  return sendBodyTemplate(
+    to,
+    name,
+    config.WHATSAPP_STAFF_ENQUIRY_TEMPLATE_LANG,
+    parameters,
+    from,
+  );
+}
+
 /** Exact Meta component boundary used by the approved staff template. */
 export function staffAssignmentTemplateComponents(parameters: {
   header: string;

@@ -24,6 +24,7 @@ import { config } from './config.js';
 import {
   slaAlertParameters,
   staffAssignmentParameters,
+  staffEnquiryParameters,
   staffPhoneToE164,
 } from './staff/notify.js';
 import { verifySignature } from './whatsapp/signature.js';
@@ -6640,6 +6641,24 @@ await check('the greeting is a header parameter, not a fourth body parameter', (
   );
 });
 
+await check('a staff enquiry uses the four fields in the approved body order', () => {
+  assert.deepEqual(
+    staffEnquiryParameters({
+      fullName: 'Nasir',
+      country: 'India',
+      job: 'Welder',
+      phone: '+91 98765 43210',
+    }),
+    ['Nasir', 'India', 'Welder', '+91 98765 43210'],
+  );
+});
+
+await check('a staff enquiry never sends blank Meta parameters', () => {
+  const params = staffEnquiryParameters({});
+  assert.equal(params.length, 4);
+  for (const value of params) assert.ok(value.length > 0, 'a blank staff-enquiry parameter');
+});
+
 await check('database ids are never rendered as candidate or staff ids', () => {
   const internalCandidateId = '6a901d88f1a8cb33943a1ea3';
   const internalStaffId = '11400d70df114b12a7cac4a31aeb865f';
@@ -6679,9 +6698,9 @@ await check('a value that arrived with a line break in it still sends', () => {
 
 /* ------------------------------------------------------------------ */
 
-console.log('\ntelling the admins nobody has touched it');
+console.log('\ntelling the admins nobody has acted for 48 hours');
 
-await check('one overdue candidate is named, with who is holding it', () => {
+await check('the 48-hour parameters match the approved body exactly', () => {
   assert.deepEqual(
     slaAlertParameters({
       count: 1,
@@ -6693,51 +6712,18 @@ await check('one overdue candidate is named, with who is holding it', () => {
       hours_overdue: 51.4,
       reason: 'unviewed',
     }),
-    ['John Doe (CND-1024)', '51 hours', 'Priya Sharma (STF-0012)', 'opened'],
+    ['John Doe', 'CND-1024', 'Priya Sharma'],
   );
 });
 
-await check('a candidate opened but never judged says so', () => {
-  // The admin's first question is whether anyone looked at it at all, so the
-  // two reasons must not collapse into one word.
-  const [, , , notYet] = slaAlertParameters({
-    count: 1,
-    threshold_hours: 48,
-    candidate_name: 'John Doe',
-    hours_overdue: 60,
-    reason: 'unevaluated',
-  });
-  assert.equal(notYet, 'verified');
-});
-
-await check('a backlog is counted rather than named', () => {
-  // Naming the first of six would read as though it were the only one.
-  assert.deepEqual(
-    slaAlertParameters({ count: 6, threshold_hours: 48, staff_count: 4 }),
-    ['6 candidates', 'over 48 hours', '4 staff members', 'opened or verified'],
-  );
-});
-
-await check('one of each is singular, and the window is a whole number', () => {
-  assert.deepEqual(
-    slaAlertParameters({ count: 1, threshold_hours: 47.5, candidate_name: 'Asha' }),
-    ['Asha', 'over 48 hours', 'a staff member', 'opened'],
-  );
-});
-
-await check('an alert with nothing on file still has four sendable values', () => {
+await check('an alert with missing CRM fields still has three sendable values', () => {
   // Meta rejects an empty parameter, and a sweep that found something must be
   // announceable even when the record behind it is bare.
-  for (const facts of [
-    { count: 1, threshold_hours: 48 },
-    { count: 3, threshold_hours: 48 },
-  ]) {
-    const params = slaAlertParameters(facts);
-    assert.equal(params.length, 4);
-    for (const value of params) {
-      assert.ok(value.length > 0, `a blank parameter in ${JSON.stringify(facts)}`);
-      assert.ok(!/[\n\t]/.test(value), `a line break in ${JSON.stringify(value)}`);
-    }
+  const facts = { count: 1, threshold_hours: 48 };
+  const params = slaAlertParameters(facts);
+  assert.deepEqual(params, ['Unnamed candidate', 'Candidate code unavailable', 'Unassigned']);
+  for (const value of params) {
+    assert.ok(!/[\n\t]/.test(value), `a line break in ${JSON.stringify(value)}`);
   }
 });
 

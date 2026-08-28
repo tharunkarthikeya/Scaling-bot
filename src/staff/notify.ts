@@ -25,6 +25,7 @@ import { config } from '../config.js';
 import type { CrmStaffContact } from '../crm/client.js';
 import { fetchAdminContacts, fetchAssignmentSummary, fetchStaffContact } from '../crm/client.js';
 import {
+  candidates,
   claimStaffNotice,
   confirmStaffNotice,
   rememberStaffContact,
@@ -33,7 +34,34 @@ import {
   staffNoticeKey,
 } from '../db/models.js';
 import { logger } from '../logger.js';
-import { sendSlaAlertTemplate, sendStaffAssignmentTemplate } from '../whatsapp/client.js';
+import {
+  sendSlaAlertTemplate,
+  sendStaffAssignmentTemplate,
+  sendStaffEnquiryTemplate,
+} from '../whatsapp/client.js';
+
+/** Best-effort local hint for CRMs whose assignment summary predates `enquiry`. */
+async function localEnquiryForCrmCandidate(
+  candidateId: string,
+  phone?: string | null,
+): Promise<'apply' | 'staff' | undefined> {
+  try {
+    const digits = (phone ?? '').replace(/\D/g, '');
+    const row = await candidates().findOne(
+      {
+        $or: [
+          { 'crmSync.candidateId': candidateId },
+          ...(digits ? [{ waId: digits }, { phone: digits }] : []),
+        ],
+      },
+      { projection: { enquiry: 1 } },
+    );
+    return row?.enquiry === 'staff' ? 'staff' : row?.enquiry === 'apply' ? 'apply' : undefined;
+  } catch (err) {
+    logger.warn({ err, candidateId }, 'could not read local enquiry type for staff notification');
+    return undefined;
+  }
+}
 
 /**
  * Why a notification did not go out, for the CRM's log and for `/api`'s reply.
@@ -192,6 +220,24 @@ export function staffAssignmentParameters(fields: {
 }
 
 /**
+ * The four body parameters in Meta's approved `talk_to_staff` template:
+ * candidate, destination country, job and phone.
+ */
+export function staffEnquiryParameters(fields: {
+  fullName?: string | null;
+  country?: string | null;
+  job?: string | null;
+  phone?: string | null;
+}): string[] {
+  return [
+    parameter(fields.fullName, 'Unnamed candidate'),
+    parameter(fields.country),
+    parameter(fields.job),
+    parameter(fields.phone, 'Not on file'),
+  ];
+}
+
+/**
  * The whole path: read both sides, decide whether to send, send.
  *
  * The two reads go together rather than in sequence - neither depends on the
@@ -204,12 +250,10 @@ export async function notifyStaffOfAssignment(params: {
   staffId: string;
   candidateCode?: string;
   staffCode?: string;
+  /** Optional callback hint; the fetched CRM summary remains authoritative when present. */
+  enquiry?: 'apply' | 'staff';
 }): Promise<StaffNotifyOutcome> {
   const { candidateId, staffId } = params;
-
-  if (!config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE) {
-    return { sent: false, reason: 'staff_template_not_configured' };
-  }
 
   const [staff, summary] = await Promise.all([
     fetchStaffContact(staffId),
@@ -218,6 +262,17 @@ export async function notifyStaffOfAssignment(params: {
 
   if (!staff) return { sent: false, reason: 'staff_not_found' };
   if (!summary) return { sent: false, reason: 'candidate_not_found' };
+
+  const localEnquiry = await localEnquiryForCrmCandidate(candidateId, summary.phone);
+  const enquiry =
+    summary.enquiry ?? summary.registration?.enquiry ?? params.enquiry ?? localEnquiry ?? 'apply';
+  if (enquiry === 'staff') {
+    if (!config.WHATSAPP_STAFF_ENQUIRY_TEMPLATE) {
+      return { sent: false, reason: 'staff_enquiry_template_not_configured' };
+    }
+  } else if (!config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE) {
+    return { sent: false, reason: 'staff_template_not_configured' };
+  }
 
   // A deactivated account still owns its queue - deletion is what redistributes
   // work, deactivation is not - but it is not a person to message tonight.
@@ -264,16 +319,27 @@ export async function notifyStaffOfAssignment(params: {
   }
 
   try {
-    const result = await sendStaffAssignmentTemplate(
-      to,
-      staffAssignmentParameters({
-        staffName: staff.name,
-        staffCode: staff.staff_code ?? params.staffCode,
-        fullName: summary.full_name,
-        candidateCode: summary.candidate_code ?? params.candidateCode,
-        phone: summary.phone,
-      }),
-    );
+    const result =
+      enquiry === 'staff'
+        ? await sendStaffEnquiryTemplate(
+            to,
+            staffEnquiryParameters({
+              fullName: summary.full_name,
+              country: summary.destination_country,
+              job: summary.job,
+              phone: summary.phone,
+            }),
+          )
+        : await sendStaffAssignmentTemplate(
+            to,
+            staffAssignmentParameters({
+              staffName: staff.name,
+              staffCode: staff.staff_code ?? params.staffCode,
+              fullName: summary.full_name,
+              candidateCode: summary.candidate_code ?? params.candidateCode,
+              phone: summary.phone,
+            }),
+          );
 
     await confirmStaffNotice(noticeKey, result.wamid);
     logger.info(
@@ -319,67 +385,25 @@ export type SlaNotifyOutcome =
   | { sent: true; recipients: number; shadowed: boolean }
   | { sent: false; reason: string };
 
-function plural(n: number, one: string): string {
-  return n === 1 ? `1 ${one}` : `${n} ${one}s`;
-}
-
 /**
- * The SLA template's four parameters, in the order the approved body expects.
+ * The SLA template's three parameters, in the order the approved body expects.
  *
  * As with the assignment template, this array **is** the contract with Meta:
  *
- *     Candidate Review Overdue
- *     Overdue: {{1}}
- *     Waiting: {{2}}
- *     With: {{3}}
- *     Not yet: {{4}}
- *     Open the CRM to review.
- *
- * One template covers both the single breach and the digest, which is why the
- * scaffolding is four labels rather than a sentence: "6 candidates / over 48
- * hours / 4 staff members / opened or verified" and "John Doe (CND-1024) / 51
- * hours / Priya Sharma / opened" both have to read as English through it.
+ *     Candidate: {{1}}
+ *     Candidate ID: {{2}}
+ *     Assigned Staff: {{3}}
  */
 export function slaAlertParameters(facts: SlaBreachFacts): string[] {
-  const single = facts.count === 1;
-  const threshold = Math.round(facts.threshold_hours);
-
-  const overdue = single
-    ? [
-        facts.candidate_name || 'An unnamed candidate',
-        publicCode(facts.candidate_code) ? `(${publicCode(facts.candidate_code)})` : '',
-      ]
-        .filter(Boolean)
-        .join(' ')
-    : plural(facts.count, 'candidate');
-
-  // A single breach can say how long it has actually been waiting. A digest
-  // cannot without picking one of them, so it reports the window instead.
-  const waiting =
-    single && typeof facts.hours_overdue === 'number'
-      ? plural(Math.round(facts.hours_overdue), 'hour')
-      : `over ${threshold} hours`;
-
-  const withWhom = single
-    ? [
-        facts.staff_name || 'a staff member',
-        publicCode(facts.staff_code) ? `(${publicCode(facts.staff_code)})` : '',
-      ]
-        .filter(Boolean)
-        .join(' ')
-    : facts.staff_count
-      ? plural(facts.staff_count, 'staff member')
-      : 'their staff';
-
-  // The admin's first question is always "did they even look at it?", so the
-  // distinction the sweep drew is the one worth carrying.
-  const notYet = single ? (facts.reason === 'unevaluated' ? 'verified' : 'opened') : 'opened or verified';
-
-  return [parameter(overdue), parameter(waiting), parameter(withWhom), parameter(notYet)];
+  return [
+    parameter(facts.candidate_name, 'Unnamed candidate'),
+    publicCode(facts.candidate_code, 'Candidate code unavailable'),
+    parameter(facts.staff_name, 'Unassigned'),
+  ];
 }
 
 /**
- * Message every admin who has a number on file.
+ * Message every admin who has a number on file about one breached candidate.
  *
  * Sent one at a time rather than all at once. The roster of admins is small, and
  * going through the reply budget in order is what keeps a sweep that found forty
@@ -395,6 +419,10 @@ export async function notifyAdminsOfSlaBreach(facts: SlaBreachFacts): Promise<Sl
     return { sent: false, reason: 'sla_template_not_configured' };
   }
   if (!facts.count) return { sent: false, reason: 'nothing_in_breach' };
+  // Meta's approved body names one candidate and one owner. A digest cannot be
+  // squeezed into those labels without sending misleading text; the CRM must
+  // relay one callback per breached candidate.
+  if (facts.count !== 1) return { sent: false, reason: 'digest_not_supported' };
 
   const admins = await fetchAdminContacts();
   if (!admins.length) return { sent: false, reason: 'no_admins' };

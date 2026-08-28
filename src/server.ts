@@ -310,12 +310,15 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         staff_id?: unknown;
         candidate_code?: unknown;
         staff_code?: unknown;
+        enquiry?: unknown;
       };
       const candidateId = typeof body.candidate_id === 'string' ? body.candidate_id.trim() : '';
       const staffId = typeof body.staff_id === 'string' ? body.staff_id.trim() : '';
       const candidateCode =
         typeof body.candidate_code === 'string' ? body.candidate_code.trim() : '';
       const staffCode = typeof body.staff_code === 'string' ? body.staff_code.trim() : '';
+      const enquiry =
+        body.enquiry === 'staff' ? 'staff' : body.enquiry === 'apply' ? 'apply' : undefined;
 
       if (!candidateId || !staffId) {
         return res.code(400).send({ error: 'candidate_id and staff_id are required' });
@@ -326,6 +329,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         staffId,
         ...(candidateCode ? { candidateCode } : {}),
         ...(staffCode ? { staffCode } : {}),
+        ...(enquiry ? { enquiry } : {}),
       });
     });
 

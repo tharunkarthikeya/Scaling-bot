@@ -181,6 +181,10 @@ export interface CrmAssignmentSummary {
   /** CRM-generated human id, for example CND-000101. */
   candidate_code?: string | null;
   source?: string;
+  /** Which conversation created the record; selects the matching staff template. */
+  enquiry?: 'apply' | 'staff' | null;
+  /** Accepted as well for CRMs that keep the value under registration. */
+  registration?: { enquiry?: 'apply' | 'staff' | null } | null;
   full_name?: string | null;
   destination_country?: string | null;
   job?: string | null;
