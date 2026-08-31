@@ -53,10 +53,23 @@ process.env.VERIS_OCR_BASE_URL = `http://127.0.0.1:${mockPort}`;
 process.env.VERIS_OCR_API_KEY = 'test';
 
 const { config } = await import('./config.js');
-const { connectDb, closeDb, getDb } = await import('./db/client.js');
-const { ensureIndexes, addUpload, currentUpload, findUpload, candidates, claimExtraction, dueExtractions } =
-  await import('./db/models.js');
-const { ensureStorageRoot, saveFile } = await import('./storage/index.js');
+const { connectDb, closeDb } = await import('./db/client.js');
+const {
+  ensureIndexes,
+  addUpload,
+  currentUpload,
+  findUpload,
+  candidates,
+  messages,
+  storedDocuments,
+  auditEvents,
+  processedEvents,
+  claimExtraction,
+  dueExtractions,
+} = await import('./db/models.js');
+const { ingestionRows } = await import('./ingestion/ledger.js');
+const { purgeExistingNationalityRefusals } = await import('./privacy/purge.js');
+const { ensureStorageRoot, readFile, saveFile } = await import('./storage/index.js');
 const { processOcrJob, sweepRunningExtractions } = await import('./ocr/veris.js');
 const { REALISTIC_PASSPORT_PDF, SAMPLE_PASSPORT_PDF, SAMPLE_RESUME_PDF } =
   await import('./testing/fixtures.js');
@@ -88,7 +101,7 @@ async function seed(params: {
   docType: string;
   filename: string;
   body?: Buffer;
-}): Promise<{ candidateId: ObjectId; uploadId: ObjectId }> {
+}): Promise<{ candidateId: ObjectId; uploadId: ObjectId; storageKey: string }> {
   const candidateId = new ObjectId();
   await candidates().insertOne({
     _id: candidateId,
@@ -128,7 +141,7 @@ async function seed(params: {
     },
   });
 
-  return { candidateId, uploadId };
+  return { candidateId, uploadId, storageKey: stored.storageKey };
 }
 
 /** Runs the sweep until the upload leaves the in-flight states, or gives up. */
@@ -136,6 +149,7 @@ async function settle(waId: string, docType: string, uploadId: ObjectId, ticks =
   for (let i = 0; i < ticks; i++) {
     await sweepRunningExtractions();
     const doc = await findUpload(waId, docType, uploadId);
+    if (!doc && !(await candidates().findOne({ waId }))) return undefined;
     const status = doc?.ocr?.status;
     if (status === 'done' || status === 'failed' || status === 'skipped') return doc;
     await sleep(25);
@@ -181,7 +195,34 @@ await check('a document is submitted, polled, and finishes as done', async () =>
   assert.ok((read?.ocr?.fields?.length ?? 0) > 0, 'a complete extraction stored no fields');
 });
 
-await check('a non-Indian passport ends registration and remains outside external delivery', async () => {
+await check('startup cleanup removes nationality refusals retained by an older release', async () => {
+  const waId = '919000200013';
+  const seeded = await seed({ waId, docType: 'passport', filename: 'legacy-refusal.pdf' });
+  await candidates().updateOne(
+    { _id: seeded.candidateId },
+    {
+      $set: {
+        stage: 'NOT_ELIGIBLE',
+        status: 'not_eligible',
+        nationalityCheck: {
+          status: 'not_eligible',
+          nationality: 'Nepalese',
+          source: 'passport',
+          at: new Date(),
+        },
+      },
+    },
+  );
+
+  const purged = await purgeExistingNationalityRefusals();
+  assert.equal(purged.candidates, 1);
+  assert.equal(purged.storageObjects, 1);
+  assert.equal(await candidates().countDocuments({ waId }), 0);
+  assert.equal(await storedDocuments().countDocuments({ waId }), 0);
+  await assert.rejects(() => readFile(seeded.storageKey), 'legacy uploaded file remains in storage');
+});
+
+await check('a non-Indian passport permanently removes the candidate and uploaded data', async () => {
   const waId = '919000200010';
   const seeded = await seed({
     waId,
@@ -203,6 +244,26 @@ await check('a non-Indian passport ends registration and remains outside externa
       },
     },
   );
+  await auditEvents().insertOne({
+    waId,
+    event: 'consent_given',
+    at: new Date(),
+  });
+  await ingestionRows().insertOne({
+    provider: 'whatsapp',
+    account: 'test-phone-id',
+    messageId: `wamid.${waId}`,
+    attachmentId: `MEDIA-${waId}`,
+    idempotencyKey: `whatsapp/test-phone-id/wamid.${waId}/MEDIA-${waId}`,
+    waId,
+    docType: 'passport',
+    storageKey: seeded.storageKey,
+    status: 'stored',
+    attempts: 0,
+    receivedAt: new Date(),
+    updatedAt: new Date(),
+  });
+  await processedEvents().insertOne({ wamid: `wamid.${waId}`, processedAt: new Date() });
 
   await processOcrJob({
     waId,
@@ -210,26 +271,21 @@ await check('a non-Indian passport ends registration and remains outside externa
     uploadId: seeded.uploadId.toHexString(),
   });
   const read = await settle(waId, 'passport', seeded.uploadId);
-  assert.equal(read?.ocr?.status, 'done');
-
-  const candidate = await candidates().findOne({ waId });
-  assert.equal(candidate?.stage, 'NOT_ELIGIBLE');
-  assert.equal(candidate?.status, 'not_eligible');
-  assert.equal(candidate?.nationalityCheck?.source, 'passport');
-  assert.equal(candidate?.nationalityCheck?.status, 'not_eligible');
-  assert.equal(candidate?.candidateId, undefined, 'an Application ID was assigned');
-  assert.equal(candidate?.crmSync, undefined, 'a CRM delivery was scheduled');
-
-  const session = await getDb().collection('messages').findOne({
-    waId,
-    'turns.direction': 'outbound',
-  });
-  const outbound = (session?.turns as Array<{ direction?: string; text?: string }> | undefined)
-    ?.find((turn) => turn.direction === 'outbound');
-  assert.match(String(outbound?.text), /only to Indian nationals/i);
+  assert.equal(read, undefined, 'the rejected upload record remains');
+  assert.equal(await candidates().countDocuments({ waId }), 0, 'candidate record remains');
+  assert.equal(await storedDocuments().countDocuments({ waId }), 0, 'document record remains');
+  assert.equal(await messages().countDocuments({ waId }), 0, 'conversation transcript remains');
+  assert.equal(await auditEvents().countDocuments({ waId }), 0, 'audit record remains');
+  assert.equal(await ingestionRows().countDocuments({ waId }), 0, 'ingestion record remains');
+  assert.equal(
+    await processedEvents().countDocuments({ wamid: `wamid.${waId}` }),
+    0,
+    'processed message marker remains',
+  );
+  await assert.rejects(() => readFile(seeded.storageKey), 'uploaded file remains in storage');
 });
 
-await check('a non-Indian nationality read from the CV also ends registration', async () => {
+await check('a non-Indian nationality read from the CV also purges the candidate', async () => {
   const waId = '919000200012';
   const seeded = await seed({
     waId,
@@ -253,13 +309,13 @@ await check('a non-Indian nationality read from the CV also ends registration', 
   );
 
   await processOcrJob({ waId, docType: 'cv', uploadId: seeded.uploadId.toHexString() });
-  await settle(waId, 'cv', seeded.uploadId);
+  const read = await settle(waId, 'cv', seeded.uploadId);
 
-  const candidate = await candidates().findOne({ waId });
-  assert.equal(candidate?.stage, 'NOT_ELIGIBLE');
-  assert.equal(candidate?.nationalityCheck?.source, 'cv');
-  assert.equal(candidate?.nationalityCheck?.status, 'not_eligible');
-  assert.equal(candidate?.crmSync, undefined);
+  assert.equal(read, undefined, 'the rejected CV upload record remains');
+  assert.equal(await candidates().countDocuments({ waId }), 0, 'candidate record remains');
+  assert.equal(await storedDocuments().countDocuments({ waId }), 0, 'CV document record remains');
+  assert.equal(await messages().countDocuments({ waId }), 0, 'conversation transcript remains');
+  await assert.rejects(() => readFile(seeded.storageKey), 'CV file remains in storage');
 });
 
 await check('passport and Aadhaar pages inside one CV use both dedicated extractors', async () => {
@@ -523,5 +579,4 @@ console.log(
 server.close();
 await closeDb();
 await mongo.stop();
-void getDb;
 process.exit(failures.length ? 1 : 0);

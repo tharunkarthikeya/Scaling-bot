@@ -1576,8 +1576,9 @@ async function applySuccessfulExtraction(params: {
       );
     }
 
-    // A conclusive non-Indian value is terminal. Keep the source document and
-    // its OCR result locally, but do not perform more extraction or sync work.
+    // A conclusive non-Indian value is terminal. The conversation engine sends
+    // the refusal and purges the candidate and source document, so there is no
+    // more extraction or sync work to perform.
     let latest = await findConversationById(candidateId);
     if (!latest || nationalityBlocked(latest)) return;
 

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   PutObjectCommand,
@@ -75,11 +76,12 @@ export interface SaveParams {
   originalFilename?: string;
 }
 
-/** What a backend has to be able to do. Deliberately three methods. */
+/** What a backend has to be able to do. */
 interface StorageBackend {
   readonly name: string;
   save(params: SaveParams, file: StoredFile): Promise<void>;
   read(storageKey: string): Promise<Buffer>;
+  delete(storageKey: string): Promise<void>;
   /** Proves at boot that documents can actually be written. */
   ensureReady(): Promise<void>;
 }
@@ -124,6 +126,14 @@ class LocalBackend implements StorageBackend {
 
   async read(storageKey: string): Promise<Buffer> {
     return fs.readFile(this.absolute(storageKey));
+  }
+
+  async delete(storageKey: string): Promise<void> {
+    try {
+      await fs.unlink(this.absolute(storageKey));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
   }
 
   async ensureReady(): Promise<void> {
@@ -200,6 +210,12 @@ class S3Backend implements StorageBackend {
     return Buffer.from(await response.Body.transformToByteArray());
   }
 
+  async delete(storageKey: string): Promise<void> {
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: this.objectKey(storageKey) }),
+    );
+  }
+
   async ensureReady(): Promise<void> {
     try {
       await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
@@ -266,6 +282,11 @@ export async function saveFile(params: SaveParams): Promise<StoredFile> {
 
 export async function readFile(storageKey: string): Promise<Buffer> {
   return backend().read(storageKey);
+}
+
+/** Permanently removes one stored object. Missing objects are already deleted. */
+export async function deleteFile(storageKey: string): Promise<void> {
+  await backend().delete(storageKey);
 }
 
 /**

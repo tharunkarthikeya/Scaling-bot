@@ -17,6 +17,7 @@ import { Lease, scheduleWithLease } from './scheduler/leader.js';
 import { closeRedis, pingRedis, redisEnabled, requireRedisUrl } from './redis/index.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './metrics/index.js';
 import { refreshStaffDirectoryFromCrm } from './staff/notify.js';
+import { purgeExistingNationalityRefusals } from './privacy/purge.js';
 
 /** How often the §21 reminder sweep runs. The claim is per candidate, not per sweep. */
 const REMINDER_SWEEP_MS = 15 * 60 * 1000;
@@ -153,6 +154,11 @@ async function main(): Promise<void> {
   // to answer anybody.
   await ensureAtsCollections();
   await ensureStorageRoot();
+
+  const nationalityPurge = await purgeExistingNationalityRefusals();
+  if (nationalityPurge.candidates) {
+    logger.info(nationalityPurge, 'removed nationality refusals retained by an older release');
+  }
 
   if (plan.workers) {
     registerWorkers();

@@ -116,6 +116,7 @@ import { questionsForOccupation } from './tradeQuestions.js';
 import { classifyJobLevel } from './jobLevel.js';
 import { warnOnLineChange } from './lines.js';
 import { transcribe } from './audio.js';
+import { purgeCandidateData } from '../privacy/purge.js';
 
 /** Meta's customer service window. Outside it, only approved templates may be sent. */
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -3790,7 +3791,10 @@ async function stopIfNonIndianNationality(
   nationality: unknown,
   source: 'cv' | 'passport',
 ): Promise<boolean> {
-  if (nationalityBlocked(candidate)) return true;
+  if (nationalityBlocked(candidate)) {
+    await purgeCandidateData(candidate.waId);
+    return true;
+  }
 
   const decision = nationalityDecision(nationality);
   if (decision === 'unknown') return false;
@@ -3819,15 +3823,20 @@ async function stopIfNonIndianNationality(
     editQueue: [],
     sessionEndedAt: new Date(),
   });
-  await tell(candidate, copy.NATIONALITY_NOT_SUPPORTED);
-  await closeOpenSession(candidate.waId);
-  await recordAudit({
-    waId: candidate.waId,
-    candidateId: candidate.candidateId,
-    event: 'nationality_not_supported',
-    detail: `nationality read from ${source}`,
-  });
-  logger.info({ waId: candidate.waId, source }, 'registration stopped: nationality not supported');
+
+  // The refusal needs the conversation record for language and delivery, but
+  // it must be the last use of that record. Even if Meta refuses the outbound
+  // message, the eligibility decision still requires the data to be removed.
+  try {
+    await tell(candidate, copy.NATIONALITY_NOT_SUPPORTED);
+    await closeOpenSession(candidate.waId);
+  } finally {
+    const purged = await purgeCandidateData(candidate.waId);
+    logger.info(
+      { waId: candidate.waId, source, ...purged },
+      'registration stopped and candidate data purged: nationality not supported',
+    );
+  }
   return true;
 }
 
