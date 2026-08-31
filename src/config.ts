@@ -207,6 +207,17 @@ const schema = z.object({
   WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE_LANG: z.string().default('en'),
 
   /**
+   * Sending number that owns the approved proactive staff templates.
+   *
+   * When unset, staff notifications use the SGMY line when configured, then
+   * fall back to the primary line. Keeping this separate from candidate reply
+   * routing matters because Meta templates belong to a WhatsApp Business
+   * Account: a template approved on the second account does not exist on the
+   * first one, even when both numbers are operated by the same bot.
+   */
+  WHATSAPP_STAFF_NOTIFICATION_PHONE_NUMBER_ID: blankable(z.string().min(1).optional()),
+
+  /**
    * Approved template for an assigned staff-enquiry callback.
    *
    * This is deliberately separate from the ordinary assignment template: a

@@ -112,6 +112,22 @@ export interface SendResult {
  */
 export type FromNumber = string | undefined;
 
+/**
+ * The line that owns proactive templates sent to staff and admins.
+ *
+ * Candidate replies must leave from the conversation's own line. These
+ * notifications have no inbound conversation to inherit, and Meta scopes an
+ * approved template to the WABA that owns it, so they need an explicit sending
+ * identity. An explicit caller choice still wins for tests and one-off sends.
+ */
+export function staffNotificationLine(from?: FromNumber): FromNumber {
+  return (
+    from ??
+    config.WHATSAPP_STAFF_NOTIFICATION_PHONE_NUMBER_ID ??
+    config.WHATSAPP_PHONE_NUMBER_ID_SGMY
+  );
+}
+
 /** Splits on paragraph, then line, then hard-cuts — so we never post-truncate a reply. */
 export function chunkText(text: string, limit = MAX_TEXT_LENGTH): string[] {
   if (text.length <= limit) return [text];
@@ -392,8 +408,13 @@ export async function sendStaffAssignmentTemplate(
   const name = config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE;
   if (!name) throw new Error('WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE is not configured');
 
+  const notificationLine = staffNotificationLine(from);
+
   if (config.SHADOW_MODE) {
-    logger.info({ to, template: name, parameters }, 'shadow mode: template suppressed');
+    logger.info(
+      { to, template: name, parameters, from: sendingNumberFor(notificationLine) },
+      'shadow mode: template suppressed',
+    );
     return { shadowed: true };
   }
 
@@ -411,7 +432,7 @@ export async function sendStaffAssignmentTemplate(
         components: staffAssignmentTemplateComponents(parameters),
       },
     },
-    from,
+    notificationLine,
   );
 
   return { wamid: json?.messages?.[0]?.id, shadowed: false };
@@ -430,7 +451,7 @@ export async function sendStaffEnquiryTemplate(
     name,
     config.WHATSAPP_STAFF_ENQUIRY_TEMPLATE_LANG,
     parameters,
-    from,
+    staffNotificationLine(from),
   );
 }
 
@@ -463,7 +484,13 @@ export async function sendSlaAlertTemplate(
 ): Promise<SendResult> {
   const name = config.WHATSAPP_SLA_ALERT_TEMPLATE;
   if (!name) throw new Error('WHATSAPP_SLA_ALERT_TEMPLATE is not configured');
-  return sendBodyTemplate(to, name, config.WHATSAPP_SLA_ALERT_TEMPLATE_LANG, parameters, from);
+  return sendBodyTemplate(
+    to,
+    name,
+    config.WHATSAPP_SLA_ALERT_TEMPLATE_LANG,
+    parameters,
+    staffNotificationLine(from),
+  );
 }
 
 /**

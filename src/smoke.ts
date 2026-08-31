@@ -37,6 +37,7 @@ import {
   readCappedBody,
   setMediaBaseUrlForTests,
   staffAssignmentTemplateComponents,
+  staffNotificationLine,
 } from './whatsapp/client.js';
 import { isTerminalFailure } from './ingestion/ledger.js';
 import { render } from './conversation/copy.js';
@@ -6639,6 +6640,14 @@ await check('the greeting is a header parameter, not a fourth body parameter', (
       },
     ],
   );
+});
+
+await check('proactive staff templates use the WABA that owns them', () => {
+  assert.equal(
+    staffNotificationLine(),
+    config.WHATSAPP_STAFF_NOTIFICATION_PHONE_NUMBER_ID ?? config.WHATSAPP_PHONE_NUMBER_ID_SGMY,
+  );
+  assert.equal(staffNotificationLine('explicit-line'), 'explicit-line');
 });
 
 await check('a staff enquiry uses the four fields in the approved body order', () => {
