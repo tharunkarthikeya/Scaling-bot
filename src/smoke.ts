@@ -38,6 +38,7 @@ import {
   setMediaBaseUrlForTests,
   staffAssignmentTemplateComponents,
   staffNotificationLine,
+  staffNotificationPhoneNumberId,
 } from './whatsapp/client.js';
 import { isTerminalFailure } from './ingestion/ledger.js';
 import { render } from './conversation/copy.js';
@@ -6648,6 +6649,13 @@ await check('proactive staff templates use the WABA that owns them', () => {
     config.WHATSAPP_STAFF_NOTIFICATION_PHONE_NUMBER_ID ?? config.WHATSAPP_PHONE_NUMBER_ID_SGMY,
   );
   assert.equal(staffNotificationLine('explicit-line'), 'explicit-line');
+  assert.equal(
+    staffNotificationPhoneNumberId(),
+    config.WHATSAPP_STAFF_NOTIFICATION_PHONE_NUMBER_ID ??
+      config.WHATSAPP_PHONE_NUMBER_ID_SGMY ??
+      config.WHATSAPP_PHONE_NUMBER_ID,
+  );
+  assert.equal(staffNotificationPhoneNumberId('explicit-line'), 'explicit-line');
 });
 
 await check('a staff enquiry uses the four fields in the approved body order', () => {

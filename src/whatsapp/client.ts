@@ -128,6 +128,11 @@ export function staffNotificationLine(from?: FromNumber): FromNumber {
   );
 }
 
+/** One resolved id for both the Graph path and its per-line credential. */
+export function staffNotificationPhoneNumberId(from?: FromNumber): string {
+  return sendingNumberFor(staffNotificationLine(from));
+}
+
 /** Splits on paragraph, then line, then hard-cuts — so we never post-truncate a reply. */
 export function chunkText(text: string, limit = MAX_TEXT_LENGTH): string[] {
   if (text.length <= limit) return [text];
@@ -408,11 +413,11 @@ export async function sendStaffAssignmentTemplate(
   const name = config.WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE;
   if (!name) throw new Error('WHATSAPP_STAFF_ASSIGNMENT_TEMPLATE is not configured');
 
-  const notificationLine = staffNotificationLine(from);
+  const notificationPhoneNumberId = staffNotificationPhoneNumberId(from);
 
   if (config.SHADOW_MODE) {
     logger.info(
-      { to, template: name, parameters, from: sendingNumberFor(notificationLine) },
+      { to, template: name, parameters, from: notificationPhoneNumberId },
       'shadow mode: template suppressed',
     );
     return { shadowed: true };
@@ -421,7 +426,7 @@ export async function sendStaffAssignmentTemplate(
   await budgets.replies.acquire();
 
   const json = await graphPost(
-    `${sendingNumberFor(from)}/messages`,
+    `${notificationPhoneNumberId}/messages`,
     {
       messaging_product: 'whatsapp',
       to,
@@ -432,7 +437,7 @@ export async function sendStaffAssignmentTemplate(
         components: staffAssignmentTemplateComponents(parameters),
       },
     },
-    notificationLine,
+    notificationPhoneNumberId,
   );
 
   return { wamid: json?.messages?.[0]?.id, shadowed: false };
