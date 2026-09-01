@@ -38,7 +38,7 @@ import {
 } from './trades.js';
 import { MAX_GENERATED_QUESTIONS } from './tradeQuestions.js';
 import { cvWorthAsking, type JobLevel } from './jobLevel.js';
-import { taxonomyCountryName } from '../crm/taxonomy.js';
+import { taxonomyCountryName, taxonomyJobTitle } from '../crm/taxonomy.js';
 import {
   availabilityBand,
   experienceBand,
@@ -261,11 +261,34 @@ function b2bDocumentSatisfied(c: CandidateDoc, docId: string): boolean {
   );
 }
 
-/** Everything the candidate has told us about their trade, in their own words. */
+const comparableChoiceText = (value: string) =>
+  value.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]/gu, '');
+
+function isChoiceLabel(raw: string | undefined, selected: Choice | undefined): boolean {
+  return (
+    !!raw &&
+    !!selected &&
+    Object.values(selected.label).some(
+      (label) => comparableChoiceText(label) === comparableChoiceText(raw),
+    )
+  );
+}
+
+/** Everything the candidate has told us about their current trade. */
 export function tradeSignals(c: CandidateDoc): Array<string | undefined> {
   const meta = c.fieldMeta ?? {};
+  const rawTrade = meta.primaryTrade?.raw?.trim();
+  const selectedTrade = TRADE_CHOICES.find((choice) => choice.id === p(c).primaryTrade);
+
+  // A button title is presentation, not evidence about somebody's work. This
+  // distinction normally comes from `tradeFromList`, but old rows and clients
+  // that delivered only the title can lack that flag. Feeding the broad label
+  // "Fabrication / Welding" back into the keyword matcher selects the welder
+  // pack merely because the menu itself contains "Welding".
+  const rawIsChoiceLabel = isChoiceLabel(rawTrade, selectedTrade);
+
   return [
-    meta.primaryTrade?.raw,
+    rawIsChoiceLabel ? undefined : rawTrade,
     p(c).currentOccupation,
     (p(c).previousOccupations ?? []).join(' '),
     (p(c).skills ?? []).join(' '),
@@ -274,6 +297,29 @@ export function tradeSignals(c: CandidateDoc): Array<string | undefined> {
     // thing on a CV that separates a welder from a fabricator.
     (p(c).machinery ?? []).join(' '),
     c.profileName,
+  ];
+}
+
+/**
+ * Evidence for specialist follow-ups about the job being applied for.
+ *
+ * The chosen job comes first. Existing skills and experience may narrow a
+ * broad chosen category (for example Fabrication/Welding to TIG welder), but a
+ * current trade can never activate a pack outside that chosen job category.
+ */
+export function jobTradeSignals(c: CandidateDoc): Array<string | undefined> {
+  const meta = c.fieldMeta ?? {};
+  const rawJob = meta.jobCategory?.raw?.trim();
+  const selectedJob = JOB_CATEGORY_CHOICES.find((choice) => choice.id === p(c).jobCategory);
+
+  return [
+    isChoiceLabel(rawJob, selectedJob) ? undefined : rawJob,
+    p(c).desiredOccupation,
+    p(c).currentOccupation,
+    (p(c).previousOccupations ?? []).join(' '),
+    (p(c).skills ?? []).join(' '),
+    (p(c).certifications ?? []).join(' '),
+    (p(c).machinery ?? []).join(' '),
   ];
 }
 
@@ -1084,7 +1130,14 @@ const EXPERIENCE_STEPS: FlowStep[] = [
       const typed = (a.value ?? a.raw ?? '').trim();
       return typed ? { primaryTrade: 'other', currentOccupation: typed } : {};
     },
-    clears: ['primaryTrade', 'tradeFromList', 'currentOccupation', 'tradeAnswers', 'tradePacks'],
+    clears: [
+      'primaryTrade',
+      'tradeFromList',
+      'currentOccupation',
+      'tradeAnswers',
+      'tradePacks',
+      'tradePacksFor',
+    ],
   },
 
   {
@@ -1233,7 +1286,20 @@ const PREFERENCE_STEPS: FlowStep[] = [
     // changes their mind from welding to driving would be left answering the
     // welding questions, and their answers would be filed against a job they
     // are no longer applying for.
-    clears: ['jobCategory', 'desiredOccupation', 'jobQuestions', 'jobQuestionsFor', 'jobQuestionAnswers'],
+    clears: [
+      'jobCategory',
+      'desiredOccupation',
+      'jobQuestions',
+      'jobQuestionsFor',
+      'jobQuestionAnswers',
+      // Specialist questions belong to this selected job. Changing the job
+      // invalidates both their selection and every answer collected under it.
+      'tradePacks',
+      'tradePacksFor',
+      'tradeAnswers',
+      'tradeQuestions',
+      'tradeQuestionsFor',
+    ],
   },
 
   // The questions the client attached to that job, asked immediately after it
@@ -1663,7 +1729,11 @@ function tradeQuestionStep(packId: string, q: TradeQuestion): FlowStep {
     allowMedia: q.allowMedia,
     expects: q.expects,
     when: (c) => {
-      if (!(p(c).tradePacks as string[] | undefined)?.includes(packId)) return false;
+      // Derived pack ids can outlive a corrected job on legacy records. A
+      // specialist question gets one last strict check at the point of use:
+      // the pack must belong to the candidate's selected job. Thus even a
+      // stale `welder` id cannot ask another kind of worker about welding.
+      if (!activeTradePackIds(c).includes(packId)) return false;
       return q.when ? q.when((p(c).tradeAnswers ?? {}) as Record<string, string[]>) : true;
     },
     satisfied: (c) => has((p(c).tradeAnswers ?? {})[q.id]),
@@ -1814,6 +1884,23 @@ export function occupationForQuestions(c: CandidateDoc): string | undefined {
   return usable ? typed : label;
 }
 
+/** The selected job to write follow-up questions about, never the current job. */
+export function selectedJobForQuestions(c: CandidateDoc): string | undefined {
+  const desired = (p(c).desiredOccupation ?? '').trim();
+  if (desired.length > 1) return desired;
+
+  const category = p(c).jobCategory as string | undefined;
+  if (!category || category === 'other') return undefined;
+
+  const label = labelFor(category, 'job_category')?.en ?? taxonomyJobTitle(category);
+  const raw = (c.fieldMeta?.jobCategory?.raw ?? '').trim();
+  const same = (a: string, b: string) =>
+    comparableChoiceText(a) === comparableChoiceText(b);
+  const usable = raw.length > 2 && !/^\d+$/.test(raw) && !(label && same(raw, label));
+
+  return usable ? raw : label;
+}
+
 /**
  * The job to classify for the Singapore/Malaysia CV question (§5).
  *
@@ -1911,56 +1998,88 @@ export function generatedQuestionFor(
   return (p(c).tradeQuestions as GeneratedQuestion[] | undefined)?.[index];
 }
 
-/** The one-question fork used when a trade maps to more than one pack. */
+/** The one-question fork used when a selected job maps to more than one pack. */
 function disambiguationStep(): FlowStep {
   return {
     id: 'trade_disambiguation',
     section: 'experience',
     prompt: {
-      en: 'Which is your main work?',
-      ta: 'உங்கள் முக்கிய வேலை எது?',
-      hi: 'आपका मुख्य काम कौन सा है?',
-      te: 'మీ ముఖ్యమైన పని ఏంటి?',
-      ml: 'നിങ്ങളുടെ പ്രധാന ജോലി എന്താണ്?',
+      en: 'Which type of work are you applying for?',
+      ta: 'நீங்கள் எந்த வகை வேலைக்கு விண்ணப்பிக்கிறீர்கள்?',
+      hi: 'आप किस प्रकार के काम के लिए आवेदन कर रहे हैं?',
+      te: 'మీరు ఏ రకమైన పని కోసం దరఖాస్తు చేస్తున్నారు?',
+      ml: 'നിങ്ങൾ ഏത് തരത്തിലുള്ള ജോലിക്കാണ് അപേക്ഷിക്കുന്നത്?',
     },
     input: 'choice',
     choices: [],
     when: (c) => {
-      const trade = p(c).primaryTrade;
-      if (!trade || has(p(c).tradePacks)) return false;
-      // A tapped category that covers more than one trade is always asked
-      // about. Selection beats inference: the candidate told us the category
-      // and nothing else, so the only honest way to narrow it is to ask.
-      if (p(c).tradeFromList && disambiguationFor(trade)) return true;
-      return resolvePacks(trade, tradeSignals(c)).needsDisambiguation;
+      const job = p(c).jobCategory;
+      if (!job || activeTradePackIds(c).length) return false;
+      return resolvePacks(job, jobTradeSignals(c)).needsDisambiguation;
     },
-    satisfied: (c) => has(p(c).tradePacks),
+    satisfied: (c) => activeTradePackIds(c).length > 0,
     apply: (a, c) => {
-      const d = disambiguationFor(String(p(c).primaryTrade));
+      const job = String(p(c).jobCategory);
+      const d = disambiguationFor(job);
       const picked = d?.choices.find((ch) => ch.id === a.ids?.[0]);
-      return { tradePacks: picked?.packs ?? [] };
+      return { tradePacks: picked?.packs ?? [], tradePacksFor: job };
     },
-    clears: ['tradePacks', 'tradeAnswers'],
+    clears: ['tradePacks', 'tradePacksFor', 'tradeAnswers'],
   };
 }
 
 /**
- * Fills in `tradePacks` when the candidate's own words already decide it, so the
+ * Fills in `tradePacks` when the selected job and supporting evidence decide it, so the
  * disambiguation question is skipped. Returns undefined when nothing changes.
  */
 export function inferTradePacks(c: CandidateDoc): string[] | undefined {
-  if (has(p(c).tradePacks)) return undefined;
-  const trade = p(c).primaryTrade;
-  if (!trade) return undefined;
+  if (activeTradePackIds(c).length) return undefined;
+  const job = p(c).jobCategory;
+  if (!job) return undefined;
 
   // Never infer from keywords when the candidate picked the category from the
   // list and that category is ambiguous — the disambiguation question owns the
   // decision, and only the candidate's explicit answer loads a pack.
-  if (p(c).tradeFromList && disambiguationFor(trade)) return undefined;
+  if (resolvePacks(job, jobTradeSignals(c)).needsDisambiguation) return undefined;
 
-  const { packs, needsDisambiguation } = resolvePacks(trade, tradeSignals(c));
-  if (needsDisambiguation) return undefined;
+  const { packs } = resolvePacks(job, jobTradeSignals(c));
   return packs.map((pk) => pk.id);
+}
+
+/**
+ * The stored specialist packs that are still justified by the current profile.
+ *
+ * `tradePacks` is derived state, so merely finding an id there is not enough:
+ * old records can retain an inference made from a broad menu label. A pack is
+ * active only when it belongs to the selected job and either the candidate
+ * explicitly chose it at disambiguation, or their current words/CV evidence
+ * still select it. This makes the strictness retroactive for affected rows as
+ * well as preventative for new conversations.
+ */
+export function activeTradePackIds(c: CandidateDoc): string[] {
+  const stored = (p(c).tradePacks as string[] | undefined) ?? [];
+  const job = p(c).jobCategory as string | undefined;
+  if (!stored.length || !job) return [];
+
+  const compatible = stored.filter((id) => packById(id)?.trades.includes(job));
+  if (!compatible.length) return [];
+
+  if (p(c).tradePacksFor === job) return compatible;
+
+  // Legacy rows predate `tradePacksFor`. Trust a chat selection only if it was
+  // recorded after the selected job; inferred rows still have to be supported
+  // by evidence for that job below.
+  const packMeta = c.fieldMeta?.tradePacks;
+  const jobMeta = c.fieldMeta?.jobCategory;
+  if (
+    packMeta?.source === 'chat' &&
+    (!jobMeta?.at || !packMeta.at || packMeta.at.getTime() >= jobMeta.at.getTime())
+  ) {
+    return compatible;
+  }
+
+  const evidenced = new Set(resolvePacks(job, jobTradeSignals(c)).packs.map((pack) => pack.id));
+  return compatible.filter((id) => evidenced.has(id));
 }
 
 /**
@@ -2004,7 +2123,7 @@ export function inferTradeAnswers(c: CandidateDoc): Record<string, string[]> | u
 
 /** The disambiguation question's choices, resolved for this candidate. */
 export function disambiguationChoices(c: CandidateDoc): Choice[] {
-  return disambiguationFor(String(p(c).primaryTrade))?.choices ?? [];
+  return disambiguationFor(String(p(c).jobCategory))?.choices ?? [];
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -2047,11 +2166,26 @@ const ALL_TRADE_STEPS: FlowStep[] = [
   ...Array.from({ length: MAX_GENERATED_QUESTIONS }, (_, i) => generatedQuestionStep(i)),
 ];
 
+// The candidate chooses the job first. CRM questions attached to that job run
+// next, followed by our specialist questions for the same job, and only then
+// the remaining preference and availability questions.
+const JOB_PREFERENCE_INDEX = PREFERENCE_STEPS.findIndex((s) => s.id === 'job_preference');
+const JOB_SELECTION_STEPS = PREFERENCE_STEPS.slice(0, JOB_PREFERENCE_INDEX);
+const REMAINING_JOB_PREFERENCE_STEPS = PREFERENCE_STEPS.slice(JOB_PREFERENCE_INDEX).filter(
+  (s) => s.section === 'job_preference',
+);
+const JOB_PREFERENCE_STEPS: FlowStep[] = [
+  ...JOB_SELECTION_STEPS,
+  ...ALL_TRADE_STEPS,
+  ...REMAINING_JOB_PREFERENCE_STEPS,
+];
+const AVAILABILITY_STEPS = PREFERENCE_STEPS.filter((s) => s.section === 'availability');
+
 /**
  * The flow, in order — for every destination but two.
  *
- * Apply → consent → country → CV → personal → experience → trade →
- * job preferences → documents → confirm.
+ * Apply → consent → country → CV → personal → experience → choose job →
+ * questions for that job → remaining preferences → documents → confirm.
  *
  * The country question is first because it decides which of the two lists a
  * conversation walks (`routeFor`), and it is the same three questions in the
@@ -2064,9 +2198,8 @@ const ALL_TRADE_STEPS: FlowStep[] = [
  * sections below it then skip, and that only works if it is collected before
  * them rather than after.
  *
- * Trade questions sit between the experience questions and the job preferences,
- * because they are about what the candidate has done — and §9 is about what they
- * want next. Keeping that order stops the two from bleeding into each other.
+ * Specialist questions sit immediately after the job choice. Their pack and
+ * wording are derived from that choice, never merely from the current trade.
  *
  * Documents come last, once there is a profile for what they say to be compared
  * against (§17).
@@ -2080,8 +2213,8 @@ export const STEPS: FlowStep[] = [
   CV_STEP,
   ...PERSONAL_STEPS,
   ...EXPERIENCE_STEPS,
-  ...ALL_TRADE_STEPS,
-  ...PREFERENCE_STEPS,
+  ...JOB_PREFERENCE_STEPS,
+  ...AVAILABILITY_STEPS,
   ...DOCUMENT_STEPS,
   CONFIRM_STEP,
 ];
@@ -2097,14 +2230,11 @@ export const STEPS: FlowStep[] = [
  * to the flow above lands in the same place on this route. The split is where
  * the CV goes here: after what they want to do, before when they can start.
  */
-const JOB_PREFERENCE_STEPS = PREFERENCE_STEPS.filter((s) => s.section === 'job_preference');
-const AVAILABILITY_STEPS = PREFERENCE_STEPS.filter((s) => s.section === 'availability');
-
 /**
  * The Singapore/Malaysia route, in order.
  *
  * Apply -> consent -> country (**Singapore or Malaysia**) -> personal ->
- * experience -> trade -> job preferences -> **CV, if the job is one a CV speaks
+ * experience -> choose job -> questions for that job -> preferences -> **CV, if the job is one a CV speaks
  * to** -> availability -> documents -> confirm.
  *
  * Two differences from `STEPS`, and nothing else:
@@ -2139,7 +2269,6 @@ export const SGMY_STEPS: FlowStep[] = [
   ...COUNTRY_STEPS,
   ...PERSONAL_STEPS,
   ...EXPERIENCE_STEPS,
-  ...ALL_TRADE_STEPS,
   ...JOB_PREFERENCE_STEPS,
   CV_STEP,
   ...AVAILABILITY_STEPS,

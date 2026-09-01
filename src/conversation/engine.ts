@@ -71,8 +71,9 @@ import {
   sectionStepsFor,
   inferTradeAnswers,
   inferTradePacks,
+  activeTradePackIds,
   desiredJobForLevel,
-  occupationForQuestions,
+  selectedJobForQuestions,
   MAX_JOB_QUESTIONS,
   nextStep,
   stepById,
@@ -111,7 +112,7 @@ import {
 import { ageFrom, buildProfileWrite, passportExpiryFlag } from './profile.js';
 import { detectLanguage, type Choice, type Language, type Localised } from './language.js';
 import { DOCUMENTS, requirementFor, TUNABLES } from './rules.js';
-import { packById, type TradeQuestion } from './trades.js';
+import { disambiguationFor, packById, type TradeQuestion } from './trades.js';
 import { questionsForOccupation } from './tradeQuestions.js';
 import { classifyJobLevel } from './jobLevel.js';
 import { warnOnLineChange } from './lines.js';
@@ -579,32 +580,31 @@ function statusForStage(stage: ConversationStage, current: CandidateStatus): Can
 /**
  * Writes the trade questions for a job no hand-written pack covers (§8).
  *
- * Runs once per candidate per occupation, and only where the packs came up
+ * Runs once per candidate per selected job, and only where the packs came up
  * empty — a welder, a fabricator, a driver, a machinist and an NDT technician
  * all keep the questions a person wrote for them. Everyone else used to be
- * asked nothing at all about their trade: a recruiter opening an electrician's
+ * asked nothing at all about that job: a recruiter opening an electrician's
  * profile learned that he was an electrician and nothing further.
  *
  * The result is stored either way, empty included. An empty list is an answer —
- * "there is nothing useful to ask this candidate about their trade" — and
+ * "there is nothing useful to ask about this selected job" — and
  * storing it is what stops a model call on every turn for the rest of the
  * registration.
  */
 async function ensureTradeQuestions(candidate: CandidateDoc): Promise<void> {
-  // Nobody in the staff intake is asked about a trade, so there is nothing to
+  // Nobody in the staff intake is asked specialist questions, so there is nothing to
   // write questions about.
   if (candidate.enquiry === 'staff') return;
 
   const profile = candidate.profile ?? {};
 
-  if ((profile.tradePacks ?? []).length) return;
-  // A fresher has no trade to be asked about, which is what the option means.
-  if (!profile.primaryTrade || profile.primaryTrade === 'fresher') return;
-
-  // Their own words wherever they exist — see `occupationForQuestions`, which is
-  // where the difference between "plumber" and "Electrical / Mechanical" is
-  // recovered.
-  const occupation = occupationForQuestions(candidate);
+  const jobId = profile.jobCategory as string | undefined;
+  if (!jobId) return;
+  if (activeTradePackIds(candidate).length) return;
+  if (disambiguationFor(jobId)) return;
+  // Always use the job being applied for. The candidate's current occupation
+  // may be unrelated and is never the subject of generated follow-ups.
+  const occupation = selectedJobForQuestions(candidate);
   if (!occupation) return;
   if (profile.tradeQuestionsFor === occupation) return;
 
@@ -811,15 +811,23 @@ async function askNextQuestion(
   candidate: CandidateDoc,
   lead?: Localised | string,
 ): Promise<void> {
-  // If what the candidate has already told us decides their trade questions,
+  // If the selected job and supporting evidence decide its specialist questions,
   // record that now so the disambiguation question is skipped entirely (§8).
   const packs = inferTradePacks(candidate);
   if (packs) {
+    const jobId = candidate.profile.jobCategory as string;
     await recordsFor(candidate.enquiry).updateOne(
       { _id: candidate._id },
-      { $set: { 'profile.tradePacks': packs, updatedAt: new Date() } },
+      {
+        $set: {
+          'profile.tradePacks': packs,
+          'profile.tradePacksFor': jobId,
+          updatedAt: new Date(),
+        },
+      },
     );
     candidate.profile.tradePacks = packs;
+    candidate.profile.tradePacksFor = jobId;
   }
 
   await ensureTradeQuestions(candidate);
@@ -2855,6 +2863,30 @@ export async function handleInboundMessage(payload: {
     return;
   }
 
+  /* ---- reject buttons from a question that has already closed ---- */
+
+  // WhatsApp keeps old interactive messages tappable in chat history. Meta
+  // includes the id of the outbound message a tap belongs to, so compare that
+  // message's step with the one currently open before interpreting the option
+  // (and before global button commands). A second tap is a strict no-op: the
+  // first answer remains authoritative and the late tap cannot produce another
+  // question, warning bubble, command, or profile write.
+  if (msg.replyId && msg.contextWamid) {
+    const asked = await findTurn(msg.contextWamid, 'outbound');
+    if (asked?.step && asked.step !== candidate.currentStep) {
+      logger.info(
+        {
+          waId: candidate.waId,
+          tapped: msg.replyId,
+          from: asked.step,
+          now: candidate.currentStep,
+        },
+        'ignored a tap on a closed question',
+      );
+      return;
+    }
+  }
+
   /* ---- commands that work anywhere (§22, §23, §24) ---- */
 
   const command = detectGlobalCommand(text, msg.replyId);
@@ -3131,6 +3163,18 @@ export async function handleInboundMessage(payload: {
     return;
   }
 
+  // A deployed flow change or a corrected job can leave `currentStep` pointing
+  // at a specialist question that no longer applies. Never accept an answer to
+  // it; resume from the first currently valid question instead.
+  if (step.when && !step.when(candidate)) {
+    logger.info(
+      { waId: candidate.waId, step: step.id },
+      'skipped an open question that no longer applies',
+    );
+    await askNextQuestion(candidate);
+    return;
+  }
+
   // An answered question stays answered.
   //
   // `currentStep` is a pointer, and pointers go stale: a restart between the
@@ -3153,30 +3197,13 @@ export async function handleInboundMessage(payload: {
       { waId: candidate.waId, step: step.id, tapped: msg.replyId },
       'ignored a reply to a question that is already answered',
     );
-    // A tap is told its option has expired; typed words are told they could not
-    // be used as an answer, which is true of both and accurate about neither
-    // the candidate nor their message.
-    await askNextQuestion(candidate, msg.replyId ? copy.OPTION_EXPIRED : copy.UNCLEAR);
+    // A repeated tap is deliberately silent. WhatsApp cannot disable a button
+    // already in chat history, but the backend can make it inert; replying here
+    // used to make one late tap send the next question a second time. Typed
+    // words still get a useful retry because they may be an attempted answer.
+    if (msg.replyId) return;
+    await askNextQuestion(candidate, copy.UNCLEAR);
     return;
-  }
-
-  // A tap that belongs to an earlier question answers that question, not this
-  // one. WhatsApp keeps every button live in the history, and several steps
-  // offer the same ids — "yes" appears on the passport, welding-certificate and
-  // training questions — so a stale tap can be recorded against a question it
-  // was never about. Meta tells us which message the button came from; if that
-  // message asked something else, the tap is refused and the open question is
-  // put back.
-  if (msg.replyId && msg.contextWamid) {
-    const asked = await findTurn(msg.contextWamid, 'outbound');
-    if (asked?.step && asked.step !== step.id) {
-      logger.info(
-        { waId: candidate.waId, tapped: msg.replyId, from: asked.step, now: step.id },
-        'ignored a tap on an expired option',
-      );
-      await reply(candidate, await renderRetry(step, candidate, copy.OPTION_EXPIRED), step.id);
-      return;
-    }
   }
 
   if (voiceNoteUnread) {

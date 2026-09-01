@@ -66,6 +66,7 @@ import {
   inferTradeAnswers,
   inferTradePacks,
   occupationForQuestions,
+  selectedJobForQuestions,
   nextStep,
   routeFor,
   SGMY_COUNTRY_CHOICES,
@@ -782,7 +783,12 @@ console.log('\ntrade questions (§8)');
 
 await check('a welder gets welding questions and no others', () => {
   const c = candidate({
-    profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding' },
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
+      desiredOccupation: 'TIG welder',
+    },
     fieldMeta: { primaryTrade: { source: 'chat', raw: 'I am a TIG welder', at: new Date() } },
   });
   assert.deepEqual(inferTradePacks(c), ['welder']);
@@ -790,7 +796,12 @@ await check('a welder gets welding questions and no others', () => {
 
 await check('a fabricator gets fabrication questions', () => {
   const c = candidate({
-    profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding' },
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
+      desiredOccupation: 'structural fabrication',
+    },
     fieldMeta: { primaryTrade: { source: 'chat', raw: 'structural fabrication', at: new Date() } },
   });
   assert.deepEqual(inferTradePacks(c), ['fabricator']);
@@ -801,7 +812,12 @@ await check('tapping a category never loads a pack by keyword (§8)', () => {
   // keyword matching used to select welder AND fabricator and skip the tie-break
   // question entirely — three trade questions instead of one.
   const tapped = candidate({
-    profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding', tradeFromList: true },
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
+      tradeFromList: true,
+    },
   });
   assert.equal(inferTradePacks(tapped), undefined, 'must not infer from a tapped category');
   assert.equal(stepById('trade_disambiguation')!.when!(tapped), true, 'must ask which one');
@@ -811,6 +827,7 @@ await check('tapping a category never loads a pack by keyword (§8)', () => {
     profile: {
       lookingForOverseasJob: true,
       primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
       currentOccupation: 'TIG welder',
     },
   });
@@ -818,9 +835,41 @@ await check('tapping a category never loads a pack by keyword (§8)', () => {
   assert.equal(stepById('trade_disambiguation')!.when!(typed), false);
 });
 
+await check('a category label is never treated as trade evidence (§8)', () => {
+  // Some older WhatsApp deliveries retained the button title but not the fact
+  // that it was tapped. The title itself must still not activate both packs.
+  const legacyTap = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
+      tradeFromList: false,
+      // Already persisted by the older inference. The fix must protect these
+      // in-progress records too, not only prevent new bad writes.
+      tradePacks: ['welder', 'fabricator'],
+    },
+    fieldMeta: {
+      jobCategory: {
+        source: 'chat',
+        raw: 'Fabrication / Welding',
+        at: new Date(),
+      },
+    },
+  });
+
+  assert.equal(inferTradePacks(legacyTap), undefined);
+  assert.equal(stepById('trade_disambiguation')!.when!(legacyTap), true);
+  assert.equal(stepById('trade:welder:welding_process')!.when!(legacyTap), false);
+});
+
 await check('only the explicit choice loads a pack (§8)', () => {
   const chosen = candidate({
-    profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding', tradeFromList: true },
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
+      tradeFromList: true,
+    },
   });
   const step = stepById('trade_disambiguation')!;
   assert.deepEqual(step.apply!({ ids: ['welding'] }, chosen).tradePacks, ['welder']);
@@ -849,22 +898,71 @@ await check('a typed answer is stored, not discarded and re-asked (§7)', () => 
 });
 
 await check('an ambiguous answer asks one question rather than guessing', () => {
-  const c = candidate({ profile: { lookingForOverseasJob: true, primaryTrade: 'fabrication_welding' } });
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
+    },
+  });
   assert.equal(inferTradePacks(c), undefined);
   assert.equal(stepById('trade_disambiguation')!.when!(c), true);
 });
 
 await check('a hospitality candidate gets no trade questions at all', () => {
-  const c = candidate({ profile: { lookingForOverseasJob: true, primaryTrade: 'hospitality' } });
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'hospitality',
+      jobCategory: 'hospitality',
+    },
+  });
   assert.deepEqual(inferTradePacks(c), []);
 });
 
 await check('a driver is never asked about welding', () => {
   const c = candidate({
-    profile: { lookingForOverseasJob: true, primaryTrade: 'driver_operator', tradePacks: ['driver'] },
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'driver_operator',
+      jobCategory: 'driver_operator',
+      currentOccupation: 'truck driver',
+      tradePacks: ['driver'],
+      tradePacksFor: 'driver_operator',
+    },
   });
   assert.equal(stepById('trade:welder:welding_process')!.when!(c), false);
   assert.equal(stepById('trade:driver:driver_vehicles')!.when!(c), true);
+});
+
+await check('a stale pack id cannot activate a question for another trade', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'hospitality',
+      jobCategory: 'hospitality',
+      tradePacks: ['welder'],
+    },
+  });
+
+  assert.equal(stepById('trade:welder:welding_process')!.when!(c), false);
+});
+
+await check('specialist questions follow the selected job, not the current job', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'fabrication_welding',
+      currentOccupation: 'TIG welder',
+      jobCategory: 'hospitality',
+      tradePacks: ['welder'],
+      tradePacksFor: 'fabrication_welding',
+    },
+  });
+
+  assert.equal(selectedJobForQuestions(c), 'Hospitality');
+  assert.deepEqual(inferTradePacks(c), []);
+  assert.equal(stepById('trade:welder:welding_process')!.when!(c), false);
 });
 
 /* ------------------------------------------------------------------ */
@@ -1889,6 +1987,7 @@ await check('machinery on the CV picks the trade pack without asking (§8)', () 
     profile: {
       lookingForOverseasJob: true,
       primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
       machinery: ['TIG', 'MIG'],
     },
   });
@@ -2024,6 +2123,7 @@ await check('the trade vocabulary also picks the right question packs', () => {
     profile: {
       lookingForOverseasJob: true,
       primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
       currentOccupation: 'Planning & Production Manager',
       skills: ['Welding Procedures (SMAW/GTAW/GMAW/SAW)', 'PWHT'],
       certifications: ['ASNT Level-II in PT, MPT, UT & RT'],
@@ -2036,7 +2136,9 @@ await check('the trade vocabulary also picks the right question packs', () => {
 
 await check('a generic job title alone loads no specialist pack', () => {
   const { patch } = extractFromCv([cvField('designation', 'Production Manager')]);
-  const c = candidate({ profile: { lookingForOverseasJob: true, ...patch } });
+  const c = candidate({
+    profile: { lookingForOverseasJob: true, ...patch, jobCategory: 'factory_warehouse' },
+  });
 
   // The title is still read as factory/warehouse, which is a fair reading of it
   // and one the candidate can correct at the summary. What must not happen is
@@ -2052,7 +2154,12 @@ await check('"operator" alone does not make someone a CNC machinist (§8)', () =
   // someone works a machine of some kind.
   for (const job of ['JCB operator', 'crane operator', 'forklift operator', 'boiler operator']) {
     const c = candidate({
-      profile: { lookingForOverseasJob: true, primaryTrade: 'driver_operator', currentOccupation: job },
+      profile: {
+        lookingForOverseasJob: true,
+        primaryTrade: 'driver_operator',
+        jobCategory: 'driver_operator',
+        currentOccupation: job,
+      },
     });
     assert.deepEqual(inferTradePacks(c), [], `${job} should load no CNC pack`);
   }
@@ -2060,7 +2167,12 @@ await check('"operator" alone does not make someone a CNC machinist (§8)', () =
   // And a machinist still gets it, which is the point of the pack.
   for (const job of ['CNC operator', 'VMC setter', 'lathe machinist']) {
     const c = candidate({
-      profile: { lookingForOverseasJob: true, primaryTrade: 'driver_operator', currentOccupation: job },
+      profile: {
+        lookingForOverseasJob: true,
+        primaryTrade: 'driver_operator',
+        jobCategory: 'driver_operator',
+        currentOccupation: job,
+      },
     });
     assert.deepEqual(inferTradePacks(c), ['cnc_operator'], `${job} should load the CNC pack`);
   }
@@ -2073,6 +2185,7 @@ await check('a pack keyword is a word, not a run of letters inside one (§8)', (
     profile: {
       lookingForOverseasJob: true,
       primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
       currentOccupation: 'migrant worker since March',
     },
   });
@@ -2085,6 +2198,7 @@ await check('a pack keyword is a word, not a run of letters inside one (§8)', (
     profile: {
       lookingForOverseasJob: true,
       primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
       currentOccupation: 'MIG welder',
     },
   });
@@ -2127,7 +2241,11 @@ await check('one candidate pack is not evidence for that pack', () => {
   // factory_warehouse is served by exactly one pack. That used to be taken as
   // "nothing to choose between", and the pack was loaded with no support at all.
   const c = candidate({
-    profile: { lookingForOverseasJob: true, primaryTrade: 'factory_warehouse' },
+    profile: {
+      lookingForOverseasJob: true,
+      primaryTrade: 'factory_warehouse',
+      jobCategory: 'factory_warehouse',
+    },
   });
   assert.deepEqual(inferTradePacks(c), []);
 });
@@ -2137,6 +2255,7 @@ await check('tapping Fabrication / Welding asks which, rather than loading both'
     profile: {
       lookingForOverseasJob: true,
       primaryTrade: 'fabrication_welding',
+      jobCategory: 'fabrication_welding',
       tradeFromList: true,
     },
   });
@@ -2525,8 +2644,8 @@ await check('the flow runs in the order the protocol lays out', () => {
     'cv',
     'full_name',
     'main_trade',
-    'trade_disambiguation',
     'job_category',
+    'trade_disambiguation',
     'passport_status',
     'aadhaar_upload',
     'pan_upload',

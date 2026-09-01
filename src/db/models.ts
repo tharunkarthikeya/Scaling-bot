@@ -198,13 +198,15 @@ export interface CandidateProfile {
   lookingForOverseasJob?: boolean;
   /** Trade question packs selected for this candidate (§8). */
   tradePacks?: string[];
+  /** The selected job category those packs belong to. */
+  tradePacksFor?: string;
   /**
    * Questions written for a job no pack covers (§8), stored before they are
    * asked so what the candidate was asked is on the record next to what they
    * answered. See `conversation/tradeQuestions.ts` for the fence around them.
    */
   tradeQuestions?: GeneratedQuestion[];
-  /** The occupation those questions were written for, so a change rewrites them. */
+  /** The selected job those questions were written for, so a change rewrites them. */
   tradeQuestionsFor?: string;
   /**
    * The screening questions the CRM has attached to the job this candidate
