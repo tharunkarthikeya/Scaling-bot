@@ -2706,6 +2706,21 @@ await check('what a document says is never asked as a question (§1, §5)', () =
   assert.equal(stepById('passport_status')!.satisfied(c), true);
 });
 
+await check('a passport uses given names as the candidate name, never the surname', () => {
+  const patch = profileFromIdentityDocument('passport', [
+    { key: 'surname', value: 'KUMARI', confidence: 0.97 },
+    { key: 'given_names', value: 'ASHA DEVI', confidence: 0.97 },
+    { key: 'passport_number', value: 'Z1234567', confidence: 0.97 },
+  ]);
+
+  assert.equal(patch.fullName, 'ASHA DEVI');
+
+  const surnameOnly = profileFromIdentityDocument('passport', [
+    { key: 'surname', value: 'KUMARI', confidence: 0.97 },
+  ]);
+  assert.equal(surnameOnly.fullName, undefined);
+});
+
 await check('a promised passport does not count as a passport', () => {
   // `documentOnFile`, not `documentSatisfied`. Someone who said "I don't have
   // one" has answered the upload question without giving us a document, and is

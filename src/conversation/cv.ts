@@ -680,7 +680,18 @@ export function identityFromDocument(ocrFields: OcrField[]): {
   };
 
   return {
-    name: pick('name', 'fullname', 'givenname', 'surname', 'holdername'),
+    // Passport MRZ extractors normally return `given_names` and `surname`
+    // separately. Candidate-facing records use the given name; a missing
+    // plural alias previously made this fall through to the surname.
+    name: pick(
+      'givennames',
+      'givenname',
+      'firstname',
+      'forenames',
+      'name',
+      'fullname',
+      'holdername',
+    ),
     dateOfBirth: normaliseDate(pick('dateofbirth', 'dob', 'birthdate')),
     fatherName: pick('fathername', 'fathersname', 'guardianname'),
     number: pick('passportnumber', 'documentnumber', 'aadhaarnumber', 'aadharnumber', 'pannumber', 'number'),
