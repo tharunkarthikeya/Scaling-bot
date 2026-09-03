@@ -206,6 +206,42 @@ Every line should read `ok`. It checks, in order: shadow mode, MongoDB
 connectivity and writability, storage, the Anthropic key, the OCR service, the
 WhatsApp token and number, and whether Meta has an app subscribed.
 
+### One-time WhatsApp Business App Coexistence onboarding
+
+Use this only when an existing number must stay active in the WhatsApp Business
+mobile app while the bot also uses Cloud API. Add the phone-number ID to
+`WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS`, then temporarily set:
+
+```text
+WHATSAPP_APP_ID=<Meta app id>
+WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID=<Facebook Login for Business configuration id>
+ADMIN_API_KEY=<private value of at least 16 characters>
+```
+
+In Facebook Login for Business settings, allow the production domain for the
+JavaScript SDK and add this exact HTTPS redirect URI:
+
+```text
+https://<your-domain>/whatsapp/coexistence
+```
+
+In **WhatsApp > Configuration > Webhook fields**, keep `messages` subscribed
+and also subscribe to `account_update`, `history`, `smb_app_state_sync`, and
+`smb_message_echoes` before starting Coexistence onboarding.
+
+Deploy, visit that URL, and use HTTP Basic username `admin` with
+`ADMIN_API_KEY` as the password. Click **Connect with Facebook**, choose the
+existing WhatsApp Business app option, and finish the confirmation in the
+mobile app. A successful result must report that the runtime token can access
+the number. The server subscribes the returned WABA to this Meta app; no new
+WABA environment variable is needed.
+
+After onboarding and a successful real message test, remove
+`WHATSAPP_APP_ID` and `WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` and redeploy. That
+removes the onboarding routes. Do not call `/{phone-number-id}/register` for a
+Business App Coexistence number; Meta completes registration inside Embedded
+Signup.
+
 ### The one-off Aadhaar migration
 
 Run once per deployment, from the same container. An earlier build spelled the

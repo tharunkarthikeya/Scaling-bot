@@ -28,6 +28,11 @@ import {
   staffPhoneToE164,
 } from './staff/notify.js';
 import { verifySignature } from './whatsapp/signature.js';
+import {
+  coexistencePage,
+  parseCoexistenceCompletion,
+  validOnboardingAuthorization,
+} from './whatsapp/coexistence.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import {
   MediaTooLargeError,
@@ -255,6 +260,38 @@ await check('rejects a missing signature', () => {
 /* ------------------------------------------------------------------ */
 
 console.log('\nwebhook parsing');
+
+await check('the protected coexistence page exposes ids but no credential', () => {
+  const page = coexistencePage('APP123', 'CONFIG456', 'NONCE');
+  assert.ok(page.includes('APP123'));
+  assert.ok(page.includes('CONFIG456'));
+  assert.ok(page.includes('whatsapp_business_app_onboarding'));
+  assert.ok(page.includes("sessionInfoVersion:'3'"));
+  assert.ok(!page.includes(config.WHATSAPP_APP_SECRET));
+  assert.ok(!page.includes(config.WHATSAPP_ACCESS_TOKEN));
+});
+
+await check('coexistence completion accepts Meta results with or without a phone id', () => {
+  assert.deepEqual(
+    parseCoexistenceCompletion({ code: 'short-code', wabaId: '123', phoneNumberId: '456' }),
+    { code: 'short-code', wabaId: '123', phoneNumberId: '456' },
+  );
+  assert.deepEqual(parseCoexistenceCompletion({ code: 'short-code', wabaId: '123' }), {
+    code: 'short-code',
+    wabaId: '123',
+  });
+  assert.equal(
+    parseCoexistenceCompletion({ code: 'x', wabaId: '../bad', phoneNumberId: '456' }),
+    undefined,
+  );
+});
+
+await check('coexistence Basic auth requires admin and compares the whole key', () => {
+  const header = `Basic ${Buffer.from('admin:a-long-private-key').toString('base64')}`;
+  assert.equal(validOnboardingAuthorization(header, 'a-long-private-key'), true);
+  assert.equal(validOnboardingAuthorization(header, 'a-long-private-keY'), false);
+  assert.equal(validOnboardingAuthorization(undefined, 'a-long-private-key'), false);
+});
 
 const envelope = (message: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
   object: 'whatsapp_business_account',

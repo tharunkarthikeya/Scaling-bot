@@ -92,6 +92,9 @@ const schema = z.object({
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
   WHATSAPP_ACCESS_TOKEN: z.string().min(1),
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
+  /** Public ids for the protected, one-time Coexistence onboarding page. */
+  WHATSAPP_APP_ID: blankable(z.string().regex(/^\d+$/).optional()),
+  WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: blankable(z.string().regex(/^\d+$/).optional()),
   /**
    * The agency's second WhatsApp number.
    *
@@ -731,6 +734,20 @@ const schema = z.object({
   .superRefine((env, ctx) => {
     const missing = (path: string, message: string) =>
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+
+    if (!!env.WHATSAPP_APP_ID !== !!env.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID) {
+      missing(
+        env.WHATSAPP_APP_ID ? 'WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID' : 'WHATSAPP_APP_ID',
+        'must be set together to enable the protected WhatsApp Coexistence onboarding page',
+      );
+    }
+
+    if (env.WHATSAPP_APP_ID && !env.ADMIN_API_KEY) {
+      missing(
+        'ADMIN_API_KEY',
+        'required when WhatsApp Embedded Signup is enabled; it protects the onboarding page',
+      );
+    }
 
     // Two numbers, or one. Set to the same id, the second entry is not a second
     // number at all: `doctor` would report one line twice and call it a healthy

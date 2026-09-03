@@ -27,6 +27,12 @@ import { captureAttachment } from './ingestion/whatsapp.js';
 import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
 import { record, renderMetrics } from './metrics/index.js';
 import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
+import {
+  coexistencePage,
+  completeCoexistence,
+  parseCoexistenceCompletion,
+  validOnboardingAuthorization,
+} from './whatsapp/coexistence.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -111,6 +117,66 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     instance: instanceId,
     shadowMode: config.SHADOW_MODE,
   }));
+
+  /* One-time WhatsApp Business App -> Cloud API Coexistence onboarding. */
+  if (
+    servesWebhook &&
+    config.WHATSAPP_APP_ID &&
+    config.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID &&
+    config.ADMIN_API_KEY
+  ) {
+    const appId = config.WHATSAPP_APP_ID;
+    const embeddedSignupConfigurationId = config.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID;
+    const authenticateOnboarding = (authorization: string | undefined) =>
+      validOnboardingAuthorization(authorization, config.ADMIN_API_KEY);
+
+    app.get('/whatsapp/coexistence', async (req, res) => {
+      if (!authenticateOnboarding(req.headers.authorization)) {
+        return res
+          .header('WWW-Authenticate', 'Basic realm="WhatsApp onboarding", charset="UTF-8"')
+          .code(401)
+          .send('Authentication required');
+      }
+
+      const nonce = crypto.randomBytes(18).toString('base64');
+      return res
+        .headers({
+          'Cache-Control': 'no-store',
+          'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+          'Content-Security-Policy':
+            `default-src 'none'; script-src 'nonce-${nonce}' https://connect.facebook.net; ` +
+            `style-src 'nonce-${nonce}'; connect-src 'self' https://*.facebook.com; ` +
+            `frame-src https://*.facebook.com; img-src data:; base-uri 'none'; form-action 'none'`,
+          'Referrer-Policy': 'no-referrer',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Frame-Options': 'DENY',
+        })
+        .type('text/html; charset=utf-8')
+        .send(
+          coexistencePage(
+            appId,
+            embeddedSignupConfigurationId,
+            nonce,
+          ),
+        );
+    });
+
+    app.post('/whatsapp/coexistence/complete', async (req, res) => {
+      if (!authenticateOnboarding(req.headers.authorization)) {
+        return res.code(401).send({ error: 'Authentication required' });
+      }
+      const input = parseCoexistenceCompletion(req.body);
+      if (!input) return res.code(400).send({ error: 'Invalid Embedded Signup result' });
+
+      try {
+        return await completeCoexistence(input);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Coexistence setup failed';
+        logger.warn({ phoneNumberId: input.phoneNumberId, err: message }, 'coexistence setup failed');
+        return res.code(502).send({ error: message });
+      }
+    });
+  }
 
   if (config.METRICS_ENABLED) {
     app.get('/metrics', async (req, res) => {
