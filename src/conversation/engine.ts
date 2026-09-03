@@ -115,7 +115,7 @@ import { DOCUMENTS, requirementFor, TUNABLES } from './rules.js';
 import { disambiguationFor, packById, type TradeQuestion } from './trades.js';
 import { questionsForOccupation } from './tradeQuestions.js';
 import { classifyJobLevel } from './jobLevel.js';
-import { warnOnLineChange } from './lines.js';
+import { activeLineFor, logLineChange } from './lines.js';
 import { transcribe } from './audio.js';
 import { purgeCandidateData } from '../privacy/purge.js';
 
@@ -219,7 +219,7 @@ export async function getOrCreateCandidate(params: {
   waId: string;
   phone: string;
   profileName?: string;
-  /** The number it arrived on. Only ever read when the record is created. */
+  /** The number it arrived on. It becomes the active outbound line. */
   phoneNumberId?: string;
 }): Promise<{ candidate: CandidateDoc; created: boolean }> {
   // Both stores. A business contact's record has moved out of `candidates`, and
@@ -234,13 +234,24 @@ export async function getOrCreateCandidate(params: {
       );
       existing.profileName = params.profileName;
     }
-    // One person, one record, one line. A message on the other number is
-    // answered on the line this conversation belongs to, and logged.
-    warnOnLineChange({
+    // One person remains one record, but the reply must leave from the number
+    // they just messaged or it appears in another thread (and may be outside
+    // that line's 24-hour customer-service window).
+    logLineChange({
       waId: existing.waId,
       recorded: existing.phoneNumberId,
       arrivedOn: params.phoneNumberId,
     });
+    const activeLine = activeLineFor(existing.phoneNumberId, params.phoneNumberId);
+    if (activeLine !== existing.phoneNumberId) {
+      const updatedAt = new Date();
+      await recordsFor(existing.enquiry).updateOne(
+        { _id: existing._id },
+        { $set: { phoneNumberId: activeLine, updatedAt } },
+      );
+      existing.phoneNumberId = activeLine;
+      existing.updatedAt = updatedAt;
+    }
 
     // Backfill for records written before a field or document existed.
     existing.documents = withMissingSlots(existing.documents);

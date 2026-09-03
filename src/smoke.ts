@@ -132,7 +132,12 @@ import { OTHER_CHOICES, REMINDER_CHOICES, RESUME_CHOICES } from './conversation/
 import * as copy from './conversation/copy.js';
 import { assignableFor, idempotencyKeyFor, toCrmPayload } from './crm/mapping.js';
 import { syncModeFor } from './crm/sync.js';
-import { accessTokenFor, configuredLines, webhookSecrets } from './conversation/lines.js';
+import {
+  accessTokenFor,
+  activeLineFor,
+  configuredLines,
+  webhookSecrets,
+} from './conversation/lines.js';
 import { staffNoticeKey } from './db/models.js';
 import { cvSectionFrom, jobSectionOf } from './crm/snapshot.js';
 import {
@@ -6881,6 +6886,12 @@ await check('an alert with missing CRM fields still has three sendable values', 
 /* ------------------------------------------------------------------ */
 
 console.log('\none candidate across five or six company numbers');
+
+await check('a reply follows the number the latest message arrived on', () => {
+  assert.equal(activeLineFor('MAIN-LINE', 'NEW-LINE'), 'NEW-LINE');
+  assert.equal(activeLineFor('MAIN-LINE', undefined), 'MAIN-LINE');
+  assert.equal(activeLineFor(undefined, 'NEW-LINE'), 'NEW-LINE');
+});
 
 await check('the idempotency key does not vary by line', () => {
   // The claim the whole feature rests on. The agency's numbers are sending

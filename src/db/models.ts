@@ -464,9 +464,9 @@ export interface CandidateDoc {
   /**
    * Which of the agency's numbers this conversation belongs to.
    *
-   * Meta's `phone_number_id` for the line the first message arrived on. Kept
-   * because a reply has to leave from the number the candidate wrote to, and
-   * the reminder and idle-session sweeps send outside any inbound context and
+   * Meta's `phone_number_id` for the line the latest message arrived on. Kept
+   * because a reply has to leave from the number the candidate just wrote to,
+   * and reminder/idle-session sweeps send outside any inbound context and
    * would otherwise have nothing to send from. Absent on every record written
    * before there was a second number, which `sendingNumberFor` reads as the
    * main one.

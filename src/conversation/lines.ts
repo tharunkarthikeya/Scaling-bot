@@ -24,12 +24,11 @@
  *  A LINE IS A SENDING IDENTITY. IT IS NOT A CANDIDATE IDENTITY.
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * A conversation is stamped with its number when its record is created and
- * keeps it. The record is keyed on `waId` — the number the *candidate* is
- * holding — so one person writing to three of these numbers has one record, and
- * it belongs to whichever they wrote to first. Nothing downstream may key on
- * the line either: see `idempotencyKeyFor` in `crm/mapping.ts`, which is what
- * makes that true of the CRM as well.
+ * A conversation remembers the number used by its latest inbound message. The
+ * record is keyed on `waId` — the number the *candidate* is holding — so one
+ * person writing to three of these numbers still has one record. Nothing
+ * downstream may key on the line either: see `idempotencyKeyFor` in
+ * `crm/mapping.ts`, which is what makes that true of the CRM as well.
  */
 
 import { config } from '../config.js';
@@ -49,6 +48,20 @@ import { logger } from '../logger.js';
  */
 export function sendingNumberFor(phoneNumberId: string | undefined): string {
   return phoneNumberId || config.WHATSAPP_PHONE_NUMBER_ID;
+}
+
+/**
+ * The sending identity to remember after an inbound message.
+ *
+ * A real webhook supplies `arrivedOn`, so the candidate sees the reply in the
+ * thread they just used. Legacy or hand-written events without that metadata
+ * retain the recorded line instead of silently moving to the main number.
+ */
+export function activeLineFor(
+  recorded: string | undefined,
+  arrivedOn: string | undefined,
+): string | undefined {
+  return arrivedOn || recorded;
 }
 
 /**
@@ -159,16 +172,13 @@ export function secondLineConfigured(): boolean {
 }
 
 /**
- * Warns when a conversation's number and the number a message arrived on
- * disagree.
+ * Records when a conversation moves to the number a message arrived on.
  *
- * It means one person has written to more than one of them. There is one record
- * per `waId` and it keeps the number it started on — nothing about the questions
- * turns on that any more, because every number runs the same flow, but the reply
- * still leaves from a number that is not the one they last wrote to, and that is
- * worth a log line.
+ * It means one person has written to more than one of them. There is still one
+ * record per `waId`, and nothing about the questions turns on the line because
+ * every number runs the same flow. Only the outbound sending identity changes.
  */
-export function warnOnLineChange(params: {
+export function logLineChange(params: {
   waId: string;
   recorded: string | undefined;
   arrivedOn: string | undefined;
@@ -176,9 +186,8 @@ export function warnOnLineChange(params: {
   if (!params.recorded || !params.arrivedOn) return;
   if (params.recorded === params.arrivedOn) return;
 
-  logger.warn(
+  logger.info(
     { waId: params.waId, recordedLine: params.recorded, arrivedOn: params.arrivedOn },
-    'message arrived on a different number from the one this conversation belongs to; ' +
-      'keeping the recorded line and its flow',
+    'candidate messaged a different bot number; moving replies to the active thread',
   );
 }
