@@ -10,6 +10,7 @@ import { processOcrJob, sweepRunningExtractions } from './ocr/veris.js';
 import { reconcileCrmSync, syncCandidateToCrm } from './crm/sync.js';
 import { exportToAts } from './ats/export.js';
 import { ensureAtsCollections } from './ats/client.js';
+import { refreshSourcingContactNumbers } from './ats/sourcingGuard.js';
 import { TAXONOMY_REFRESH_MS, refreshTaxonomy } from './crm/taxonomy.js';
 import { buildServer } from './server.js';
 import { describePlan, planFor } from './roles.js';
@@ -153,6 +154,13 @@ async function main(): Promise<void> {
   // an ATS that cannot be prepared is a failed export, not a bot that refuses
   // to answer anybody.
   await ensureAtsCollections();
+  if (plan.webhook && config.RESUME_ATS_DB) {
+    // Fail closed. Serving the webhook without this directory loaded could
+    // start candidate automation for an agent/client/associate already present
+    // in Sourcing Hub.
+    const sourcingNumbers = await refreshSourcingContactNumbers();
+    logger.info({ sourcingNumbers }, 'sourcing contact directory loaded for inbound suppression');
+  }
   await ensureStorageRoot();
 
   const nationalityPurge = await purgeExistingNationalityRefusals();

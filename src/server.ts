@@ -27,6 +27,7 @@ import { captureAttachment } from './ingestion/whatsapp.js';
 import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
 import { record, renderMetrics } from './metrics/index.js';
 import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
+import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import {
   coexistencePage,
   completeCoexistence,
@@ -234,6 +235,18 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const { messages: inbound, statuses } = parseWebhook(req.body);
 
     for (const msg of inbound) {
+      // Sourcing Hub contacts are business-side users, never candidates. Check
+      // before claiming, recording or downloading anything. If the shared ATS
+      // cannot be checked this throws before `claimEvent`, leaving Meta free to
+      // retry instead of starting the wrong workflow.
+      if (await isSourcingWhatsAppNumber(msg.waId)) {
+        logger.info(
+          { waId: msg.waId, wamid: msg.wamid },
+          'sourcing contact inbound ignored before bot workflow',
+        );
+        continue;
+      }
+
       // Meta retries deliveries. Without this claim, a retry re-runs the whole
       // turn and the candidate is asked for the same document twice.
       const fresh = await claimEvent(msg.wamid);

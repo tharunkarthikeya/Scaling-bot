@@ -118,6 +118,7 @@ import { classifyJobLevel } from './jobLevel.js';
 import { activeLineFor, logLineChange } from './lines.js';
 import { transcribe } from './audio.js';
 import { purgeCandidateData } from '../privacy/purge.js';
+import { isSourcingWhatsAppNumber } from '../ats/sourcingGuard.js';
 
 /** Meta's customer service window. Outside it, only approved templates may be sent. */
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -2795,6 +2796,17 @@ export async function handleInboundMessage(payload: {
   const msg = await findTurn(payload.wamid, 'inbound');
   if (!msg) {
     logger.warn({ wamid: payload.wamid }, 'inbound job for unknown message');
+    return;
+  }
+
+  // The webhook performs this before it stores or queues anything. Keep the
+  // same guard here for jobs that were already queued when a number was added
+  // to Sourcing Hub, or when a deployment changed underneath the queue.
+  if (await isSourcingWhatsAppNumber(payload.waId)) {
+    logger.info(
+      { waId: payload.waId, wamid: payload.wamid },
+      'queued sourcing contact inbound ignored before bot workflow',
+    );
     return;
   }
 
