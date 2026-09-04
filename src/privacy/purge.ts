@@ -30,6 +30,11 @@ export interface ExistingNationalityPurgeResult extends PurgeResult {
   candidates: number;
 }
 
+export interface CrmCandidatePurgeResult extends PurgeResult {
+  removed: boolean;
+  waId?: string;
+}
+
 export async function purgeCandidateData(waId: string): Promise<PurgeResult> {
   const [candidateDocs, businessDocs, sessions, ingestion] = await Promise.all([
     storedDocuments().findOne({ waId }),
@@ -71,6 +76,33 @@ export async function purgeCandidateData(waId: string): Promise<PurgeResult> {
   }
 
   return { storageObjects: storageKeys.size, storageFailures };
+}
+
+/**
+ * Remove the WhatsApp-side record linked to one candidate deleted in the CRM.
+ *
+ * Matching on the CRM id rather than on a phone number is the safety boundary:
+ * a number can be reused and a candidate can be recreated, while this callback
+ * may arrive late. Only the registration that produced the deleted CRM row is
+ * eligible for removal.
+ */
+export async function purgeCrmCandidateData(candidateId: string): Promise<CrmCandidatePurgeResult> {
+  const crmId = candidateId.trim();
+  if (!crmId) return { removed: false, storageObjects: 0, storageFailures: 0 };
+
+  const candidate = await candidates().findOne(
+    { 'crmSync.candidateId': crmId },
+    { projection: { waId: 1 } },
+  );
+  const waId = typeof candidate?.waId === 'string' ? candidate.waId : '';
+  if (!waId) return { removed: false, storageObjects: 0, storageFailures: 0 };
+
+  const result = await purgeCandidateData(waId);
+  logger.info(
+    { candidateId: crmId, waId, ...result },
+    'purged WhatsApp registration after CRM candidate deletion',
+  );
+  return { removed: true, waId, ...result };
 }
 
 /** Removes records retained by releases that used to keep nationality refusals. */

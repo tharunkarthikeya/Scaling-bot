@@ -28,6 +28,7 @@ import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './inge
 import { record, renderMetrics } from './metrics/index.js';
 import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
+import { purgeCrmCandidateData } from './privacy/purge.js';
 import {
   coexistencePage,
   completeCoexistence,
@@ -410,6 +411,21 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         ...(staffCode ? { staffCode } : {}),
         ...(enquiry ? { enquiry } : {}),
       });
+    });
+
+    /**
+     * The CRM permanently deleted a candidate. Remove the bot-side registration
+     * tied to that exact CRM id so the same person can register again later.
+     * Email/manual candidates have no matching bot record and are a harmless
+     * ``removed=false`` response.
+     */
+    app.post('/api/candidate-deleted', async (req, res) => {
+      const body = (req.body ?? {}) as { candidate_id?: unknown };
+      const candidateId = typeof body.candidate_id === 'string' ? body.candidate_id.trim() : '';
+      if (!candidateId) {
+        return res.code(400).send({ error: 'candidate_id is required' });
+      }
+      return purgeCrmCandidateData(candidateId);
     });
 
     /**
