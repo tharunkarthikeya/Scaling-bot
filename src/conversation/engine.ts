@@ -119,6 +119,7 @@ import { activeLineFor, logLineChange } from './lines.js';
 import { transcribe } from './audio.js';
 import { purgeCandidateData } from '../privacy/purge.js';
 import { isSourcingWhatsAppNumber } from '../ats/sourcingGuard.js';
+import { isBotSuppressedNumber } from '../crm/suppression.js';
 
 /** Meta's customer service window. Outside it, only approved templates may be sent. */
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -2801,6 +2802,16 @@ export async function handleInboundMessage(payload: {
   const msg = await findTurn(payload.wamid, 'inbound');
   if (!msg) {
     logger.warn({ wamid: payload.wamid }, 'inbound job for unknown message');
+    return;
+  }
+
+  // Re-check queued work: the administrator may have added this number after
+  // the webhook accepted it but before a worker began the conversation.
+  if (await isBotSuppressedNumber(payload.waId)) {
+    logger.info(
+      { waId: payload.waId, wamid: payload.wamid },
+      'queued CRM bot-suppressed inbound ignored before bot workflow',
+    );
     return;
   }
 

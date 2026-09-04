@@ -266,6 +266,30 @@ export async function fetchAdminContacts(): Promise<CrmStaffContact[]> {
   return body?.contacts ?? [];
 }
 
+/**
+ * Numbers the CRM administrator has explicitly excluded from bot automation.
+ *
+ * Unlike informational CRM reads, failure is not converted to an empty list:
+ * an empty list would mean "allow everyone" and could start a candidate flow
+ * for a contact the administrator deliberately suppressed.
+ */
+export async function fetchBotSuppressionNumbers(): Promise<string[]> {
+  if (!crmConfigured()) return [];
+
+  const res = await fetch(url('/bot-suppression-directory'), {
+    headers: headers(),
+    signal: AbortSignal.timeout(config.CRM_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`CRM bot suppression directory returned ${res.status}`);
+  }
+  const body = (await res.json()) as { numbers?: unknown };
+  if (!Array.isArray(body.numbers)) {
+    throw new Error('CRM bot suppression directory returned an invalid response');
+  }
+  return body.numbers.filter((value): value is string => typeof value === 'string');
+}
+
 /** Submits one finished registration. Safe to call again with the same payload. */
 export async function createCandidate(
   payload: CrmCandidatePayload,

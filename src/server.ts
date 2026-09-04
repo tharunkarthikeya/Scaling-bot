@@ -28,6 +28,7 @@ import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './inge
 import { record, renderMetrics } from './metrics/index.js';
 import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
+import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
 import {
   coexistencePage,
@@ -236,6 +237,17 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const { messages: inbound, statuses } = parseWebhook(req.body);
 
     for (const msg of inbound) {
+      // CRM Data Management owns one deny-list for every connected bot line.
+      // Check before the event is claimed or the inbound turn is persisted, so
+      // a suppressed contact leaves no candidate workflow state behind.
+      if (await isBotSuppressedNumber(msg.waId)) {
+        logger.info(
+          { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
+          'CRM bot-suppressed inbound ignored before bot workflow',
+        );
+        continue;
+      }
+
       // Sourcing Hub contacts are business-side users, never candidates. Check
       // before claiming, recording or downloading anything. If the shared ATS
       // cannot be checked this throws before `claimEvent`, leaving Meta free to

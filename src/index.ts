@@ -11,6 +11,8 @@ import { reconcileCrmSync, syncCandidateToCrm } from './crm/sync.js';
 import { exportToAts } from './ats/export.js';
 import { ensureAtsCollections } from './ats/client.js';
 import { refreshSourcingContactNumbers } from './ats/sourcingGuard.js';
+import { crmConfigured } from './crm/client.js';
+import { refreshBotSuppressionNumbers } from './crm/suppression.js';
 import { TAXONOMY_REFRESH_MS, refreshTaxonomy } from './crm/taxonomy.js';
 import { buildServer } from './server.js';
 import { describePlan, planFor } from './roles.js';
@@ -148,6 +150,12 @@ async function main(): Promise<void> {
       logger.info({ remembered }, 'staff directory refreshed for inbound suppression');
     } catch (err) {
       logger.warn({ err }, 'could not refresh staff directory; assignment callbacks will backfill it');
+    }
+    if (crmConfigured()) {
+      // Fail closed: serving a webhook with an unknown suppression list could
+      // trigger automation for a number an administrator has explicitly blocked.
+      const suppressedNumbers = await refreshBotSuppressionNumbers();
+      logger.info({ suppressedNumbers }, 'CRM bot suppression directory loaded');
     }
   }
   // Only the ones that are not there yet — see `ats/client.ts`. Never throws:
