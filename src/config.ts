@@ -507,17 +507,17 @@ const schema = z.object({
    * once. The SHA-256 taken on the way in is a further ~1 ms per megabyte,
    * synchronous, inside the webhook and ahead of the acknowledgement.
    *
-   * Ten megabytes is well past what the documents this bot asks for actually
+   * Twenty megabytes is well past what the documents this bot asks for actually
    * weigh. A passport booklet photographed page by page, a CV, an Aadhaar card,
    * a trade certificate: these are hundreds of kilobytes, a few megabytes for a
-   * generous scan. A file above ten is a camera setting, not a document, and
+   * generous scan. A file above twenty is a camera setting, not a document, and
    * the candidate is better served by being told so than by a silent OOM.
    *
    * Enforced in three places, because the first two are only claims — see
    * `downloadMedia`. Raise it in the Dokploy Environment tab if a real document
    * is ever refused; there is no code change behind it.
    */
-  MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(20 * 1024 * 1024),
 
   /* ---------------------------------------------------------------- */
   /* Queue concurrency                                                 */

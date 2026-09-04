@@ -1545,7 +1545,9 @@ async function applySuccessfulExtraction(params: {
       candidateId,
       docType,
       !outcome.completeness.complete
-        ? 'incomplete'
+        ? docType === 'cv'
+          ? 'needs_review'
+          : 'incomplete'
         : outcome.needsReview
           ? 'needs_review'
           : 'ocr_done',

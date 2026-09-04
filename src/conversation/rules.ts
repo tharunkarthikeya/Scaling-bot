@@ -42,7 +42,7 @@ export interface DocumentRequirement {
    * extractor. Each is a different endpoint with a different response shape, so
    * this is a routing decision and not a hint.
    *
-   * Everything else is stored and left alone. A PAN card, a driving licence, a
+   * Everything else is stored and left alone. A driving licence, a
    * loose certificate and a company's registration certificate are all filed so
    * a person can open them; none of them answers a question the flow asks, and
    * running an identifier-bearing card through an extractor we have no use for
@@ -84,8 +84,8 @@ export interface DocumentRequirement {
 /* ─────────────────────────────────────────────────────────────────────────────
  * 1. DOCUMENTS
  *
- * The CV is asked of everyone (§5). Passport, Aadhaar and PAN are asked only in
- * the Europe/Russia branch (§13) — the flow decides that, not this list.
+ * The CV, passport and Aadhaar requirements are defined here. PAN is not
+ * collected by the bot.
  * ───────────────────────────────────────────────────────────────────────────*/
 
 export const DOCUMENTS: DocumentRequirement[] = [
@@ -159,23 +159,6 @@ export const DOCUMENTS: DocumentRequirement[] = [
     sensitive: true,
   },
   {
-    id: 'pan',
-    label: {
-      en: 'PAN card',
-      ta: 'PAN அட்டை',
-      hi: 'PAN कार्ड',
-      te: 'PAN కార్డ్',
-      ml: 'PAN കാർഡ്',
-    },
-    required: false,
-    keywords: ['pan', 'pan card', 'PAN', 'पैन'],
-    // Stored, not read. The PAN is collected on the job-application branch so
-    // it is on file for the person processing the application; nothing on it
-    // answers a question the flow asks, so it never goes to an extractor.
-    ocr: 'none',
-    sensitive: true,
-  },
-  {
     /**
      * Never asked for by the flow, and filed on its own rather than as a
      * certificate.
@@ -199,8 +182,7 @@ export const DOCUMENTS: DocumentRequirement[] = [
       'driving licence', 'driving license', 'driver licence', 'driver license',
       'dl', 'licence', 'license', 'ஓட்டுநர்', 'உரிமம்', 'ड्राइविंग', 'लाइसेंस',
     ],
-    // Stored, not read — same reasoning as the PAN above. A recruiter opens it;
-    // the bot has no question it answers.
+    // Stored, not read. A recruiter opens it; the bot has no question it answers.
     ocr: 'none',
     sensitive: true,
   },
@@ -317,23 +299,13 @@ export const DOCUMENTS: DocumentRequirement[] = [
 /* ─────────────────────────────────────────────────────────────────────────────
  * 2. WHAT MAY BE SENT TO AN EXTRACTOR
  *
- * `ocr` above is a routing decision, and for three of these slots the decision
+ * `ocr` above is a routing decision, and for several slots the decision
  * is "nowhere". That is a promise made to the candidate, not a default, so it is
  * checked at boot rather than trusted to review.
- *
- * The PAN is the one that matters most and the one most likely to be edited by
- * accident: it carries a permanent tax identifier, nothing on it answers a
- * question the flow asks, and there is no extractor built to read it. A future
- * edit that gives it an `ocr` route — copying the Aadhaar entry, say — would
- * silently start posting PAN cards to a third-party service. `validateCopy` runs
- * `assertOcrRoutingIsSafe` before the server accepts traffic, so that edit fails
- * the deploy instead.
  * ─────────────────────────────────────────────────────────────────────────────*/
 
 /** Slots that must never reach an extractor, whatever `ocr` is set to. */
 export const NEVER_OCR: ReadonlySet<string> = new Set([
-  // A permanent tax identifier, filed for a documentation officer to open.
-  'pan',
   // Read by a person when a driver's licence matters; no extractor exists for it.
   'driving_licence',
   // A company's registration certificate (§2). Filed, not read.
@@ -347,8 +319,8 @@ export const NEVER_OCR: ReadonlySet<string> = new Set([
 /**
  * Fails the boot if a slot on `NEVER_OCR` has been given a route.
  *
- * Deliberately an exception rather than a log line: a misrouted PAN is not
- * something to notice in a dashboard the week after.
+ * Deliberately an exception rather than a log line: a misrouted identity file
+ * is not something to notice in a dashboard the week after.
  */
 export function assertOcrRoutingIsSafe(): void {
   for (const id of NEVER_OCR) {

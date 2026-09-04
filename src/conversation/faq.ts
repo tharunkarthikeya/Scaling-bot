@@ -102,7 +102,7 @@ export const FAQ: FaqEntry[] = [
     id: 'documents_needed',
     asks: 'What documents do I need? Which papers should I send? Do I need to send anything else?',
     answer:
-      'Your CV to begin with. For Europe and Russia we also need your passport, Aadhaar and PAN ' +
+      'Your CV to begin with. For Europe and Russia we also need your passport and Aadhaar ' +
       'for document verification. The bot asks for each one when it is needed, so you do not ' +
       'have to send anything before it is requested.',
   },

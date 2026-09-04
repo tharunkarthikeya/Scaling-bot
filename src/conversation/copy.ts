@@ -219,14 +219,6 @@ export const AADHAAR_RECEIVED: Localised = {
   ml: 'ആധാർ കിട്ടി ✅',
 };
 
-export const PAN_RECEIVED: Localised = {
-  en: 'PAN received ✅ Thank you.',
-  ta: 'PAN கிடைத்தது ✅ நன்றி.',
-  hi: 'PAN मिल गया ✅ धन्यवाद।',
-  te: 'PAN వచ్చింది ✅ థాంక్యూ.',
-  ml: 'PAN കിട്ടി ✅ നന്ദി.',
-};
-
 /**
  * §12 — what the passport page turned out to say about its own expiry.
  *
@@ -401,7 +393,7 @@ export const FILE_FAILED: Localised = {
  * `{{limit}}` is filled with the limit in whole megabytes.
  */
 export const FILE_TOO_LARGE: Localised = {
-  en: 'That file is too large — we can accept up to {{limit}} MB. Please send a smaller version: photos of each page usually work well, or send the pages a few at a time.',
+  en: 'That file is too large. Please send a file under {{limit}} MB. Photos of each page usually work well, or send the pages a few at a time.',
   ta: 'அந்தக் கோப்பு மிகப் பெரியது — {{limit}} MB வரை மட்டுமே ஏற்க முடியும். சிறிய அளவில் அனுப்பவும்: ஒவ்வொரு பக்கத்தையும் புகைப்படமாக எடுத்து அனுப்பலாம், அல்லது பக்கங்களைச் சில சிலவாக அனுப்பலாம்.',
   hi: 'वह फ़ाइल बहुत बड़ी है — हम {{limit}} MB तक ही ले सकते हैं। कृपया छोटी फ़ाइल भेजें: हर पेज की फ़ोटो आमतौर पर ठीक रहती है, या पेज थोड़े-थोड़े करके भेजें।',
   te: 'ఆ ఫైల్ చాలా పెద్దది — మేము {{limit}} MB వరకు మాత్రమే తీసుకోగలం. దయచేసి చిన్న ఫైల్ పంపండి: ప్రతి పేజీ ఫోటో సాధారణంగా సరిపోతుంది, లేదా పేజీలను కొన్ని కొన్నిగా పంపండి.',

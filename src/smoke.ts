@@ -480,7 +480,7 @@ await check('B2B records and uploads are routed to their own collections', () =>
   for (const id of ['b2b_aadhaar_front', 'b2b_aadhaar_back', 'b2b_id_proof', 'company_registration']) {
     assert.equal(documentCollectionFor(id), 'b2b_documents');
   }
-  for (const id of ['cv', 'passport', 'aadhaar', 'pan', 'certificate']) {
+  for (const id of ['cv', 'passport', 'aadhaar', 'certificate']) {
     assert.equal(documentCollectionFor(id), 'documents');
   }
 });
@@ -592,6 +592,31 @@ await check('asks for consent before anything personal (§4)', () => {
   assert.equal(nextStep(c)?.id, 'consent');
 });
 
+await check('a CV sent before consent is kept but never bypasses consent or gets requested again', () => {
+  const c = candidate({
+    profile: {
+      lookingForOverseasJob: true,
+      countryPreference: 'gcc',
+      countryStrictness: 'prefer',
+    },
+    consent: undefined,
+  });
+  c.documents.cv = {
+    status: 'incomplete',
+    askedCount: 0,
+    documentId: new ObjectId(),
+    updatedAt: new Date(),
+  };
+
+  // The upload can arrive on message one, but consent is still question one.
+  assert.equal(nextStep(c)?.id, 'consent');
+
+  // Once consent is given, the stored bytes satisfy the CV step even if OCR
+  // read only part of them. The missing fields are asked normally.
+  c.consent = { given: true, at: new Date(), source: 'whatsapp_chat' };
+  assert.equal(nextStep(c)?.id, 'full_name');
+});
+
 await check('the destination is asked first, and the CV straight after it (§5, §10)', () => {
   // §10 is a branch point again — Singapore and Malaysia are two of its rows —
   // so it has to be answered before the step it decides.
@@ -648,22 +673,16 @@ await check('asks for a trade course only for ITI, diploma or graduate (§6)', (
   assert.equal(stepById('education_course')!.when!(iti), true);
 });
 
-await check('every candidate is asked for Aadhaar and PAN (§13)', () => {
+await check('every candidate is asked for Aadhaar but never PAN (§13)', () => {
   // This used to be gated on a Europe/Russia destination, so a Gulf candidate
   // finished registration without ever being asked for an identity document.
-  // The gate is gone: both are asked of everyone, whatever they answered at
-  // §10 and whichever route it put them on, in that order.
+  // The gate is gone: Aadhaar is asked of everyone, whatever they answered at
+  // §10 and whichever route it put them on. PAN collection is retired.
   const c = candidate({ profile: { lookingForOverseasJob: true } });
   assert.equal(stepById('aadhaar_upload')!.when, undefined, 'Aadhaar must not be conditional');
-  assert.equal(stepById('pan_upload')!.when, undefined, 'PAN must not be conditional');
-
-  const ids = STEPS.map((step) => step.id);
-  assert.ok(
-    ids.indexOf('aadhaar_upload') < ids.indexOf('pan_upload'),
-    'Aadhaar is read and PAN is not, so Aadhaar goes first',
-  );
   assert.equal(stepById('aadhaar_upload')!.satisfied(c), false);
-  assert.equal(stepById('pan_upload')!.satisfied(c), false);
+  assert.equal(stepById('pan_upload'), undefined);
+  assert.equal(requirementFor('pan'), undefined);
 });
 
 await check('the passport is asked as a question before it is asked as a file (§12)', () => {
@@ -678,7 +697,7 @@ await check('the passport is asked as a question before it is asked as a file (�
   );
 
   // Both belong to the documents section now, so one UPDATE opens all of them.
-  for (const id of ['passport_status', 'passport_upload', 'aadhaar_upload', 'pan_upload']) {
+  for (const id of ['passport_status', 'passport_upload', 'aadhaar_upload']) {
     assert.equal(stepById(id)!.section, 'documents', id);
   }
 });
@@ -2653,7 +2672,7 @@ await check('every document kind the flow can ask for has a section to live in',
   // `rules.ts`; a step asking for one that has nowhere to go would store the
   // upload and lose it.
   const kinds = DOCUMENTS.map((d) => d.id);
-  for (const id of ['cv', 'passport', 'aadhaar', 'pan', 'driving_licence', 'certificate']) {
+  for (const id of ['cv', 'passport', 'aadhaar', 'driving_licence', 'certificate']) {
     assert.ok(kinds.includes(id), `no section for "${id}"`);
   }
   for (const step of STEPS) {
@@ -2690,7 +2709,6 @@ await check('the flow runs in the order the protocol lays out', () => {
     'trade_disambiguation',
     'passport_status',
     'aadhaar_upload',
-    'pan_upload',
     'confirm',
   ];
 
@@ -3032,7 +3050,6 @@ await check('a cleaner is not asked for a CV; a welder is (§5)', () => {
       // for, which is the whole point of `aadhaar_back_upload`'s guard (§15).
       cleaner.profile.aadhaarFieldsRead = [...TUNABLES.aadhaarRequiredFields];
     }
-    else if (id === 'pan_upload') cleaner.documents.pan!.status = 'received';
     else if (id === 'confirm') cleaner.stage = 'REGISTRATION_COMPLETED';
     else throw new Error(`unexpected question for a low-skill applicant: ${id}`);
   });
@@ -3040,7 +3057,6 @@ await check('a cleaner is not asked for a CV; a welder is (§5)', () => {
     'availability',
     'passport_status',
     'aadhaar_upload',
-    'pan_upload',
     'confirm',
   ]);
 
@@ -3245,7 +3261,6 @@ await check('a staff enquiry is asked nine things, in order (§24)', () => {
       'passport_status',
       'passport_upload',
       'aadhaar_upload',
-      'pan_upload',
       'confirm',
     ],
   );
@@ -3302,9 +3317,6 @@ await check('the intake walks language → consent → name → country → job 
   assert.equal(nextStep(c)?.id, 'aadhaar_upload');
 
   c.documents.aadhaar!.status = 'ocr_done';
-  assert.equal(nextStep(c)?.id, 'pan_upload');
-
-  c.documents.pan!.status = 'received';
   assert.equal(nextStep(c)?.id, 'confirm');
 
   // Confirmed. The intake ends in a handover, not in REGISTRATION_COMPLETED, so
@@ -3324,15 +3336,15 @@ await check('somebody without a passport is not asked to photograph one', () => 
   assert.equal(nextStep(c)?.id, 'aadhaar_upload');
 });
 
-await check('the intake reads the passport and the Aadhaar, and never the PAN', () => {
+await check('the intake reads passport and Aadhaar and does not collect PAN', () => {
   // The same slots registration uses, so the routing is the same routing —
   // there is nothing configured separately here that could drift from it.
   assert.equal(requirementFor('passport')!.ocr, 'passport');
   assert.notEqual(requirementFor('aadhaar')!.ocr, 'none');
-  assert.equal(requirementFor('pan')!.ocr, 'none');
-  assert.ok(NEVER_OCR.has('pan'));
+  assert.equal(requirementFor('pan'), undefined);
+  assert.equal(stepById('pan_upload'), undefined);
 
-  for (const id of ['passport_upload', 'aadhaar_upload', 'pan_upload']) {
+  for (const id of ['passport_upload', 'aadhaar_upload']) {
     const step = STAFF_STEPS.find((s) => s.id === id)!;
     assert.ok(step.document, `${id} must file into a document slot`);
   }
@@ -3482,46 +3494,25 @@ await check('nothing is routed to an extractor the rules forbid', () => {
     assert.ok(!NEVER_OCR.has(kind), `${kind} must never be exported with an extraction`);
   }
 
-  // And the PAN specifically, which is the one this protects.
+  // PAN collection has been removed entirely.
   assert.equal(atsRouteFor('pan'), undefined, 'the PAN has no record collection');
-  assert.ok(NEVER_OCR.has('pan'));
+  assert.equal(requirementFor('pan'), undefined);
 });
 
 await check('a kind with no collection of its own is still named on the candidate', () => {
-  // The PAN, the CV, a driving licence, a loose certificate. None was asked for
+  // The CV, a driving licence and a loose certificate. None was asked for
   // as a collection; all of them are on the candidate record's document index,
   // so a documentation officer can still find the file.
-  for (const kind of ['pan', 'cv', 'driving_licence', 'certificate']) {
+  for (const kind of ['cv', 'driving_licence', 'certificate']) {
     assert.equal(atsRouteFor(kind), undefined, `${kind} should have no collection of its own`);
   }
 });
 
 console.log('\nwhat may be sent to an extractor');
 
-await check('the PAN is never routed to an extractor (§15, §16)', () => {
-  // The requirement, stated three ways, because one of them will be the one
-  // somebody edits.
-  assert.equal(requirementFor('pan')!.ocr, 'none');
-  assert.ok(NEVER_OCR.has('pan'));
-
-  // The flow does ask for it — storing it is the point — it just never reads it.
-  assert.equal(stepById('pan_upload')!.document, 'pan');
-});
-
-await check('a PAN routed to an extractor fails the boot, not a candidate', () => {
-  // The check that makes the promise above enforceable. `validateCopy` runs it
-  // before the server accepts traffic, so an edit that gives the PAN a route
-  // breaks the deploy rather than quietly posting tax identifiers to a third
-  // party.
-  const pan = DOCUMENTS.find((d) => d.id === 'pan')!;
-  const original = pan.ocr;
-  try {
-    (pan as { ocr: string }).ocr = 'aadhaar';
-    assert.throws(() => assertOcrRoutingIsSafe(), /pan/i);
-  } finally {
-    (pan as { ocr: string }).ocr = original;
-  }
-  // And it passes as shipped.
+await check('PAN is absent from both the flow and document routing', () => {
+  assert.equal(requirementFor('pan'), undefined);
+  assert.equal(stepById('pan_upload'), undefined);
   assertOcrRoutingIsSafe();
 });
 
@@ -3916,7 +3907,7 @@ console.log('\nwhich documents are read, and which are only stored');
 
 await check('only the CV, the passport and the Aadhaar go to an extractor', () => {
   // Three extractors exist and three kinds are routed to them. Everything else
-  // is filed and left alone — a PAN card, a driving licence, a loose
+  // is filed and left alone — a driving licence, a loose
   // certificate and a company's registration certificate all carry an
   // identifier the bot has no question for, and running them through an
   // extractor is an exposure with nothing on the other side of it.
@@ -3931,7 +3922,6 @@ await check('only the CV, the passport and the Aadhaar go to an extractor', () =
   ]);
 
   const stored = [
-    'pan',
     'driving_licence',
     'certificate',
     'b2b_aadhaar_front',
@@ -5621,7 +5611,7 @@ await check('exactly the limit is accepted', async () => {
   await withMediaStub({ body: LIMIT }, async (stub) => {
     const media = await downloadMedia('MEDIA_EXACT');
     assert.equal(media.byteSize, LIMIT);
-    assert.equal(media.buffer.byteLength, 10 * 1024 * 1024);
+    assert.equal(media.buffer.byteLength, LIMIT);
     assert.equal(stub.fileRequests(), 1);
   });
 });
@@ -5671,7 +5661,7 @@ await check('a Content-Length that understates the body does not get past the co
   // The case the first two layers cannot cover: everything the far end said was
   // within the limit, and then it sent more. Only counting catches this.
   const chunk = new Uint8Array(1024 * 1024);
-  const chunks = Array.from({ length: 12 }, () => chunk);
+  const chunks = Array.from({ length: 22 }, () => chunk);
   const res = responseOf(chunks, { 'content-length': '64' });
 
   await assert.rejects(() => readCappedBody(res, LIMIT, 'test'), MediaTooLargeError);
@@ -5703,8 +5693,8 @@ await check('exceeding the limit aborts the transfer rather than draining it', a
 
   assert.equal(aborted, 1, 'the abort callback did not fire');
   assert.equal(cancelled, 1, 'the stream was not cancelled');
-  // Eleven pulls to pass ten megabytes, and then it stopped. Never forty.
-  assert.ok(pulls <= 12, `read ${pulls} chunks past the limit`);
+  // Twenty-one pulls to pass twenty megabytes, and then it stopped. Never forty.
+  assert.ok(pulls <= 22, `read ${pulls} chunks past the limit`);
 });
 
 await check('an oversized file is terminal, not retried', async () => {
@@ -5746,12 +5736,12 @@ await check('the too-large message exists in all five languages and carries the 
   // Distinct from the generic failure, because the advice is different: one
   // asks for the file again, the other asks for a smaller one.
   assert.notEqual(copy.FILE_TOO_LARGE.en, copy.FILE_FAILED.en);
-  // Rendered, it says ten.
+  // Rendered, it says twenty.
   assert.match(
     render(copy.FILE_TOO_LARGE.en, {
       limit: String(Math.floor(config.MEDIA_MAX_BYTES / (1024 * 1024))),
     }),
-    /10 MB/,
+    /20 MB/,
   );
   // And it passes the length checks the deploy runs.
   validateCopy();

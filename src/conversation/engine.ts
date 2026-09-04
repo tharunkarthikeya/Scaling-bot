@@ -170,13 +170,8 @@ const OTHER_SUFFIX = '#other';
  * §5 wants the CV confirmed immediately but its questions skipped, and §14
  * forbids saying "Passport received" before the upload is known to be usable.
  *
- * The PAN is deliberately absent, and that absence is load-bearing rather than
- * an oversight. It is never sent to an extractor, so no extraction will ever
- * come back to release it — while it was listed here a candidate who sent their
- * PAN was told "checking your document" and then heard nothing, because the
- * only code that resumes a gated upload is the OCR worker. It is acknowledged
- * on arrival instead, which is the truth about a document that is filed and not
- * read.
+ * Storage-only documents are deliberately absent: no extraction will return to
+ * release them, so they are acknowledged on arrival instead.
  */
 const GATED = new Set([
   'cv',
@@ -1435,8 +1430,8 @@ async function verifyTrackingDob(candidate: CandidateDoc, typed: string): Promis
 /**
  * "Other → Talk to staff", which no longer hands over on the spot.
  *
- * The seven questions in `STAFF_STEPS` run first, so the member of staff who
- * picks the conversation up has a name, a destination and three documents
+ * The intake questions in `STAFF_STEPS` run first, so the member of staff who
+ * picks the conversation up has a name, a destination and the requested documents
  * rather than a phone number. `nextStep` switches lists on `enquiry`, exactly
  * as it does for a business contact, so nothing below has to know which branch
  * it is on.
@@ -2025,6 +2020,15 @@ async function handleSpecialStep(
 
     case 'cv':
       if (chosen === 'upload_cv') {
+        const cv = withMissingSlots(candidate.documents).cv;
+        // An old interactive button can still be tapped after a CV has already
+        // arrived. Treat the stored upload as authoritative: never tell the
+        // candidate to attach the same file again.
+        if (cv?.documentId) {
+          if (cv.status === 'ocr_queued') await tell(candidate, copy.CV_RECEIVED);
+          else await askNextQuestion(candidate);
+          return true;
+        }
         // A button cannot open a file picker; all it can do is say "go ahead".
         await tell(candidate, copy.GO_AHEAD);
         return true;
@@ -3606,9 +3610,8 @@ async function acknowledgeDocument(candidate: CandidateDoc, docType: string): Pr
 
   // Nothing is read from this one, so there is nothing to wait for and nothing
   // to hedge about: it arrived, it is on file, and the next question follows in
-  // the same turn. The PAN gets its own line rather than the generic one
-  // because "PAN card received" is what the candidate just did.
-  await tell(candidate, docType === 'pan' ? copy.PAN_RECEIVED : copy.DOCUMENT_RECEIVED);
+  // the same turn.
+  await tell(candidate, copy.DOCUMENT_RECEIVED);
   await askNextQuestion(candidate);
 }
 
@@ -3992,6 +3995,17 @@ export async function resumeAfterDocument(
     return;
   }
 
+  // A first contact can include a CV, so OCR may finish before the opening
+  // questions do. A background result must never advance past consent. The
+  // document stays filed and the ordinary flow will skip it after consent.
+  if (!candidate.consent?.given) {
+    logger.info(
+      { waId: candidate.waId, docType },
+      'document processed before consent; conversation remains behind consent gate',
+    );
+    return;
+  }
+
   // A CV is never re-requested for being hard to read. It is a convenience: what
   // it yields skips questions, and what it does not, the flow simply asks (§5).
   //
@@ -4001,7 +4015,9 @@ export async function resumeAfterDocument(
   // moved on to the next question. The candidate was never told they had sent
   // the wrong file, and the CV they meant to send never arrived.
   if (docType === 'cv') {
-    if (outcome.complete) {
+    // The file itself satisfies the CV step. A partial extraction only means
+    // that the unanswered profile fields must be collected in chat.
+    if (outcome.complete || candidate.documents.cv?.documentId) {
       await askNextQuestion(candidate);
       return;
     }

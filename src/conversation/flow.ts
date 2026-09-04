@@ -10,8 +10,7 @@
  * Reading a step:
  *
  *   when       whether this step applies at all. Skipped entirely when false —
- *              a driver is never asked about welding, a Gulf candidate is never
- *              asked for their PAN card.
+ *              a driver is never asked about welding.
  *   satisfied  whether we already know the answer, from any source.
  *   apply      what the answer means, as fields to write.
  *   clears     what an edit of this section must forget, so re-asking works.
@@ -733,7 +732,12 @@ const CV_STEP: FlowStep = {
    * declined in one tap is the recoverable half of that mistake.
    */
   when: (c) => !wantsSgMy(c) || cvWorthAsking(p(c).jobLevel as JobLevel | undefined),
-  satisfied: (c) => documentSatisfied(c, 'cv'),
+  // A CV is optional supporting material, not an identity document that must
+  // pass OCR. Once its bytes are on file it has been submitted, even when the
+  // resume extractor could read only part of it. The remaining profile fields
+  // are collected by the normal questions instead of asking for the same CV
+  // again.
+  satisfied: (c) => !!c.documents?.cv?.documentId || documentSatisfied(c, 'cv'),
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1546,7 +1550,7 @@ const PREFERENCE_STEPS: FlowStep[] = [
  * Asked of every candidate. This section used to be gated on a Europe/Russia
  * destination, which is how a Gulf candidate reached the end of registration
  * without ever being asked for an identity document. The gate is gone and the
- * three documents are asked in one order, of everyone — including everyone on
+ * identity documents are asked in one order, of everyone — including everyone on
  * the Singapore/Malaysia route, which changes when the CV is asked and nothing
  * about these.
  *
@@ -1561,8 +1565,7 @@ const PREFERENCE_STEPS: FlowStep[] = [
  * `resumeAfterDocument` tells the candidate when what it read has expired or is
  * about to (§12).
  *
- * Aadhaar is read (§15). PAN is stored and never read — see `rules.ts`, where
- * `ocr: 'none'` is enforced at boot rather than merely declared.
+ * Aadhaar is read (§15). PAN is not collected by this flow.
  * ─────────────────────────────────────────────────────────────────────────────*/
 
 const DOCUMENT_STEPS: FlowStep[] = [
@@ -1628,8 +1631,8 @@ const DOCUMENT_STEPS: FlowStep[] = [
     satisfied: (c) => documentSatisfied(c, 'passport'),
   },
 
-  // Aadhaar before PAN. Aadhaar is the one that is read, and reading it is what
-  // supplies the name and date of birth the identity comparison needs (§17) —
+  // Aadhaar is read before the flow moves on, which supplies the name and date
+  // of birth the identity comparison needs (§17) —
   // so it goes to the extractor while the candidate is still here to be asked
   // for a clearer photo, rather than behind a card nothing is done with.
   {
@@ -1689,30 +1692,6 @@ const DOCUMENT_STEPS: FlowStep[] = [
     satisfied: (c) => aadhaarFullyRead(c) || documentSatisfied(c, 'aadhaar_back'),
   },
 
-  {
-    /**
-     * The PAN, and the last thing registration asks for.
-     *
-     * Collected so a documentation officer has it on file. Nothing on it answers
-     * a question this flow asks, so it is stored exactly as it arrived and never
-     * sent to an extractor — `rules.ts` marks it `ocr: 'none'` and
-     * `assertOcrRoutingIsSafe` fails the boot if that is ever edited away.
-     */
-    id: 'pan_upload',
-    section: 'documents',
-    prompt: {
-      en: 'Please send your PAN card as a PDF, or as photos of the front and back.',
-      ta: 'உங்கள் PAN அட்டையை PDF ஆகவோ, முன் மற்றும் பின் பக்க புகைப்படங்களாகவோ அனுப்பவும்.',
-      hi: 'कृपया अपना PAN कार्ड PDF के रूप में, या आगे और पीछे की फ़ोटो के रूप में भेजें।',
-      te: 'దయచేసి మీ PAN కార్డు PDF గా పంపండి, లేదా ముందు వెనుక ఫోటోలు పంపండి.',
-      ml: 'നിങ്ങളുടെ PAN കാർഡ് PDF ആയോ, അല്ലെങ്കിൽ മുൻവശം പിൻവശം ഫോട്ടോ ആയോ അയക്കൂ.',
-    },
-    input: 'document',
-    document: 'pan',
-    allowMedia: true,
-    hiddenChoices: DOCUMENT_FALLBACKS,
-    satisfied: (c) => documentSatisfied(c, 'pan'),
-  },
 ];
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -2282,20 +2261,20 @@ export const SGMY_STEPS: FlowStep[] = [
  * What "Other → Talk to staff" runs, instead of handing the conversation over
  * on the spot. Nine questions, every one of them a step that already exists —
  * the same language question, the same consent question, the same name, the
- * same country, the same job, the same three documents, the same confirmation.
+ * same country, the same job, the same identity documents, the same confirmation.
  * Nothing here is a new question; what is new is which of them are asked and in
  * what order.
  *
  * The point is what a member of staff has in front of them when they pick the
  * conversation up. It used to be a phone number. It is now a name, a
- * destination, the job they are after, a passport read off the page, an Aadhaar
- * read off the page, and a PAN filed as it arrived — so the call starts where it
+ * destination, the job they are after, a passport read off the page and an Aadhaar
+ * read off the page — so the call starts where it
  * used to get to after four messages.
  *
  * The documents route to OCR exactly as they do in registration, because they
  * are the same slots: `rules.ts` sends the passport to the passport extractor
- * and the Aadhaar to the document extractor, and `NEVER_OCR` keeps the PAN away
- * from both. There is nothing to configure here and nothing that could drift.
+ * and Aadhaar to its Aadhaar extractor. There is nothing to configure here and
+ * nothing that could drift.
  *
  * **Consent is asked here now, and this is the decision that put it here.** The
  * intake used to skip it, following the B2B branch, on the grounds that what it
@@ -2343,7 +2322,7 @@ export const STAFF_STEPS: FlowStep[] = [
   ...pick(PERSONAL_STEPS, 'full_name'),
   ...pick(COUNTRY_STEPS, 'country_preference'),
   ...pick(JOB_PREFERENCE_STEPS, 'job_category'),
-  ...pick(DOCUMENT_STEPS, 'passport_status', 'passport_upload', 'aadhaar_upload', 'pan_upload'),
+  ...pick(DOCUMENT_STEPS, 'passport_status', 'passport_upload', 'aadhaar_upload'),
   CONFIRM_STEP,
 ];
 

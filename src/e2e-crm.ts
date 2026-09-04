@@ -471,11 +471,10 @@ for (const scenario of SCENARIOS) {
     steps.join(' → ').slice(0, 90),
   );
 
-  // 3. Both identity documents were asked for, of a candidate who named no
-  //    country at all — which is the whole point of removing the gate.
-  for (const asked of ['aadhaar_upload', 'pan_upload']) {
-    check(steps.includes(asked), `${asked.replace('_upload', '')} was requested`);
-  }
+  // 3. Aadhaar was asked for even though the candidate named no country, while
+  //    the retired PAN collection step was never shown.
+  check(steps.includes('aadhaar_upload'), 'aadhaar was requested');
+  check(!steps.includes('pan_upload'), 'PAN was not requested');
 
   // What actually went over the wire, so a merge or a duplicate can be read off
   // the output rather than guessed at.
