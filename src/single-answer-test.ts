@@ -119,7 +119,64 @@ assert.equal(
   'the second option caused another bot message',
 );
 
+// Moving between agency numbers keeps one candidate and one set of answers,
+// but the first message in the new chat must not be consumed by the question
+// that was open in the old chat. The new line offers an explicit resume choice
+// and becomes the sending identity before that choice is sent.
+const switchingWaId = '919700000003';
+const { candidate: switching } = await getOrCreateCandidate({
+  waId: switchingWaId,
+  phone: switchingWaId,
+  profileName: 'Line Switch Candidate',
+  phoneNumberId: 'MAIN-LINE',
+});
+
+await candidates().updateOne(
+  { _id: switching._id },
+  {
+    $set: {
+      enquiry: 'apply',
+      stage: 'CV_PENDING',
+      status: 'registration_started',
+      language: 'en',
+      languageChosen: true,
+      consent: { given: true, at: now, source: 'whatsapp_chat' },
+      currentStep: 'full_name',
+      lastInboundAt: now,
+      updatedAt: now,
+    },
+  },
+);
+
+const switchWamid = 'wamid.line-switch';
+await appendTurn({
+  waId: switchingWaId,
+  direction: 'inbound',
+  wamid: switchWamid,
+  type: 'text',
+  text: 'hi',
+  at: new Date(now.getTime() + 3),
+});
+await handleInboundMessage({
+  waId: switchingWaId,
+  wamid: switchWamid,
+  phoneNumberId: 'SECOND-LINE',
+});
+
+const afterSwitch = await findConversation(switchingWaId);
+assert.equal(afterSwitch?.phoneNumberId, 'SECOND-LINE', 'reply stayed on the previous bot line');
+assert.equal(afterSwitch?.currentStep, 'menu:resume', 'number switch did not open resume choice');
+assert.equal(afterSwitch?.resumeStep, 'full_name', 'the unfinished question was not preserved');
+
+const switchTurns = await turnsFor(switchingWaId);
+const switchReply = switchTurns.filter((turn) => turn.direction === 'outbound').at(-1);
+assert.equal(switchReply?.step, 'menu:resume');
+assert.match(switchReply?.text ?? '', /^Welcome back/);
+assert.doesNotMatch(switchReply?.text ?? '', /Sorry, I could not use that as an answer/);
+
 await closeDb();
 await mongo.stop();
 
-console.log('\n\x1b[32mok\x1b[0m  one question accepted exactly one option\n');
+console.log(
+  '\n\x1b[32mok\x1b[0m  one question accepts one option; changing bot line offers resume\n',
+);

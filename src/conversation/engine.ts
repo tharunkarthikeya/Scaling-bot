@@ -217,12 +217,17 @@ export async function getOrCreateCandidate(params: {
   profileName?: string;
   /** The number it arrived on. It becomes the active outbound line. */
   phoneNumberId?: string;
-}): Promise<{ candidate: CandidateDoc; created: boolean }> {
+}): Promise<{ candidate: CandidateDoc; created: boolean; lineChanged: boolean }> {
   // Both stores. A business contact's record has moved out of `candidates`, and
   // looking only there would create a second one for a number already on file.
   const existing = await findConversation(params.waId);
 
   if (existing) {
+    const lineChanged = !!(
+      existing.phoneNumberId &&
+      params.phoneNumberId &&
+      existing.phoneNumberId !== params.phoneNumberId
+    );
     if (params.profileName && params.profileName !== existing.profileName) {
       await recordsFor(existing.enquiry).updateOne(
         { _id: existing._id },
@@ -254,7 +259,7 @@ export async function getOrCreateCandidate(params: {
     existing.profile ??= {};
     existing.fieldMeta ??= {};
     existing.history ??= [];
-    return { candidate: existing, created: false };
+    return { candidate: existing, created: false, lineChanged };
   }
 
   const doc = blankCandidate(params);
@@ -262,7 +267,7 @@ export async function getOrCreateCandidate(params: {
   try {
     const result = await candidates().insertOne(doc);
     doc._id = result.insertedId;
-    return { candidate: doc, created: true };
+    return { candidate: doc, created: true, lineChanged: false };
   } catch (err) {
     // Lost a race with a concurrent first message. §2 is explicit that a number
     // already on file must never produce a second candidate.
@@ -270,7 +275,7 @@ export async function getOrCreateCandidate(params: {
       const raced = await findConversation(params.waId);
       if (raced) {
         raced.documents = withMissingSlots(raced.documents);
-        return { candidate: raced, created: false };
+        return { candidate: raced, created: false, lineChanged: false };
       }
     }
     throw err;
@@ -2810,7 +2815,7 @@ export async function handleInboundMessage(payload: {
     return;
   }
 
-  const { candidate, created } = await getOrCreateCandidate({
+  const { candidate, created, lineChanged } = await getOrCreateCandidate({
     waId: payload.waId,
     phone: msg.waId,
     profileName: payload.profileName,
@@ -2990,6 +2995,23 @@ export async function handleInboundMessage(payload: {
   }
   if (ingested.docType) {
     await acknowledgeDocument(candidate, ingested.docType);
+    return;
+  }
+
+  /* ---- the candidate moved to another bot number ---- */
+
+  // Progress belongs to the candidate, not to one of the agency's sending
+  // numbers. Moving to another number therefore keeps every saved answer but
+  // never treats the first message in the new chat as an answer to the old
+  // chat's open question. Offer the choice explicitly, even when the old
+  // session has not timed out. `getOrCreateCandidate` has already changed the
+  // active sending identity, so this prompt leaves from the number they just
+  // messaged rather than appearing back in the previous thread.
+  if (lineChanged && RESUMABLE_STAGES.has(candidate.stage)) {
+    const name = candidate.profile?.fullName ?? candidate.profileName ?? '';
+    await askResume(candidate, copy.RESUME_PROMPT, copy.RESUME_CHOICES, MENU.resume, {
+      name: name ? `, ${name}` : '',
+    });
     return;
   }
 
