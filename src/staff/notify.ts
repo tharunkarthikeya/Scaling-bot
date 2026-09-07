@@ -33,9 +33,9 @@ import {
   candidates,
   claimStaffNotice,
   confirmStaffNotice,
+  reconcileStaffContacts,
   rememberStaffContact,
   releaseStaffNotice,
-  staffIdsWithNotices,
   staffNoticeKey,
 } from '../db/models.js';
 import { logger } from '../logger.js';
@@ -81,49 +81,35 @@ export type StaffNotifyOutcome =
   | { sent: false; reason: string };
 
 /**
- * Seed inbound suppression for assignments created before the staff directory.
+ * Seed inbound suppression from the CRM's complete active employee directory.
  * Best-effort by design: a CRM outage must not stop the WhatsApp webhook from
  * starting, and the next assignment callback will remember that contact too.
  */
 export async function refreshStaffDirectoryFromCrm(): Promise<number> {
-  const [staffIds, admins, attendanceContacts] = await Promise.all([
-    staffIdsWithNotices(),
+  const [admins, attendanceContacts] = await Promise.all([
     fetchAdminContacts(),
     fetchAttendanceContacts(),
   ]);
+  if (!admins || !attendanceContacts) {
+    throw new Error('CRM staff directory snapshot was incomplete; cached contacts preserved');
+  }
   const contacts = new Map<string, CrmStaffContact>();
   for (const admin of admins) contacts.set(admin.id, admin);
   for (const staff of attendanceContacts) contacts.set(staff.id, staff);
 
-  // Keep startup traffic bounded even after a large historical reassignment.
-  for (let offset = 0; offset < staffIds.length; offset += 10) {
-    const batch = staffIds.slice(offset, offset + 10);
-    const rows = await Promise.all(batch.map((staffId) => fetchStaffContact(staffId)));
-    for (const row of rows) if (row) contacts.set(row.id, row);
-  }
-
-  let remembered = 0;
+  const snapshot = [];
   for (const contact of contacts.values()) {
     const waId = staffPhoneToE164(contact.phone);
     if (!waId) continue;
-    try {
-      await rememberStaffContact({
-        staffId: contact.id,
-        waId,
-        name: contact.name,
-        role: contact.role,
-        active: contact.active,
-      });
-      remembered++;
-    } catch (err) {
-      logger.warn(
-        { err, staffId: contact.id },
-        'could not backfill staff contact for inbound suppression',
-      );
-    }
+    snapshot.push({
+      staffId: contact.id,
+      waId,
+      name: contact.name,
+      role: contact.role,
+      active: contact.active,
+    });
   }
-
-  return remembered;
+  return reconcileStaffContacts(snapshot);
 }
 
 /** Meta rejects a template parameter that is empty, so nothing may be blank. */
@@ -434,7 +420,7 @@ export async function notifyAdminsOfSlaBreach(facts: SlaBreachFacts): Promise<Sl
   // relay one callback per breached candidate.
   if (facts.count !== 1) return { sent: false, reason: 'digest_not_supported' };
 
-  const admins = await fetchAdminContacts();
+  const admins = (await fetchAdminContacts()) ?? [];
   if (!admins.length) return { sent: false, reason: 'no_admins' };
 
   const reachable = admins

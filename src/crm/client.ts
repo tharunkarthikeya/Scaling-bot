@@ -258,21 +258,51 @@ export async function fetchStaffContact(
  * in particular - it is addressed to whoever is running the desk, and the CRM's
  * own feed already fans out to all of them.
  */
-export async function fetchAdminContacts(): Promise<CrmStaffContact[]> {
+export async function fetchAdminContacts(): Promise<CrmStaffContact[] | undefined> {
   const body = await readJson<{ contacts?: CrmStaffContact[] }>(
     '/staff/admin-contacts',
     'admin contacts',
   );
-  return body?.contacts ?? [];
+  return body?.contacts;
 }
 
 /** Every active staff phone permitted to file attendance in a private chat. */
-export async function fetchAttendanceContacts(): Promise<CrmStaffContact[]> {
+export async function fetchAttendanceContacts(): Promise<CrmStaffContact[] | undefined> {
   const body = await readJson<{ contacts?: CrmStaffContact[] }>(
     '/attendance/directory',
     'staff attendance directory',
   );
-  return body?.contacts ?? [];
+  return body?.contacts;
+}
+
+export interface CrmWhatsappReplyPolicy {
+  should_reply: boolean;
+  action: 'continue' | 'ignore';
+  reason: string;
+}
+
+/** Ask the CRM whether this sender is currently an internal/business contact. */
+export async function fetchWhatsappReplyPolicy(phone: string): Promise<CrmWhatsappReplyPolicy> {
+  if (!crmConfigured()) throw new Error('CRM is not configured for reply policy');
+  const res = await fetch(url('/whatsapp/reply-policy'), {
+    method: 'POST',
+    headers: { ...headers(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone }),
+    signal: AbortSignal.timeout(config.CRM_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const failure = await readError(res);
+    throw new Error(`CRM reply policy returned ${res.status}: ${failure.detail}`);
+  }
+  const body = (await res.json()) as Partial<CrmWhatsappReplyPolicy>;
+  if (
+    typeof body.should_reply !== 'boolean' ||
+    (body.action !== 'continue' && body.action !== 'ignore') ||
+    typeof body.reason !== 'string'
+  ) {
+    throw new Error('CRM reply policy returned an invalid response');
+  }
+  return body as CrmWhatsappReplyPolicy;
 }
 
 /**

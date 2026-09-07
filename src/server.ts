@@ -31,7 +31,11 @@ import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
 import { parseAttendanceCommand } from './attendance.js';
-import { submitAttendanceEvent } from './crm/client.js';
+import {
+  crmConfigured,
+  fetchWhatsappReplyPolicy,
+  submitAttendanceEvent,
+} from './crm/client.js';
 import {
   coexistencePage,
   completeCoexistence,
@@ -270,24 +274,45 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
             { wamid: msg.wamid, action: attendanceCommand.action, result },
             'private attendance message handled silently',
           );
-        } else {
-          logger.info(
-            { wamid: msg.wamid },
-            'non-attendance message to dedicated attendance line ignored silently',
-          );
+          continue;
         }
-        continue;
       }
 
-      // All other messages from known staff/admin phones are also suppressed
-      // without a reply or read receipt.
-      const knownStaff = await isStaffWhatsAppNumber(msg.waId);
+      // The CRM is authoritative for whether this number still belongs to a
+      // staff/business contact. This makes deletion effective on the next
+      // ordinary message even if the bot's local directory has not refreshed.
+      // A failed policy request throws before any reply/read receipt, allowing
+      // Meta to retry without accidentally treating staff as candidates.
+      let crmAllowsReply = false;
+      if (crmConfigured()) {
+        const policy = await fetchWhatsappReplyPolicy(msg.waId);
+        if (!policy.should_reply) {
+          logger.info(
+            {
+              waId: msg.waId,
+              wamid: msg.wamid,
+              phoneNumberId: msg.phoneNumberId,
+              reason: policy.reason,
+            },
+            'CRM reply policy suppressed inbound without read receipt',
+          );
+          continue;
+        }
+        crmAllowsReply = true;
+      }
+
+      // Retain the local guard for deployments that intentionally run without
+      // a CRM. When the live CRM says "external", a stale local row must not
+      // override that authoritative deletion decision.
+      const knownStaff = crmAllowsReply ? false : await isStaffWhatsAppNumber(msg.waId);
       const assignmentReply = knownStaff
         ? false
-        : await rememberStaffAssignmentReply(msg.contextWamid, msg.waId);
+        : crmAllowsReply
+          ? false
+          : await rememberStaffAssignmentReply(msg.contextWamid, msg.waId);
       if (knownStaff || assignmentReply) {
         logger.info(
-          { waId: msg.waId, wamid: msg.wamid },
+          { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
           'staff inbound ignored without read receipt',
         );
         continue;

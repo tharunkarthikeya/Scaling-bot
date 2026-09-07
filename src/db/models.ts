@@ -1019,8 +1019,8 @@ export interface StaffNoticeDoc {
  * CRM staff numbers that must never enter the candidate conversation engine.
  *
  * Learned whenever the CRM relays an assignment or SLA alert. Kept separately
- * from notices because notices expire, while a staff number remains internal
- * until the CRM reports a different number for that staff id.
+ * from notices because notices expire. The CRM directory refresh replaces this
+ * snapshot, including removing people whose CRM account was deleted.
  */
 export interface StaffDirectoryDoc {
   _id?: ObjectId;
@@ -1428,6 +1428,57 @@ export async function rememberStaffContact(params: {
     },
     { upsert: true },
   );
+}
+
+/**
+ * Replace the cached staff directory with one complete, successful CRM snapshot.
+ *
+ * Upserts happen before pruning. The timestamp guard also preserves a contact
+ * learned from an assignment callback while this refresh is in flight.
+ */
+export async function reconcileStaffContacts(
+  contacts: Array<{
+    staffId: string;
+    waId: string;
+    name?: string | null;
+    role?: string | null;
+    active?: boolean;
+  }>,
+): Promise<number> {
+  const refreshedAt = new Date();
+  const unique = new Map<string, (typeof contacts)[number] & { waId: string }>();
+  for (const contact of contacts) {
+    const waId = contact.waId.replace(/\D/g, '');
+    if (contact.staffId && waId) unique.set(contact.staffId, { ...contact, waId });
+  }
+  const rows = [...unique.values()];
+
+  if (rows.length) {
+    await staffDirectory().bulkWrite(
+      rows.map((contact) => ({
+        updateOne: {
+          filter: { staffId: contact.staffId },
+          update: {
+            $set: {
+              waId: contact.waId,
+              ...(contact.name ? { name: contact.name } : {}),
+              ...(contact.role ? { role: contact.role } : {}),
+              ...(contact.active !== undefined ? { active: contact.active } : {}),
+              updatedAt: refreshedAt,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true },
+    );
+  }
+
+  await staffDirectory().deleteMany({
+    staffId: { $nin: rows.map((contact) => contact.staffId) },
+    $or: [{ updatedAt: { $lt: refreshedAt } }, { updatedAt: { $exists: false } }],
+  });
+  return rows.length;
 }
 
 /** True when this WhatsApp sender is a CRM staff/admin contact, not a candidate. */

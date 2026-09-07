@@ -14,6 +14,7 @@ const { connectDb, closeDb } = await import('./db/client.js');
 const {
   ensureIndexes,
   isStaffWhatsAppNumber,
+  reconcileStaffContacts,
   rememberStaffContact,
   rememberStaffAssignmentReply,
   staffIdsWithNotices,
@@ -46,6 +47,19 @@ await check('changing a staff phone stops suppressing the former number', async 
   await rememberStaffContact({ staffId: 'staff-1', waId: '+971 50 123 4567' });
   assert.equal(await isStaffWhatsAppNumber('919876543210'), false);
   assert.equal(await isStaffWhatsAppNumber('971501234567'), true);
+  assert.equal(await staffDirectory().countDocuments(), 1);
+});
+
+await check('a staff member deleted from the CRM snapshot stops being suppressed', async () => {
+  await rememberStaffContact({ staffId: 'deleted-staff', waId: '919876543210' });
+  await rememberStaffContact({ staffId: 'current-staff', waId: '919811111111' });
+
+  await reconcileStaffContacts([
+    { staffId: 'current-staff', waId: '919811111111', active: true },
+  ]);
+
+  assert.equal(await isStaffWhatsAppNumber('919876543210'), false);
+  assert.equal(await isStaffWhatsAppNumber('919811111111'), true);
   assert.equal(await staffDirectory().countDocuments(), 1);
 });
 
