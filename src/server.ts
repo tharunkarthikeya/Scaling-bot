@@ -30,6 +30,8 @@ import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
+import { parseAttendanceCommand } from './attendance.js';
+import { submitAttendanceEvent } from './crm/client.js';
 import {
   coexistencePage,
   completeCoexistence,
@@ -237,6 +239,33 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const { messages: inbound, statuses } = parseWebhook(req.body);
 
     for (const msg of inbound) {
+      // Group traffic is never candidate traffic. The configured attendance
+      // group accepts only the explicit name + check-in/out grammar, files it
+      // in the CRM, and intentionally sends no message or read receipt back.
+      if (msg.groupId) {
+        const command = parseAttendanceCommand(msg.text);
+        if (msg.groupId === config.WHATSAPP_ATTENDANCE_GROUP_ID && command) {
+          const result = await submitAttendanceEvent({
+            message_id: msg.wamid,
+            sender_phone: msg.waId,
+            stated_name: command.statedName,
+            action: command.action,
+            occurred_at: msg.timestamp.toISOString(),
+            group_id: msg.groupId,
+          });
+          logger.info(
+            { wamid: msg.wamid, groupId: msg.groupId, action: command.action, result },
+            'attendance group message handled silently',
+          );
+        } else {
+          logger.info(
+            { wamid: msg.wamid, groupId: msg.groupId },
+            'non-attendance group message ignored',
+          );
+        }
+        continue;
+      }
+
       // CRM Data Management owns one deny-list for every connected bot line.
       // Check before the event is claimed or the inbound turn is persisted, so
       // a suppressed contact leaves no candidate workflow state behind.

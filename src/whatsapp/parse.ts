@@ -38,6 +38,8 @@ export interface InboundMessage {
    * candidate actually wrote to.
    */
   phoneNumberId?: string;
+  /** Present only for a message received through Meta's Groups API. */
+  groupId?: string;
 }
 
 export interface InboundStatus {
@@ -91,6 +93,7 @@ export function parseWebhook(body: unknown): ParsedWebhook {
           type: 'other',
           contextWamid: msg.context?.id,
           phoneNumberId,
+          groupId: msg.group_id ? String(msg.group_id) : undefined,
         };
 
         if (msg.type === 'text') {

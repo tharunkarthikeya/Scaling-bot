@@ -1,0 +1,43 @@
+/** Silent attendance commands accepted in the configured WhatsApp group. */
+export type AttendanceAction = 'check_in' | 'check_out';
+
+export interface AttendanceCommand {
+  statedName: string;
+  action: AttendanceAction;
+}
+
+const ACTION = '(?:check(?:ed)?|clock(?:ed)?)\\s*[-_ ]?\\s*(?:in|out)';
+
+function actionFrom(value: string): AttendanceAction | undefined {
+  const compact = value.toLowerCase().replace(/[^a-z]/g, '');
+  if (compact === 'checkin' || compact === 'checkedin' || compact === 'clockin' || compact === 'clockedin') {
+    return 'check_in';
+  }
+  if (compact === 'checkout' || compact === 'checkedout' || compact === 'clockout' || compact === 'clockedout') {
+    return 'check_out';
+  }
+  return undefined;
+}
+
+/**
+ * Accept "Asha - check in" (the requested format) and the natural inverse
+ * "check out Asha".  Nothing fuzzy is inferred: ordinary staff conversation
+ * in the group must never become attendance accidentally.
+ */
+export function parseAttendanceCommand(text: string | undefined): AttendanceCommand | undefined {
+  const input = (text ?? '').trim().replace(/\s+/g, ' ');
+  if (!input || input.length > 220) return undefined;
+
+  const suffix = input.match(new RegExp(`^(.+?)\\s*(?:[-,:|]\\s*)?(${ACTION})$`, 'i'));
+  const prefix = input.match(new RegExp(`^(${ACTION})\\s*(?:[-,:|]\\s*)?(.+)$`, 'i'));
+  const match = suffix ?? prefix;
+  if (!match) return undefined;
+
+  const actionText = suffix ? match[2] : match[1];
+  const nameText = suffix ? match[1] : match[2];
+  if (!actionText || !nameText) return undefined;
+  const statedName = nameText.trim().replace(/^[-,:|]\s*|\s*[-,:|]$/g, '');
+  const action = actionFrom(actionText);
+  if (!action || !statedName || statedName.length > 150) return undefined;
+  return { statedName, action };
+}

@@ -290,6 +290,46 @@ export async function fetchBotSuppressionNumbers(): Promise<string[]> {
   return body.numbers.filter((value): value is string => typeof value === 'string');
 }
 
+export interface CrmAttendanceEvent {
+  message_id: string;
+  sender_phone: string;
+  stated_name: string;
+  action: 'check_in' | 'check_out';
+  occurred_at: string;
+  group_id: string;
+}
+
+/**
+ * File a group attendance event in the CRM. A 4xx is a rejected command and
+ * must not be retried forever; network/5xx failures throw so Meta can redeliver
+ * the webhook. The CRM's message id makes that redelivery idempotent.
+ */
+export async function submitAttendanceEvent(
+  event: CrmAttendanceEvent,
+): Promise<'recorded' | 'rejected'> {
+  if (!crmConfigured()) throw new Error('CRM is not configured for attendance');
+  let res: Response;
+  try {
+    res = await fetch(url('/attendance/events'), {
+      method: 'POST',
+      headers: { ...headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+      signal: AbortSignal.timeout(config.CRM_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Error(
+      `CRM attendance request failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (res.ok) return 'recorded';
+  const failure = await readError(res);
+  if (isRetryable(res.status)) {
+    throw new Error(`CRM attendance returned ${res.status}: ${failure.detail}`);
+  }
+  logger.warn({ status: res.status, detail: failure.detail }, 'CRM rejected attendance command');
+  return 'rejected';
+}
+
 /** Submits one finished registration. Safe to call again with the same payload. */
 export async function createCandidate(
   payload: CrmCandidatePayload,
