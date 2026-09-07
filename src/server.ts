@@ -254,22 +254,28 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       // the authoritative phone-to-staff match and rejects unknown senders.
       // Its endpoint is idempotent by wamid, so a temporary failure can safely
       // make Meta redeliver. No reply or read receipt is sent in either case.
-      const attendanceCommand = parseAttendanceCommand(msg.text);
-      const attendancePhoneNumberId =
-        config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID ?? config.WHATSAPP_PHONE_NUMBER_ID;
-      if (attendanceCommand && msg.phoneNumberId === attendancePhoneNumberId) {
-        const result = await submitAttendanceEvent({
-          message_id: msg.wamid,
-          sender_phone: msg.waId,
-          stated_name: attendanceCommand.statedName,
-          action: attendanceCommand.action,
-          occurred_at: msg.timestamp.toISOString(),
-          chat_type: 'private',
-        });
-        logger.info(
-          { wamid: msg.wamid, action: attendanceCommand.action, result },
-          'private attendance message handled silently',
-        );
+      const attendancePhoneNumberId = config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID;
+      if (attendancePhoneNumberId && msg.phoneNumberId === attendancePhoneNumberId) {
+        const attendanceCommand = parseAttendanceCommand(msg.text);
+        if (attendanceCommand) {
+          const result = await submitAttendanceEvent({
+            message_id: msg.wamid,
+            sender_phone: msg.waId,
+            stated_name: attendanceCommand.statedName,
+            action: attendanceCommand.action,
+            occurred_at: msg.timestamp.toISOString(),
+            chat_type: 'private',
+          });
+          logger.info(
+            { wamid: msg.wamid, action: attendanceCommand.action, result },
+            'private attendance message handled silently',
+          );
+        } else {
+          logger.info(
+            { wamid: msg.wamid },
+            'non-attendance message to dedicated attendance line ignored silently',
+          );
+        }
         continue;
       }
 

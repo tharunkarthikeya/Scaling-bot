@@ -269,7 +269,7 @@ export async function fetchAdminContacts(): Promise<CrmStaffContact[]> {
 /** Every active staff phone permitted to file attendance in a private chat. */
 export async function fetchAttendanceContacts(): Promise<CrmStaffContact[]> {
   const body = await readJson<{ contacts?: CrmStaffContact[] }>(
-    '/staff-attendance-directory',
+    '/attendance/directory',
     'staff attendance directory',
   );
   return body?.contacts ?? [];
