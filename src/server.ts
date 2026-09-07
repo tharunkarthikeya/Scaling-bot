@@ -239,30 +239,51 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
     const { messages: inbound, statuses } = parseWebhook(req.body);
 
     for (const msg of inbound) {
-      // Group traffic is never candidate traffic. The configured attendance
-      // group accepts only the explicit name + check-in/out grammar, files it
-      // in the CRM, and intentionally sends no message or read receipt back.
+      // The official Groups API is not available to this deployment. Never let
+      // group traffic fall into the one-to-one candidate conversation.
       if (msg.groupId) {
-        const command = parseAttendanceCommand(msg.text);
-        if (msg.groupId === config.WHATSAPP_ATTENDANCE_GROUP_ID && command) {
-          const result = await submitAttendanceEvent({
-            message_id: msg.wamid,
-            sender_phone: msg.waId,
-            stated_name: command.statedName,
-            action: command.action,
-            occurred_at: msg.timestamp.toISOString(),
-            group_id: msg.groupId,
-          });
-          logger.info(
-            { wamid: msg.wamid, groupId: msg.groupId, action: command.action, result },
-            'attendance group message handled silently',
-          );
-        } else {
-          logger.info(
-            { wamid: msg.wamid, groupId: msg.groupId },
-            'non-attendance group message ignored',
-          );
-        }
+        logger.info(
+          { wamid: msg.wamid, groupId: msg.groupId },
+          'group message ignored before bot workflow',
+        );
+        continue;
+      }
+
+      // Attendance-shaped private messages are intercepted before candidate
+      // processing even if this instance's staff cache is stale. The CRM owns
+      // the authoritative phone-to-staff match and rejects unknown senders.
+      // Its endpoint is idempotent by wamid, so a temporary failure can safely
+      // make Meta redeliver. No reply or read receipt is sent in either case.
+      const attendanceCommand = parseAttendanceCommand(msg.text);
+      const attendancePhoneNumberId =
+        config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID ?? config.WHATSAPP_PHONE_NUMBER_ID;
+      if (attendanceCommand && msg.phoneNumberId === attendancePhoneNumberId) {
+        const result = await submitAttendanceEvent({
+          message_id: msg.wamid,
+          sender_phone: msg.waId,
+          stated_name: attendanceCommand.statedName,
+          action: attendanceCommand.action,
+          occurred_at: msg.timestamp.toISOString(),
+          chat_type: 'private',
+        });
+        logger.info(
+          { wamid: msg.wamid, action: attendanceCommand.action, result },
+          'private attendance message handled silently',
+        );
+        continue;
+      }
+
+      // All other messages from known staff/admin phones are also suppressed
+      // without a reply or read receipt.
+      const knownStaff = await isStaffWhatsAppNumber(msg.waId);
+      const assignmentReply = knownStaff
+        ? false
+        : await rememberStaffAssignmentReply(msg.contextWamid, msg.waId);
+      if (knownStaff || assignmentReply) {
+        logger.info(
+          { waId: msg.waId, wamid: msg.wamid },
+          'staff inbound ignored without read receipt',
+        );
         continue;
       }
 
@@ -294,20 +315,6 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       const fresh = await claimEvent(msg.wamid);
       if (!fresh) {
         logger.debug({ wamid: msg.wamid }, 'duplicate delivery ignored');
-        continue;
-      }
-
-      // Staff and admins may reply to an assignment/SLA template, but they are
-      // CRM users rather than candidates. Acknowledge their message and stop:
-      // do not create a candidate, store an attachment, or send an automated
-      // registration prompt back to them.
-      const knownStaff = await isStaffWhatsAppNumber(msg.waId);
-      const assignmentReply = knownStaff
-        ? false
-        : await rememberStaffAssignmentReply(msg.contextWamid, msg.waId);
-      if (knownStaff || assignmentReply) {
-        logger.info({ waId: msg.waId, wamid: msg.wamid }, 'staff inbound ignored');
-        void markAsRead(msg.wamid, msg.phoneNumberId);
         continue;
       }
 

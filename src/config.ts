@@ -92,8 +92,8 @@ const schema = z.object({
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
   WHATSAPP_ACCESS_TOKEN: z.string().min(1),
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
-  /** Exact Groups API id of the internal group used for silent attendance. */
-  WHATSAPP_ATTENDANCE_GROUP_ID: blankable(z.string().min(1).optional()),
+  /** Bot line on which recognised staff may file private attendance. */
+  WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID: blankable(z.string().min(1).optional()),
   /** Public ids for the protected, one-time Coexistence onboarding page. */
   WHATSAPP_APP_ID: blankable(z.string().regex(/^\d+$/).optional()),
   WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: blankable(z.string().regex(/^\d+$/).optional()),

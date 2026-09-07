@@ -23,7 +23,12 @@
  */
 import { config } from '../config.js';
 import type { CrmStaffContact } from '../crm/client.js';
-import { fetchAdminContacts, fetchAssignmentSummary, fetchStaffContact } from '../crm/client.js';
+import {
+  fetchAdminContacts,
+  fetchAssignmentSummary,
+  fetchAttendanceContacts,
+  fetchStaffContact,
+} from '../crm/client.js';
 import {
   candidates,
   claimStaffNotice,
@@ -81,9 +86,14 @@ export type StaffNotifyOutcome =
  * starting, and the next assignment callback will remember that contact too.
  */
 export async function refreshStaffDirectoryFromCrm(): Promise<number> {
-  const [staffIds, admins] = await Promise.all([staffIdsWithNotices(), fetchAdminContacts()]);
+  const [staffIds, admins, attendanceContacts] = await Promise.all([
+    staffIdsWithNotices(),
+    fetchAdminContacts(),
+    fetchAttendanceContacts(),
+  ]);
   const contacts = new Map<string, CrmStaffContact>();
   for (const admin of admins) contacts.set(admin.id, admin);
+  for (const staff of attendanceContacts) contacts.set(staff.id, staff);
 
   // Keep startup traffic bounded even after a large historical reassignment.
   for (let offset = 0; offset < staffIds.length; offset += 10) {

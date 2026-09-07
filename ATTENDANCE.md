@@ -1,8 +1,9 @@
-# WhatsApp attendance
+# Private WhatsApp attendance
 
-The bot accepts attendance only from the Meta Groups API group whose exact id
-is configured as `WHATSAPP_ATTENDANCE_GROUP_ID`. Every other group message is
-ignored and can never enter the candidate conversation.
+Attendance is accepted only in a private one-to-one chat from a phone number
+linked to an active CRM staff account, and only when the message arrives on
+`WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID`. If that setting is omitted, the primary
+`WHATSAPP_PHONE_NUMBER_ID` is used. Group messages are ignored.
 
 Staff can write either form:
 
@@ -13,8 +14,9 @@ Staff can write either form:
 
 The sender's WhatsApp number must match the phone on an active CRM staff
 account. The written full name, first name, or staff code must match that same
-account. Rejected, malformed, and accepted attendance messages are all silent:
-the bot sends no reply and no read receipt to the group.
+account. Rejected, malformed, and accepted staff messages are all silent: the
+bot sends no reply and no read receipt, so it does not create a blue tick.
+Candidate conversations still receive normal read receipts.
 
 ## CRM policy
 
@@ -34,10 +36,6 @@ to signed-in users, and `PUT /attendance/leaves` to administrators.
 
 ## Deployment
 
-Set `WHATSAPP_ATTENDANCE_GROUP_ID` on the webhook bot. `CRM_API_URL` and
-`CRM_API_KEY` must point to the CRM, and the CRM's `WHATSAPP_SERVICE_KEY` must
-contain the same key.
-
-This requires access to Meta's official Groups API and a group created through
-that API. It is not the same as adding a Cloud API number to an arbitrary
-existing consumer WhatsApp group.
+Set `WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID=1248836374980442` on the bot deployment.
+`CRM_API_URL` and `CRM_API_KEY` must point to the CRM, and the CRM's
+`WHATSAPP_SERVICE_KEY` must contain the same key.

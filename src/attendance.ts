@@ -1,4 +1,4 @@
-/** Silent attendance commands accepted in the configured WhatsApp group. */
+/** Silent attendance commands accepted in a recognised staff member's private chat. */
 export type AttendanceAction = 'check_in' | 'check_out';
 
 export interface AttendanceCommand {
@@ -22,7 +22,7 @@ function actionFrom(value: string): AttendanceAction | undefined {
 /**
  * Accept "Asha - check in" (the requested format) and the natural inverse
  * "check out Asha".  Nothing fuzzy is inferred: ordinary staff conversation
- * in the group must never become attendance accidentally.
+ * in a staff chat must never become attendance accidentally.
  */
 export function parseAttendanceCommand(text: string | undefined): AttendanceCommand | undefined {
   const input = (text ?? '').trim().replace(/\s+/g, ' ');

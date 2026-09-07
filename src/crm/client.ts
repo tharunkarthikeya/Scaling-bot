@@ -266,6 +266,15 @@ export async function fetchAdminContacts(): Promise<CrmStaffContact[]> {
   return body?.contacts ?? [];
 }
 
+/** Every active staff phone permitted to file attendance in a private chat. */
+export async function fetchAttendanceContacts(): Promise<CrmStaffContact[]> {
+  const body = await readJson<{ contacts?: CrmStaffContact[] }>(
+    '/staff-attendance-directory',
+    'staff attendance directory',
+  );
+  return body?.contacts ?? [];
+}
+
 /**
  * Numbers the CRM administrator has explicitly excluded from bot automation.
  *
@@ -296,11 +305,11 @@ export interface CrmAttendanceEvent {
   stated_name: string;
   action: 'check_in' | 'check_out';
   occurred_at: string;
-  group_id: string;
+  chat_type: 'private';
 }
 
 /**
- * File a group attendance event in the CRM. A 4xx is a rejected command and
+ * File a private-chat attendance event in the CRM. A 4xx is a rejected command and
  * must not be retried forever; network/5xx failures throw so Meta can redeliver
  * the webhook. The CRM's message id makes that redelivery idempotent.
  */

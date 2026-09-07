@@ -24,6 +24,8 @@ import { purgeExistingNationalityRefusals } from './privacy/purge.js';
 
 /** How often the §21 reminder sweep runs. The claim is per candidate, not per sweep. */
 const REMINDER_SWEEP_MS = 15 * 60 * 1000;
+/** Keep newly added/edited staff phones eligible for private attendance. */
+const STAFF_DIRECTORY_REFRESH_MS = 5 * 60 * 1000;
 
 /**
  * How often idle registration sessions are closed.
@@ -197,6 +199,16 @@ async function main(): Promise<void> {
 
   const lease = new Lease('sweeps', SWEEP_LEASE_TTL_MS);
   const stopSweeps: Array<() => void> = [];
+  let staffDirectorySweep: NodeJS.Timeout | undefined;
+
+  if (plan.webhook && crmConfigured()) {
+    staffDirectorySweep = setInterval(() => {
+      void refreshStaffDirectoryFromCrm().catch((err) =>
+        logger.error({ err }, 'CRM staff attendance directory refresh failed'),
+      );
+    }, STAFF_DIRECTORY_REFRESH_MS);
+    staffDirectorySweep.unref();
+  }
 
   if (plan.sweeps) {
     // §21 — one reminder per candidate who goes quiet mid-registration. The
@@ -275,6 +287,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal, instance: instanceId }, 'shutting down');
     for (const stop of stopSweeps) stop();
+    if (staffDirectorySweep) clearInterval(staffDirectorySweep);
     if (taxonomySweep) clearInterval(taxonomySweep);
     stopEventLoopMonitor();
 
