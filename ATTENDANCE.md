@@ -9,14 +9,16 @@ Staff can write either form:
 
 - `Asha - check in`
 - `Asha - check out`
+- `Asha - check in 10.15`
 - `check in: Asha`
 - `check out: Asha`
 
 The sender's WhatsApp number must match the phone on an active CRM staff
 account. The written full name, first name, or staff code must match that same
-account. Rejected, malformed, and accepted staff messages are all silent: the
-bot sends no reply and no read receipt, so it does not create a blue tick.
-Candidate conversations still receive normal read receipts.
+account. After the CRM records a valid command, the bot replies `Attendance
+check in successful.` or `Attendance check out successful.` from the same
+WhatsApp line. Rejected and malformed messages never receive a false success
+confirmation. Candidate conversations still receive normal read receipts.
 
 ## CRM policy
 

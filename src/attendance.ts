@@ -1,4 +1,4 @@
-/** Silent attendance commands accepted in a recognised staff member's private chat. */
+/** Attendance commands accepted in a recognised staff member's private chat. */
 export type AttendanceAction = 'check_in' | 'check_out';
 
 export interface AttendanceCommand {
@@ -6,7 +6,13 @@ export interface AttendanceCommand {
   action: AttendanceAction;
 }
 
-const ACTION = '(?:check(?:ed)?|clock(?:ed)?)\\s*[-_ ]?\\s*(?:in|out)';
+export function attendanceSuccessMessage(action: AttendanceAction): string {
+  return action === 'check_in'
+    ? 'Attendance check in successful.'
+    : 'Attendance check out successful.';
+}
+
+const ACTION = '\\b(?:check(?:ed)?|clock(?:ed)?)\\s*[-_ ]?\\s*(?:in|out)\\b';
 
 function actionFrom(value: string): AttendanceAction | undefined {
   const compact = value.toLowerCase().replace(/[^a-z]/g, '');
@@ -28,7 +34,16 @@ export function parseAttendanceCommand(text: string | undefined): AttendanceComm
   const input = (text ?? '').trim().replace(/\s+/g, ' ');
   if (!input || input.length > 220) return undefined;
 
-  const suffix = input.match(new RegExp(`^(.+?)\\s*(?:[-,:|]\\s*)?(${ACTION})$`, 'i'));
+  // A command must contain one unambiguous action. In particular, do not turn
+  // "Asha check in or check out" into whichever action happens to occur first.
+  if ([...input.matchAll(new RegExp(ACTION, 'gi'))].length !== 1) return undefined;
+
+  // Staff often append the time they intended to report (for example 10.15).
+  // The webhook timestamp remains authoritative; text after the keyword is
+  // deliberately ignored rather than mistaken for part of the staff name.
+  const suffix = input.match(
+    new RegExp(`^(.+?)\\s*(?:[-,:|]\\s*)?(${ACTION})(?:\\s*(?:[-,:|]\\s*)?.*)?$`, 'i'),
+  );
   const prefix = input.match(new RegExp(`^(${ACTION})\\s*(?:[-,:|]\\s*)?(.+)$`, 'i'));
   const match = suffix ?? prefix;
   if (!match) return undefined;

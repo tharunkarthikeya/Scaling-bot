@@ -22,7 +22,7 @@ import {
   type ApplicationStatus,
 } from './db/models.js';
 import { queue } from './queue/index.js';
-import { markAsRead } from './whatsapp/client.js';
+import { markAsRead, sendText } from './whatsapp/client.js';
 import { captureAttachment } from './ingestion/whatsapp.js';
 import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
 import { record, renderMetrics } from './metrics/index.js';
@@ -30,7 +30,7 @@ import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
-import { parseAttendanceCommand } from './attendance.js';
+import { attendanceSuccessMessage, parseAttendanceCommand } from './attendance.js';
 import {
   crmConfigured,
   fetchWhatsappReplyPolicy,
@@ -257,9 +257,11 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       // processing even if this instance's staff cache is stale. The CRM owns
       // the authoritative phone-to-staff match and rejects unknown senders.
       // Its endpoint is idempotent by wamid, so a temporary failure can safely
-      // make Meta redeliver. No reply or read receipt is sent in either case.
-      const attendancePhoneNumberId = config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID;
-      if (attendancePhoneNumberId && msg.phoneNumberId === attendancePhoneNumberId) {
+      // make Meta redeliver. A recorded command receives one clear confirmation;
+      // a rejected command remains silent and can never claim success.
+      const attendancePhoneNumberId =
+        config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID ?? config.WHATSAPP_PHONE_NUMBER_ID;
+      if (msg.phoneNumberId === attendancePhoneNumberId) {
         const attendanceCommand = parseAttendanceCommand(msg.text);
         if (attendanceCommand) {
           const result = await submitAttendanceEvent({
@@ -272,8 +274,15 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
           });
           logger.info(
             { wamid: msg.wamid, action: attendanceCommand.action, result },
-            'private attendance message handled silently',
+            'private attendance message handled',
           );
+          if (result === 'recorded') {
+            await sendText(
+              msg.waId,
+              attendanceSuccessMessage(attendanceCommand.action),
+              msg.phoneNumberId,
+            );
+          }
           continue;
         }
       }
