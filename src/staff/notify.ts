@@ -366,7 +366,7 @@ export interface SlaBreachFacts {
   count: number;
   threshold_hours: number;
   staff_count?: number;
-  /** Present only when the sweep found exactly one - see `relay_sla_breach`. */
+  /** The CRM relays one newly breached profile per callback. */
   /** Human-readable CRM codes only. Internal database ids are never accepted here. */
   candidate_code?: string | null;
   candidate_name?: string | null;

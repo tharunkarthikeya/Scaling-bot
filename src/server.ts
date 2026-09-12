@@ -524,9 +524,8 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
      * sweep may have resolved half of it, and re-reading would report a
      * different set than the one that actually breached.
      *
-     * One call per sweep, covering however many profiles it found - so `count`
-     * is the field that decides whether the message names a candidate or
-     * summarises a backlog.
+     * One call per newly breached profile. The approved template names a
+     * candidate and owner, so a multi-profile digest cannot be sent with it.
      */
     app.post('/api/sla-breach', async (req, res) => {
       const body = (req.body ?? {}) as Record<string, unknown>;
