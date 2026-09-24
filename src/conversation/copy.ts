@@ -760,20 +760,13 @@ export const RESUME_CHOICES: Choice[] = [
   { id: 'restart', label: { en: 'Restart session', ta: 'முதலிலிருந்து', hi: 'शुरू से', te: 'సెషన్ మళ్లీ మొదలు', ml: 'സെഷൻ പുനരാരംഭിക്കുക' } },
 ];
 
-/**
- * Says what a restart actually does now.
- *
- * It used to be four words, and it used to be true: restarting emptied the
- * profile. It no longer does — nothing is deleted — so the sentence has to carry
- * the part the candidate cares about, which is that they are not about to be
- * asked everything a second time.
- */
+/** A restart asks every question again, so the message says exactly that. */
 export const RESTARTED: Localised = {
-  en: 'Starting again from the beginning. Your saved answers and documents are kept, so I will only ask for anything still missing.',
-  ta: 'முதலிலிருந்து மீண்டும் தொடங்குகிறோம். நீங்கள் அளித்த பதில்களும் ஆவணங்களும் அப்படியே இருக்கும் — மீதமுள்ளதை மட்டும் கேட்பேன்.',
-  hi: 'शुरुआत से फिर से शुरू कर रहे हैं। आपके सेव किए गए जवाब और दस्तावेज़ वैसे ही रहेंगे — जो बाकी है सिर्फ़ वही पूछूँगा।',
-  te: 'మొదటి నుండి మళ్లీ మొదలుపెడుతున్నాము. మీరు ఇచ్చిన జవాబులు, డాక్యుమెంట్లు అలాగే ఉంటాయి — మిగిలినవి మాత్రమే అడుగుతాను.',
-  ml: 'തുടക്കം മുതൽ വീണ്ടും തുടങ്ങുന്നു. നിങ്ങൾ തന്ന ഉത്തരങ്ങളും രേഖകളും അതുപോലെ ഉണ്ടാകും — ബാക്കിയുള്ളത് മാത്രമേ ചോദിക്കൂ.',
+  en: 'Starting again from the beginning. I will ask each question again.',
+  ta: 'முதலிலிருந்து மீண்டும் தொடங்குகிறோம். ஒவ்வொரு கேள்வியையும் மீண்டும் கேட்கிறேன்.',
+  hi: 'शुरुआत से फिर से शुरू कर रहे हैं। मैं हर सवाल फिर से पूछूँगा।',
+  te: 'మొదటి నుండి మళ్లీ మొదలుపెడుతున్నాము. ప్రతి ప్రశ్నను మళ్లీ అడుగుతాను.',
+  ml: 'തുടക്കം മുതൽ വീണ്ടും തുടങ്ങുന്നു. ഓരോ ചോദ്യവും വീണ്ടും ചോദിക്കും.',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────

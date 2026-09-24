@@ -3539,7 +3539,7 @@ await check('a name read off a passport never overwrites one the candidate typed
   assert.equal(c.fieldMeta.fullName?.source, 'chat');
 });
 
-console.log('\ncontinue resumes; restart re-walks. Neither deletes anything');
+console.log('\ncontinue resumes; restart asks everything again');
 
 /**
  * Someone who answered four questions and then went quiet.
@@ -3629,77 +3629,62 @@ await check('continue does not re-ask anything already answered', () => {
   assert.ok(!order.includes('cv'), 'continue re-asked for a CV already on file');
 });
 
-await check('restart keeps every answer, document and extraction', () => {
-  // The behaviour this replaced: a restart emptied `profile` and `fieldMeta`,
-  // so someone who tapped "start again" because they mistyped one answer lost
-  // all of them. Restarting a conversation is not withdrawing the answers given
-  // during it — DELETE is what does that, and it asks first (§23).
-  const before = halfFinished({
-    editQueue: ['location'],
-    pendingMulti: { step: 'general_jobs', selected: ['warehouse'] },
-  });
+/** A restart as the engine applies it: the patch, then the unsets. */
+function restartedFrom(before: CandidateDoc): CandidateDoc {
   const after: CandidateDoc = { ...before, ...restartPatch(before) };
   for (const key of RESTART_UNSETS) delete (after as unknown as Record<string, unknown>)[key];
+  return after;
+}
 
-  assert.equal(after.profile.fullName, 'Ravi Kumar', 'a typed answer was destroyed by a restart');
-  assert.equal(after.profile.dateOfBirth, '1994-03-11');
-  assert.equal(after.fieldMeta.fullName?.source, 'chat', 'field provenance was destroyed');
-  assert.equal(after.documents.cv?.status, 'ocr_done', 'an uploaded CV was destroyed');
-  // §4 and §3 — recorded facts, not answers being revised.
+await check('restart clears answers, document slots and the language choice', () => {
+  const after = restartedFrom(
+    halfFinished({
+      editQueue: ['location'],
+      pendingMulti: { step: 'general_jobs', selected: ['warehouse'] },
+    }),
+  );
+
+  assert.deepEqual(after.profile, {}, 'a typed answer survived the restart');
+  assert.deepEqual(after.fieldMeta, {}, 'field provenance survived the restart');
+  assert.deepEqual(after.documents, {}, 'a document slot survived the restart');
+  assert.equal(after.languageChosen, undefined, 'the language question would be skipped');
+  // A recorded agreement; and messages stay in their language until it is re-chosen.
   assert.equal(after.consent?.given, true);
   assert.equal(after.language, 'en');
-  assert.equal(after.languageChosen, true);
 });
 
-await check('restart clears the position and nothing else', () => {
-  const before = halfFinished({
-    editQueue: ['location'],
-    pendingMulti: { step: 'general_jobs', selected: ['warehouse'] },
-    resumeStep: 'education',
-  });
-  const after: CandidateDoc = { ...before, ...restartPatch(before) };
-  for (const key of RESTART_UNSETS) delete (after as unknown as Record<string, unknown>)[key];
+await check('restart clears the position', () => {
+  const after = restartedFrom(
+    halfFinished({
+      editQueue: ['location'],
+      pendingMulti: { step: 'general_jobs', selected: ['warehouse'] },
+      resumeStep: 'education',
+    }),
+  );
 
   assert.deepEqual(after.editQueue, [], 'a queued edit survived the restart');
   assert.equal(after.unclearCount, 0);
   assert.equal(after.stage, 'NEW');
-
-  // The open question, the stashed one, the half-made multi-select and the
-  // closed session are removed outright — left behind, `currentStep` would have
-  // the next tap answer a question the candidate has moved on from.
   assert.equal(after.currentStep, undefined);
   assert.equal(after.resumeStep, undefined);
   assert.equal(after.pendingMulti, undefined);
   assert.equal(after.sessionEndedAt, undefined);
 });
 
-await check('restart re-walks from the top and asks only what is missing', () => {
-  // Both halves of what the candidate is promised. The flow starts at the first
-  // step; every step already satisfied is skipped; the first question they
-  // actually see is the first genuinely unanswered one.
-  const before = halfFinished();
-  const after: CandidateDoc = { ...before, ...restartPatch(before) };
-  for (const key of RESTART_UNSETS) delete (after as unknown as Record<string, unknown>)[key];
+await check('restart asks every question again from the first one', () => {
+  const { order, indexes } = walkFlow(restartedFrom(halfFinished()));
 
-  const { order, indexes } = walkFlow(after);
-
-  // Never backwards: the scheduler walks one ordered list, so a restart cannot
-  // drop someone into the middle of a different one.
   for (let i = 1; i < indexes.length; i++) {
     assert.ok(indexes[i]! > indexes[i - 1]!, `restart went backwards at "${order[i]}"`);
   }
-
-  // Nothing already answered is put again.
-  for (const answered of ['entry', 'language', 'consent', 'cv', 'full_name', 'location']) {
-    assert.ok(!order.includes(answered), `restart re-asked "${answered}"`);
+  assert.equal(order[0], 'entry', 'restart must begin at the first question');
+  for (const asked of ['language', 'cv', 'full_name', 'location', 'education']) {
+    assert.ok(order.includes(asked), `restart skipped "${asked}"`);
   }
-  assert.equal(order[0], 'education', 'restart must resume at the first unanswered step');
+  assert.ok(!order.includes('consent'), 'consent is recorded and is not asked again');
 });
 
-await check('a restart with nothing missing runs straight to the confirmation', () => {
-  // The honest answer to "start again" from someone whose answers are all on
-  // file. Asking them to re-enter a complete profile would be the old
-  // behaviour wearing a different hat.
+await check('a restart with every answer on file still starts from the first question', () => {
   const complete = halfFinished({
     profile: {
       lookingForOverseasJob: true,
@@ -3726,18 +3711,12 @@ await check('a restart with nothing missing runs straight to the confirmation', 
   for (const slot of ['aadhaar', 'pan'] as const) {
     complete.documents[slot] = { status: 'received', askedCount: 1, updatedAt: new Date() };
   }
+  assert.equal(nextStep(complete)?.id, 'confirm', 'fixture is not complete');
 
-  const after: CandidateDoc = { ...complete, ...restartPatch(complete) };
-  for (const key of RESTART_UNSETS) delete (after as unknown as Record<string, unknown>)[key];
-
-  assert.equal(nextStep(after)?.id, 'confirm');
+  assert.equal(nextStep(restartedFrom(complete))?.id, 'entry');
 });
 
 await check('a new session field cannot be forgotten by a restart', () => {
-  // The real risk is not today's code, it is the field somebody adds in six
-  // months. Everything that holds the conversation's *position* must be named
-  // in the restart contract; anything missing here is a stale pointer that
-  // survives.
   const patch = restartPatch(halfFinished());
   const cleared = new Set([...Object.keys(patch), ...RESTART_UNSETS]);
 
@@ -3748,20 +3727,14 @@ await check('a new session field cannot be forgotten by a restart', () => {
     'resumeStep',
     'pendingMulti',
     'listPage',
-  ]) {
-    assert.ok(cleared.has(field), `"${field}" is session state that a restart does not clear`);
-  }
-  // And what a restart must not touch is absent from the patch, not accidentally
-  // in it. `profile` and `fieldMeta` are on this list now, which is the change.
-  for (const kept of [
     'profile',
     'fieldMeta',
     'documents',
-    'consent',
-    'language',
-    'history',
-    'reminderSentAt',
+    'languageChosen',
   ]) {
+    assert.ok(cleared.has(field), `"${field}" is something a restart must clear`);
+  }
+  for (const kept of ['consent', 'language', 'history', 'reminderSentAt']) {
     assert.ok(!cleared.has(kept), `"${kept}" must survive a restart`);
   }
 });
@@ -3951,91 +3924,6 @@ await check('each kind goes to the extractor built for it, never a generic one',
   for (const d of DOCUMENTS) {
     assert.notEqual(d.ocr as string, 'document', `${d.id} still routes to the generic extractor`);
   }
-});
-
-console.log('\nrestarting does not re-interview someone whose CV is on file');
-
-/** The OCR fields a read CV leaves behind on the upload. */
-const CV_FIELDS: OcrField[] = [
-  { key: 'name', value: 'Ravi Kumar', confidence: null },
-  { key: 'date_of_birth', value: '1994-03-11', confidence: null },
-  { key: 'current_occupation', value: 'Welder', confidence: null },
-];
-
-/**
- * A candidate just after a restart: answers cleared, documents still on file
- * (§22), and the opening menu already re-answered.
- *
- * The opening menu comes back first — clearing the profile clears the answer to
- * it — and that part was never in question. `lookingForOverseasJob` is set here
- * because the reported failure starts one tap later: whatever they choose, the
- * flow behind it should be the flow they went through the first time.
- */
-function restarted(): CandidateDoc {
-  const slots = initialSlots();
-  slots.cv = { status: 'ocr_done', askedCount: 1, updatedAt: new Date() };
-  return candidate({
-    stage: 'NEW',
-    // Country is asked before the CV now, so a restart re-asks it along with
-    // everything else. Set here so this fixture is a candidate standing at the
-    // question the bug was actually about.
-    profile: { lookingForOverseasJob: true, countryPreference: 'gcc', countryStrictness: 'any' },
-    fieldMeta: {},
-    documents: slots,
-  });
-}
-
-await check('a restart leaves the CV counting as sent', () => {
-  // §22 keeps the upload and §1 forbids asking for it again, so the CV step is
-  // satisfied even though every answer was just cleared. That is correct — and
-  // it is exactly what makes the next check load-bearing.
-  const c = restarted();
-  assert.equal(stepById('cv')!.satisfied(c), true);
-});
-
-await check('what the CV answered comes back with it, instead of being asked by hand', () => {
-  const c = restarted();
-
-  // The bug: the CV stays on file, so its step is skipped, but everything it
-  // told us went out with the profile. The candidate had sent a CV and was then
-  // interviewed as if they had not — name, date of birth and the rest, one
-  // question at a time.
-  assert.equal(nextStep(c)?.id, 'full_name');
-
-  // The fix, as `reseedProfileFromDocuments` performs it: replay the extraction
-  // already stored on the upload. Nothing is re-read and nothing is
-  // re-downloaded — the fields are on the upload, as the worker left them.
-  const write = buildProfileWrite(c, extractFromCv(CV_FIELDS, c.waId).patch, {
-    source: 'cv',
-    confidence: null,
-  });
-  assert.ok(Object.keys(write.set).length, 'the stored CV fields yielded nothing');
-
-  assert.equal(stepById('full_name')!.satisfied(c), true);
-  assert.notEqual(nextStep(c)?.id, 'full_name');
-  assert.equal(c.profile.fullName, 'Ravi Kumar');
-});
-
-await check('a restored field is marked as the document guess it is, not as verified', () => {
-  const c = restarted();
-  buildProfileWrite(c, extractFromCv(CV_FIELDS, c.waId).patch, { source: 'cv', confidence: null });
-
-  // §27 — nothing but a person marks a field verified, and a restart must not
-  // launder a CV reading into one.
-  assert.equal(c.fieldMeta.fullName?.source, 'cv');
-  assert.equal(c.fieldMeta.fullName?.verified, false);
-});
-
-await check('a restart does not restore what the candidate typed', () => {
-  // Only what a document says comes back. The typed answers are the ones they
-  // asked to start over on, so re-seeding must not resurrect them.
-  const c = restarted();
-  buildProfileWrite(c, extractFromCv(CV_FIELDS, c.waId).patch, { source: 'cv', confidence: null });
-
-  // `trainingWillingness` is a menu answer and nothing else — no extractor
-  // writes it — so if re-seeding ever started restoring typed answers, this is
-  // where it would show.
-  assert.equal(c.profile.trainingWillingness, undefined);
 });
 
 console.log('\nthe identity check in front of an application status');

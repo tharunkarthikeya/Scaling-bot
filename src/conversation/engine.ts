@@ -2434,84 +2434,13 @@ async function reopenSession(candidate: CandidateDoc): Promise<void> {
 }
 
 /**
- * Rebuilds the profile fields the documents on file already answered.
- *
- * Restarting clears the profile but keeps the documents (§22), and those two
- * facts used to contradict each other. The CV stayed on file, so the CV step
- * counted as satisfied and was skipped — but everything the CV had *told* us
- * went out with the profile, so the candidate was walked through their name,
- * their date of birth, their trade and the rest one question at a time. They had
- * sent a CV and were then interviewed as if they had not, which is precisely
- * what §5 exists to prevent.
- *
- * So the extractions are replayed here, from the OCR already stored against each
- * current upload. Nothing is re-read and nothing is re-downloaded — the fields
- * are on the upload, exactly as the worker left them. Oldest first, so the order
- * matches the order they originally arrived in and later documents settle over
- * earlier ones the same way they did the first time.
- *
- * What the candidate typed is not restored, and should not be: those are the
- * answers they asked to start over on. Only what a document says comes back.
- */
-async function reseedProfileFromDocuments(candidate: CandidateDoc): Promise<void> {
-  const uploads = await uploadsFor(candidate.waId);
-
-  for (const upload of uploads) {
-    // Superseded versions are history. The current upload in each slot is the
-    // one whose reading counts (§22).
-    if (upload.supersededAt) continue;
-
-    const fields = upload.ocr?.fields;
-    if (upload.ocr?.status !== 'done' || !fields?.length) continue;
-
-    const extractor = requirementFor(upload.docType)?.ocr;
-    if (!extractor || extractor === 'none') continue;
-
-    const patch =
-      extractor === 'resume'
-        ? extractFromCv(fields, candidate.waId).patch
-        : profileFromIdentityDocument(upload.docType, fields);
-
-    if (!Object.keys(patch).length) continue;
-
-    // Straight through `buildProfileWrite` so the restored fields carry the same
-    // provenance they had before — source 'cv' or 'document', unverified, with
-    // the extractor's confidence attached (§27).
-    const write = buildProfileWrite(candidate, patch, {
-      source: extractor === 'resume' ? 'cv' : 'document',
-      confidence: upload.ocr.confidence ?? null,
-    });
-
-    if (!Object.keys(write.set).length) continue;
-
-    await recordsFor(candidate.enquiry).updateOne(
-      { _id: candidate._id },
-      { $set: { ...write.set, updatedAt: new Date() }, $push: { history: { $each: write.changes } } },
-    );
-
-    logger.info(
-      { waId: candidate.waId, docType: upload.docType, fields: Object.keys(patch).length },
-      'profile reseeded from a document already on file',
-    );
-  }
-}
-
-/**
- * Starts the questions again from the top.
- *
- * Answers go; documents stay. §22 forbids destroying an upload without a
- * version history, and someone re-answering the questions has not withdrawn the
- * passport they already sent — re-requesting it would also break §1, which says
- * never to ask for something already on file. Consent and language survive for
- * the same reason: both are recorded facts, not answers being revised.
- */
-/**
  * Fields a restart removes from the record entirely.
  *
  * `$unset` rather than setting them to undefined: through `$set` that writes a
  * BSON null, which still satisfies `$exists`, and a stale `currentStep` left
  * behind would have the candidate's next tap answer the question they just
- * abandoned.
+ * abandoned. `languageChosen` and `languageOther` go too, so the language
+ * question is asked again with the rest.
  */
 export const RESTART_UNSETS = [
   'currentStep',
@@ -2519,70 +2448,46 @@ export const RESTART_UNSETS = [
   'pendingMulti',
   'listPage',
   'sessionEndedAt',
+  'languageChosen',
+  'languageOther',
 ] as const;
 
 /**
- * What "Restart session" resets, and — more importantly — what it does not.
+ * What "Restart session" resets.
  *
- * A restart moves the candidate back to the top of the flow. It does not throw
- * anything away. That distinction used to be the other way round: `profile` and
- * `fieldMeta` were emptied here, so someone who tapped "start again" because
- * they had mistyped one answer lost every answer, and the CV they had already
- * sent was re-read to put some of them back. Restarting a conversation is not
- * the same act as withdrawing the answers given during it — that is what DELETE
- * is for (§23), and it asks first.
+ * A restart is a fresh session: every question is asked again from the first
+ * one, documents included. Answers (`profile`, `fieldMeta`) and document slots
+ * are emptied; the uploads themselves stay in the documents record, where the
+ * next upload to each slot supersedes the old one with its history kept (§22).
  *
- * So what is cleared is the conversation's *position*, and nothing else:
- *
- *   stage        back to the beginning of the flow
- *   editQueue    steps an UPDATE had queued, which are not where they now are
- *   unclearCount the run of replies we could not read
- *   currentStep  the question that was open (via RESTART_UNSETS)
- *   resumeStep   the question a resume prompt interrupted (via RESTART_UNSETS)
- *   pendingMulti a half-made multi-select, which belongs to a question that is
- *                about to be recomputed
- *   listPage     a page of display options, not an answer
- *
- * Everything a candidate has told us or sent us stays: `profile`, `fieldMeta`,
- * `documents`, `consent`, `language`, `history`, and `reminderSentAt` (§21
- * allows one reminder per candidate, and restarting does not make someone a new
- * one).
- *
- * The visible result is what the candidate is promised: the flow starts over,
- * `nextStep` walks it from the first step, and every step that is already
- * satisfied is skipped — so they are asked only for what is genuinely still
- * missing (§1). Where nothing is missing, a restart runs straight to the
- * confirmation, which is the correct answer to "start again" from someone whose
- * answers are all on file.
- *
- * The smoke tests assert against this contract, so a new session field has to be
- * classified deliberately rather than forgotten.
+ * Kept: `consent` (a recorded agreement, not an answer), `language` (the
+ * question is re-asked, but messages stay readable until it is), `history`,
+ * `reminderSentAt`, the application id and the enquiry.
  */
 export function restartPatch(candidate: CandidateDoc): Partial<CandidateDoc> {
   return {
     stage: 'NEW',
     status: BOT_OWNED.has(candidate.status) ? 'new_enquiry' : candidate.status,
+    profile: {},
+    fieldMeta: {},
+    documents: {},
     editQueue: [],
     unclearCount: 0,
   };
 }
 
 /**
- * "Restart session" — the flow from the top, the record untouched.
+ * "Restart session" — every question again, from the first one.
  *
- * `askNextQuestion` recomputes from `STEPS[0]` every time it runs, so clearing
- * the position *is* the restart: there is no cursor to rewind and no separate
- * "start again" path that could disagree with the ordinary one. What the
- * candidate then sees is the first step that is not already satisfied, which for
- * someone part-way through is usually the question they were on, and for someone
- * who has answered everything is the confirmation.
+ * `askNextQuestion` recomputes from `STEPS[0]` every time it runs, so emptying
+ * the answers and the position *is* the restart.
  */
 async function restartRegistration(candidate: CandidateDoc): Promise<void> {
   await recordAudit({
     waId: candidate.waId,
     candidateId: candidate.candidateId,
     event: 'registration_restarted',
-    detail: 'candidate chose to start from the beginning; answers and documents kept',
+    detail: 'candidate chose to start from the beginning; answers cleared, uploads kept as history',
   });
 
   await recordsFor(candidate.enquiry).updateOne(
@@ -2598,19 +2503,11 @@ async function restartRegistration(candidate: CandidateDoc): Promise<void> {
     pendingMulti: undefined,
     listPage: undefined,
     sessionEndedAt: undefined,
+    languageChosen: undefined,
+    languageOther: undefined,
   });
 
-  // Belt and braces on §5, and no longer load-bearing: the profile is not
-  // cleared above any more, so this is here for the uploads whose extraction
-  // landed while the record was being written — it replays what each current
-  // document said, and `buildProfileWrite` refuses to let any of it overwrite
-  // something the candidate typed.
-  await reseedProfileFromDocuments(candidate);
-
-  logger.info(
-    { waId: candidate.waId },
-    'registration restarted at the candidate’s request; stored answers kept',
-  );
+  logger.info({ waId: candidate.waId }, 'registration restarted from the first question');
 
   await tell(candidate, copy.RESTARTED);
   await askNextQuestion(candidate);
