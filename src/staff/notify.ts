@@ -375,6 +375,14 @@ export interface SlaBreachFacts {
   hours_overdue?: number | null;
   /** "unviewed" - never opened. "unevaluated" - opened, never judged. */
   reason?: string | null;
+  /** "manager" - the owner's branch manager. "super_admin" - the later escalation. */
+  recipient_stage?: string | null;
+  /**
+   * Internal CRM ids of exactly who to tell. The CRM picks them (the owner's
+   * branch manager first, Yoosuf on escalation); this end only looks up their
+   * numbers and never widens the audience to every admin.
+   */
+  recipient_ids?: string[];
 }
 
 export type SlaNotifyOutcome =
@@ -399,9 +407,28 @@ export function slaAlertParameters(facts: SlaBreachFacts): string[] {
 }
 
 /**
- * Message every admin who has a number on file about one breached candidate.
+ * The CRM-chosen recipients' contact details, active accounts only.
  *
- * Sent one at a time rather than all at once. The roster of admins is small, and
+ * Read one by one from `/staff/{id}/contact` rather than from the admin list:
+ * the first warning goes to a branch manager, who is not an admin, and a
+ * lookup that only knew admins is what left the managers out entirely.
+ */
+async function slaRecipientContacts(ids: string[]): Promise<CrmStaffContact[]> {
+  const unique = [...new Set(ids)];
+  const contacts = await Promise.all(unique.map((id) => fetchStaffContact(id)));
+  return contacts.filter((contact, index): contact is CrmStaffContact => {
+    if (!contact) {
+      logger.warn({ recipientId: unique[index] }, 'could not read an SLA recipient from the CRM');
+      return false;
+    }
+    return contact.active !== false;
+  });
+}
+
+/**
+ * Message the CRM-chosen recipients about one breached candidate.
+ *
+ * Sent one at a time rather than all at once. The roster of recipients is small, and
  * going through the reply budget in order is what keeps a sweep that found forty
  * breaches from arriving as a burst against the same rate limit a candidate's
  * next answer needs.
@@ -420,8 +447,12 @@ export async function notifyAdminsOfSlaBreach(facts: SlaBreachFacts): Promise<Sl
   // relay one callback per breached candidate.
   if (facts.count !== 1) return { sent: false, reason: 'digest_not_supported' };
 
-  const admins = (await fetchAdminContacts()) ?? [];
-  if (!admins.length) return { sent: false, reason: 'no_admins' };
+  // No list means no decision from the CRM about who is responsible. Falling
+  // back to every admin is what sent branch warnings to the wrong people.
+  if (!facts.recipient_ids?.length) return { sent: false, reason: 'no_recipients' };
+
+  const admins = await slaRecipientContacts(facts.recipient_ids);
+  if (!admins.length) return { sent: false, reason: 'no_active_recipients' };
 
   const reachable = admins
     .map((admin) => ({ admin, to: staffPhoneToE164(admin.phone) }))
@@ -430,10 +461,10 @@ export async function notifyAdminsOfSlaBreach(facts: SlaBreachFacts): Promise<Sl
   if (reachable.length < admins.length) {
     logger.warn(
       { without: admins.length - reachable.length },
-      'some admins have no usable number and were left out of the SLA alert',
+      'some SLA recipients have no usable number and were left out',
     );
   }
-  if (!reachable.length) return { sent: false, reason: 'no_admin_with_a_usable_phone' };
+  if (!reachable.length) return { sent: false, reason: 'no_recipient_with_a_usable_phone' };
 
   await Promise.all(
     reachable.map(async ({ admin, to }) => {
@@ -464,12 +495,15 @@ export async function notifyAdminsOfSlaBreach(facts: SlaBreachFacts): Promise<Sl
       shadowed = shadowed || !!result.shadowed;
       recipients += 1;
     } catch (err) {
-      logger.warn({ err, adminId: row.admin.id }, 'could not send the SLA alert to an admin');
+      logger.warn({ err, adminId: row.admin.id }, 'could not send the SLA alert to a recipient');
     }
   }
 
   if (!recipients) return { sent: false, reason: 'send_failed' };
 
-  logger.info({ recipients, breaches: facts.count }, 'told the admins about unattended work');
+  logger.info(
+    { recipients, breaches: facts.count, stage: facts.recipient_stage },
+    'told the responsible managers or admins about unattended work',
+  );
   return { sent: true, recipients, shadowed };
 }

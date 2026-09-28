@@ -553,6 +553,12 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
           ? Number(body.hours_overdue)
           : undefined,
         reason: text(body.reason),
+        recipient_stage: text(body.recipient_stage),
+        recipient_ids: Array.isArray(body.recipient_ids)
+          ? body.recipient_ids
+              .map(text)
+              .filter((id): id is string => !!id)
+          : undefined,
       });
     });
 
