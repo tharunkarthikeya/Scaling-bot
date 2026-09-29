@@ -51,7 +51,7 @@ export { record } from './record.js';
  * executed to obtain it, and percentiles that do not have to be computed from a
  * growing array.
  *
- * This is the metric that distinguishes "slow because it is waiting on Anthropic"
+ * This is the metric that distinguishes "slow because it is waiting on OpenAI"
  * from "slow because something is blocking the loop" — the second is the only
  * one where adding concurrency makes things worse.
  */
@@ -90,7 +90,7 @@ const limiterWaited = gauge('adira_rate_limit_waited_total', 'Acquisitions that 
 const limiterWaitAvg = gauge('adira_rate_limit_wait_avg_seconds', 'Mean wait for a token, by budget. Rising here with a flat queue means the outbound path is the constraint.');
 const limiterWaitMax = gauge('adira_rate_limit_wait_max_seconds', 'Longest wait for a token since boot, by budget.');
 
-const modelInFlight = gauge('adira_model_in_flight', 'Anthropic calls executing in this process.');
+const modelInFlight = gauge('adira_model_in_flight', 'OpenAI calls executing in this process.');
 const modelWaiting = gauge('adira_model_waiting', 'Calls queued for a concurrency slot in this process.');
 const modelConcurrency = gauge('adira_model_concurrency_limit', 'MODEL_MAX_CONCURRENCY, per process.');
 const modelCalls = gauge('adira_model_calls_total', 'Calls attempted.');

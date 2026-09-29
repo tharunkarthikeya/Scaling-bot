@@ -40,14 +40,13 @@
  * sentence saying so rather than silence.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { faqContext, violatesGuardrails } from './faq.js';
 import { LANGUAGE_NAMES, type Language } from './language.js';
 import { TUNABLES } from './rules.js';
 
-import { callModel, modelClient } from './model.js';
+import { callTool, type ModelTool } from './model.js';
 
 export type RespondOutcome =
   /** Send this, then re-send the open question underneath it. */
@@ -144,10 +143,10 @@ did not finish school. Plain words, no bullet points, no greeting, no sign-off,
 no "great question".
 `.trim();
 
-const RESPOND_TOOL: Anthropic.Tool = {
+const RESPOND_TOOL: ModelTool = {
   name: 'respond',
   description: 'Reply to what the candidate said about the open question. Call exactly once.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       kind: { type: 'string', enum: ['answered', 'no_answer', 'staff'] },
@@ -200,32 +199,21 @@ export async function respondInContext(params: {
     : '';
 
   try {
-    const response = await callModel('respond-in-context', () =>
-      modelClient().messages.create({
-      model: config.CLAUDE_MODEL,
-      max_tokens: TUNABLES.maxAnswerTokens,
-      system: [
-        // Identical on every call and the larger half of the input, so both
-        // blocks are cached. Anything per-candidate above this line would kill
-        // the cache for every reply — see the same note in `faq.ts`.
-        { type: 'text', text: IN_CONTEXT_PROMPT, cache_control: { type: 'ephemeral' } },
-        { type: 'text', text: faqContext(), cache_control: { type: 'ephemeral' } },
-      ],
-      tools: [RESPOND_TOOL],
-      tool_choice: { type: 'tool', name: 'respond' },
-      messages: [
-        {
-          role: 'user',
-          content:
-            `Candidate's language: ${languageName(params.language, params.languageOther)}\n\n` +
-            `Question on their screen: ${params.question}\n${offered}${about}\n\n` +
-            `They replied:\n${message}`,
-        },
-      ],
-      }),
-    );
+    const input = await callTool('respond-in-context', {
+      // Identical on every call and the larger half of the input, so both
+      // blocks lead the prompt and are reused from the cache. Anything
+      // per-candidate above them would kill the cache for every reply — see
+      // the same note in `faq.ts`.
+      system: [IN_CONTEXT_PROMPT, faqContext()],
+      user:
+        `Candidate's language: ${languageName(params.language, params.languageOther)}\n\n` +
+        `Question on their screen: ${params.question}\n${offered}${about}\n\n` +
+        `They replied:\n${message}`,
+      tool: RESPOND_TOOL,
+      maxTokens: TUNABLES.maxAnswerTokens,
+    });
 
-    return readReply(response, 'respond');
+    return readReply(input, 'respond');
   } catch (err) {
     logger.error({ err }, 'in-context reply failed');
     return { kind: 'no_answer' };
@@ -278,28 +266,19 @@ export async function explainWrongDocument(params: {
   languageOther?: string;
 }): Promise<RespondOutcome> {
   try {
-    const response = await callModel('wrong-document', () =>
-      modelClient().messages.create({
-      model: config.CLAUDE_MODEL,
-      max_tokens: TUNABLES.maxAnswerTokens,
-      system: [{ type: 'text', text: WRONG_DOCUMENT_PROMPT, cache_control: { type: 'ephemeral' } }],
-      tools: [RESPOND_TOOL],
-      tool_choice: { type: 'tool', name: 'respond' },
-      messages: [
-        {
-          role: 'user',
-          content:
-            `Candidate's language: ${languageName(params.language, params.languageOther)}\n\n` +
-            `Document asked for: ${params.expected}\n` +
-            (params.appearsToBe
-              ? `The file appears to be: ${params.appearsToBe}`
-              : 'What the file is could not be established.'),
-        },
-      ],
-      }),
-    );
+    const input = await callTool('wrong-document', {
+      system: [WRONG_DOCUMENT_PROMPT],
+      user:
+        `Candidate's language: ${languageName(params.language, params.languageOther)}\n\n` +
+        `Document asked for: ${params.expected}\n` +
+        (params.appearsToBe
+          ? `The file appears to be: ${params.appearsToBe}`
+          : 'What the file is could not be established.'),
+      tool: RESPOND_TOOL,
+      maxTokens: TUNABLES.maxAnswerTokens,
+    });
 
-    return readReply(response, 'wrong document');
+    return readReply(input, 'wrong document');
   } catch (err) {
     logger.error({ err }, 'wrong-document reply failed');
     return { kind: 'no_answer' };
@@ -316,13 +295,10 @@ export async function explainWrongDocument(params: {
  * Not repaired on a trip, for the reason `faq.ts` gives: asking the same model
  * the same question with the same context tends to produce the same sentence.
  */
-function readReply(response: Anthropic.Message, what: string): RespondOutcome {
-  const call = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'respond',
-  );
-  if (!call) return { kind: 'no_answer' };
+function readReply(returned: Record<string, unknown> | undefined, what: string): RespondOutcome {
+  if (!returned) return { kind: 'no_answer' };
 
-  const input = (call.input ?? {}) as { kind?: string; text?: unknown };
+  const input = returned as { kind?: string; text?: unknown };
 
   if (input.kind === 'staff') return { kind: 'staff' };
   if (input.kind !== 'answered') return { kind: 'no_answer' };

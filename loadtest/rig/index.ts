@@ -38,7 +38,7 @@ const LOADTEST_DIR = path.resolve(HERE, '..');
 
 const APP_PORT = Number(process.env.APP_PORT ?? 3100);
 const CONTROL_PORT = APP_PORT + 1;
-const MOCK_URL = process.env.ANTHROPIC_BASE_URL ?? 'http://127.0.0.1:8788';
+const MOCK_URL = process.env.OPENAI_BASE_URL ?? 'http://127.0.0.1:8788';
 
 /* ------------------------------------------------------------------ */
 /* Isolation, asserted before anything is imported                     */
@@ -162,8 +162,8 @@ process.env.MONGODB_DB = MONGO_DB;
 
 // The application talks to the mock over real HTTP. The SDK reads this variable
 // in its own constructor, so no application code has to know about it.
-process.env.ANTHROPIC_BASE_URL = MOCK_URL;
-process.env.ANTHROPIC_API_KEY = 'loadtest-not-a-real-key';
+process.env.OPENAI_BASE_URL = MOCK_URL;
+process.env.OPENAI_API_KEY = 'loadtest-not-a-real-key';
 
 // Left OFF deliberately. Shadow mode returns before `budgets.replies.acquire()`,
 // so switching it on would remove the 20/sec reply limiter from the measurement
@@ -429,7 +429,7 @@ const proc = watchProcess(500);
  *
  * `modelStats()` reports what is happening right now, and reading it only at the
  * end reports the quiet moment after the run rather than the busy one during it.
- * Sampled alongside queue depth so "peak concurrent Anthropic calls" and "peak
+ * Sampled alongside queue depth so "peak concurrent OpenAI calls" and "peak
  * model queue depth" are measurements rather than the last value seen.
  */
 const modelPeak = { inFlight: 0, waiting: 0 };
@@ -765,7 +765,7 @@ const control = http.createServer(async (req, res) => {
   // throws before a socket is opened.
   if (url.pathname === '/guard-probe') {
     const hosts = [
-      'https://api.anthropic.com/v1/messages',
+      'https://api.openai.com/v1/chat/completions',
       'https://graph.facebook.com/v25.0/000/messages',
       'https://crm.example.com/v1/candidates',
       'https://veris.recursai.in/v1/health',
@@ -878,7 +878,7 @@ console.log(
     'load-test rig up',
     `  app       ${runtime.appUrl}       (measured — all load goes here)`,
     `  control   ${runtime.controlUrl}   (metrics + replies — not measured)`,
-    `  anthropic ${MOCK_URL}             (mock; real host is refused by the guard)`,
+    `  openai    ${MOCK_URL}             (mock; real host is refused by the guard)`,
     `  veris ocr ${process.env.VERIS_OCR_BASE_URL}` +
       `${process.env.LOADTEST_REAL_VERIS === 'true' ? '   *** LIVE SERVICE — real traffic leaves this machine ***' : '   (mock)'}`,
     `  media     served by the control port; MOCK_WHATSAPP_MEDIA=false so the real download runs`,

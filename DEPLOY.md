@@ -61,9 +61,9 @@ WHATSAPP_GRAPH_API_VERSION=v25.0
 WHATSAPP_REENGAGEMENT_TEMPLATE=<from your .env>
 WHATSAPP_REENGAGEMENT_TEMPLATE_LANG=en
 
-# --- Anthropic ---
-ANTHROPIC_API_KEY=<from your .env>
-CLAUDE_MODEL=claude-haiku-4-5
+# --- OpenAI ---
+OPENAI_API_KEY=<from your .env>
+OPENAI_MODEL=gpt-6-luna
 
 # --- Veris OCR ---
 VERIS_OCR_BASE_URL=https://veris.recursai.in
@@ -203,7 +203,7 @@ npm run doctor:prod
 ```
 
 Every line should read `ok`. It checks, in order: shadow mode, MongoDB
-connectivity and writability, storage, the Anthropic key, the OCR service, the
+connectivity and writability, storage, the OpenAI key, the OCR service, the
 WhatsApp token and number, and whether Meta has an app subscribed.
 
 ### One-time WhatsApp Business App Coexistence onboarding
@@ -274,5 +274,5 @@ Boot never drops it on its own.
 | `/health` does not respond | Container is not running or the domain is not mapped to port 3000. Check the app logs. |
 | `/health` fine, no logs on send | Meta's callback URL does not point here — see step 4. |
 | Logs show `rejected webhook with an invalid signature` | `WHATSAPP_APP_SECRET` does not match the app sending the webhook. |
-| Logs show inbound, no reply | `doctor` will show whether it is the Anthropic key. Otherwise check for `outside_24h_window`. |
+| Logs show inbound, no reply | `doctor` will show whether it is the OpenAI key. Otherwise check for `outside_24h_window`. |
 | Replies stop after 24h of candidate silence | Expected. Meta's window closed; only the approved template can reopen it, and nothing schedules it yet. |

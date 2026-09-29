@@ -63,7 +63,7 @@ const REQUIRED_DEFAULTS: Record<string, string> = {
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: 'test-verify-token',
   WHATSAPP_ACCESS_TOKEN: 'test-access-token',
   WHATSAPP_PHONE_NUMBER_ID: '1234567890',
-  ANTHROPIC_API_KEY: 'sk-ant-test',
+  OPENAI_API_KEY: 'sk-test',
   VERIS_OCR_BASE_URL: 'http://127.0.0.1:8789',
   VERIS_OCR_API_KEY: 'test-ocr-key',
   NODE_ENV: 'test',

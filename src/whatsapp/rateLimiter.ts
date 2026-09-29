@@ -355,10 +355,10 @@ export function createBudget(name: string, perSecond: number): Budget {
 export { LocalRateLimiter as RateLimiter };
 
 /**
- * A global ceiling on how fast the fleet may call Anthropic.
+ * A global ceiling on how fast the fleet may call OpenAI.
  *
  * Deliberately a *rate* limit and not a distributed semaphore, because that is
- * what Anthropic actually enforces: requests and tokens per minute, per
+ * what OpenAI actually enforces: requests and tokens per minute, per
  * organisation. A fleet-wide concurrency cap would be a number with no
  * counterpart on their side, and it would need lease expiry and reaping to
  * survive a worker being killed mid-call — machinery whose own failure mode is

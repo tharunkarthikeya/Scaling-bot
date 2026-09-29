@@ -10,10 +10,10 @@ Nothing in `src/` was modified to make it work.
 | Application code | **real** — same modules, same `config.ts`, same queue registrations |
 | Concurrency | **real** — read from config, not written here (inbound 8, ocr 3, crm 2) |
 | Reply rate limiter | **real** — 20/sec, and deliberately exercised (see below) |
-| Anthropic SDK, retries, 429 handling | **real** — only the far end is a mock |
+| OpenAI SDK, retries, 429 handling | **real** — only the far end is a mock |
 | Fastify, webhook, signature check | **real** |
 | MongoDB | **real mongod**, isolated, dropped before every run |
-| Anthropic API | **mock** on `127.0.0.1:8788` |
+| OpenAI API | **mock** on `127.0.0.1:8788` |
 | Meta Graph | **stubbed at the socket** by the fetch guard |
 | Veris OCR | **never called** — no documents are sent |
 | CRM | **never called** — `CRM_API_URL` unset |
@@ -34,7 +34,7 @@ socket instead, so the limiter and its queueing behaviour are what get measured.
 - `127.0.0.1` / `localhost` — passed through
 - **anything else throws**
 
-So Meta, the real Anthropic host, the CRM and Veris are all unreachable by
+So Meta, the real OpenAI host, the CRM and Veris are all unreachable by
 construction, not by configuration. `blocked outbound (must be 0)` in every
 report is the evidence. The rig also refuses to start against a MongoDB whose
 host is not loopback, and generates its own throwaway `WHATSAPP_APP_SECRET` —
@@ -48,8 +48,8 @@ loadtest/
     index.ts        composes src/ the way src/index.ts does; two ports
     guard.ts        the fetch allowlist and the Graph stub
     instrument.ts   event-loop lag, queue wait/depth, CPU/RSS sampling
-  mock-anthropic/
-    server.ts       a stand-in for api.anthropic.com
+  mock-openai/
+    server.ts       a stand-in for api.openai.com
   generator/
     index.ts        the load generator
     scenario.ts     what a simulated candidate does
@@ -77,7 +77,7 @@ That mode works but **mongod then competes for the same cores as the
 application**, so capacity numbers from it are a floor, not a match for
 production. Use the container for any run whose numbers you intend to quote.
 
-### 2. Mock Anthropic
+### 2. Mock OpenAI
 
 ```bash
 npm run loadtest:mock
@@ -138,7 +138,7 @@ Four different things, and they are not interchangeable:
 - **concurrent users** — candidates in a conversation at once
 - **requests/sec** — HTTP into `/webhook`
 - **messages/sec** — inbound candidate messages processed
-- **anthropic requests/sec** — model calls, only from free-text answers
+- **openai requests/sec** — model calls, only from free-text answers
 
 A tap is resolved locally by `interpret.ts` and costs no model call; a typed
 answer costs exactly one. The scenario mixes both because a tap-only script

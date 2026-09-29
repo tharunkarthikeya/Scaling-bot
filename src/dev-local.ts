@@ -61,7 +61,7 @@ const app = await buildServer();
 await app.listen({ port: config.PORT, host: '0.0.0.0' });
 
 logger.info(
-  { port: config.PORT, dbPath, model: config.CLAUDE_MODEL, shadowMode: config.SHADOW_MODE },
+  { port: config.PORT, dbPath, model: config.OPENAI_MODEL, shadowMode: config.SHADOW_MODE },
   'dev server ready (embedded mongodb)',
 );
 console.log(`\n  local:   http://127.0.0.1:${config.PORT}/health`);

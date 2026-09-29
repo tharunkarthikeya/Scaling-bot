@@ -1,12 +1,12 @@
 /**
- * The one Anthropic client, and the ceiling on how hard we lean on it.
+ * The one OpenAI client, and the ceiling on how hard we lean on it.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *  THIS IS WHERE MODEL RETRIES AND FAN-OUT ARE TUNED. The numbers live in
  *  `config.ts`; the behaviour lives here.
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * Five places used to construct their own `Anthropic` instance — the
+ * Five places used to construct their own model client instance — the
  * interpreter, the FAQ, the two in-context replies, and the trade-question
  * writer. Five clients, one API key, and no idea of each other. With one job in
  * flight that was merely untidy. With eight it is a fan-out nobody bounds: every
@@ -24,20 +24,20 @@
  *   reliably makes it worse.
  *
  *   A distinction between "the model said no" and "we could not ask". Without
- *   it, `interpret` returns `unclear` when Anthropic is busy, `unclear` is
+ *   it, `interpret` returns `unclear` when OpenAI is busy, `unclear` is
  *   counted as a reply the bot could not read, and two of those in a row hand
  *   the candidate to a member of staff — for a fault that was entirely ours.
  *   That is what `ModelUnavailableError` exists to prevent.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { modelBudget } from '../whatsapp/rateLimiter.js';
 
 /**
  * Raised when a call could not be completed for a reason that is ours or
- * Anthropic's, and never the candidate's.
+ * OpenAI's, and never the candidate's.
  *
  * Callers must not treat this as an answer. It means the question was never
  * put, so nothing may be recorded and nothing may be counted against the
@@ -66,13 +66,13 @@ export const MODEL_REQUEST_OPTIONS = {
   timeout: config.MODEL_TIMEOUT_MS,
 } as const;
 
-let client = new Anthropic({
-  apiKey: config.ANTHROPIC_API_KEY,
+let client = new OpenAI({
+  apiKey: config.OPENAI_API_KEY,
   ...MODEL_REQUEST_OPTIONS,
 });
 
 /** The shared client. Every model call in the application goes through it. */
-export function modelClient(): Anthropic {
+export function modelClient(): OpenAI {
   return client;
 }
 
@@ -80,7 +80,7 @@ export function modelClient(): Anthropic {
  * Swaps the client. Tests only — it is how the retry behaviour is exercised
  * against a stub server without a network or a key.
  */
-export function setModelClientForTests(replacement: Anthropic): () => void {
+export function setModelClientForTests(replacement: OpenAI): () => void {
   const previous = client;
   client = replacement;
   return () => {
@@ -96,10 +96,10 @@ export function setModelClientForTests(replacement: Anthropic): () => void {
  * Statuses the SDK will already have retried to exhaustion by the time we see
  * them. Seeing one here means the retries did not help, not that none happened.
  */
-const TRANSIENT_STATUSES = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
+const TRANSIENT_STATUSES = new Set([408, 409, 429, 500, 502, 503, 504]);
 
 /**
- * Whether a failure is Anthropic being unavailable rather than us being wrong.
+ * Whether a failure is OpenAI being unavailable rather than us being wrong.
  *
  * The distinction is the point of this module. A 400 is a malformed request — a
  * bug in a prompt or a tool definition — and retrying it produces the same 400
@@ -114,7 +114,7 @@ function isTransient(err: unknown): { transient: boolean; status?: number } {
   }
 
   // No status at all: a connection failure or a timeout, which never reached
-  // Anthropic and says nothing about whether the request was valid.
+  // OpenAI and says nothing about whether the request was valid.
   const name = (err as { name?: unknown } | undefined)?.name;
   if (name === 'APIConnectionError' || name === 'APIConnectionTimeoutError') {
     return { transient: true };
@@ -183,7 +183,7 @@ async function takeSlot(label: string): Promise<void> {
  * `label` names the call site in the logs, so a throttling incident says which
  * part of the conversation was affected rather than only that something was.
  *
- * Throws `ModelUnavailableError` when Anthropic could not answer. Anything else
+ * Throws `ModelUnavailableError` when OpenAI could not answer. Anything else
  * — a malformed request, a bad key — propagates unchanged to the caller's own
  * error handling, which is where it was already dealt with.
  */
@@ -197,7 +197,7 @@ export async function callModel<T>(label: string, run: () => Promise<T>): Promis
   // local gate exists to prevent.
   //
   // Undefined unless MODEL_RATE_PER_SECOND is set, in which case this is the one
-  // place the whole fleet is paced against Anthropic's per-minute quota.
+  // place the whole fleet is paced against OpenAI's per-minute quota.
   if (modelBudget) {
     const waitedFrom = Date.now();
     await modelBudget.acquire();
@@ -222,16 +222,87 @@ export async function callModel<T>(label: string, run: () => Promise<T>): Promis
       // matters — one is weather, a hundred a minute is a capacity problem.
       logger.warn(
         { label, status, elapsedMs: Date.now() - startedAt, throttled: counters.transient },
-        'anthropic unavailable after the client exhausted its retries',
+        'openai unavailable after the client exhausted its retries',
       );
       throw new ModelUnavailableError(label, status, err);
     }
 
     counters.failed += 1;
-    logger.error({ err, label, status }, 'anthropic call failed and is not worth retrying');
+    logger.error({ err, label, status }, 'openai call failed and is not worth retrying');
     throw err;
   } finally {
     releaseSlot();
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * One forced tool call
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/** A function the model is made to call, described by a JSON schema. */
+export interface ModelTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/**
+ * Asks the model one question and makes it answer by calling `tool`, so the
+ * reply is always an object rather than prose.
+ *
+ * Every model call in the application has this shape, which is why it lives
+ * here once. `system` blocks go first and must stay identical across calls:
+ * OpenAI caches the longest repeated prefix automatically, and anything
+ * per-candidate placed above them would stop every call reusing it.
+ *
+ * `reasoning_effort: 'none'` is required, not chosen — GPT-6 Luna only accepts
+ * function calling on Chat Completions without reasoning. It is also what keeps
+ * a WhatsApp reply fast.
+ *
+ * Returns the tool's arguments, or `undefined` when the model called nothing or
+ * sent arguments that are not a JSON object. Throws `ModelUnavailableError`
+ * exactly as `callModel` does.
+ */
+export async function callTool(
+  label: string,
+  params: { system: string[]; user: string; tool: ModelTool; maxTokens: number },
+): Promise<Record<string, unknown> | undefined> {
+  const response = await callModel(label, () =>
+    modelClient().chat.completions.create({
+      model: config.OPENAI_MODEL,
+      max_completion_tokens: params.maxTokens,
+      reasoning_effort: 'none',
+      messages: [
+        ...params.system.map((content) => ({ role: 'system' as const, content })),
+        { role: 'user' as const, content: params.user },
+      ],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: params.tool.name,
+            description: params.tool.description,
+            parameters: params.tool.parameters,
+          },
+        },
+      ],
+      tool_choice: { type: 'function', function: { name: params.tool.name } },
+    }),
+  );
+
+  const call = response.choices[0]?.message.tool_calls?.find(
+    (c) => c.type === 'function' && c.function.name === params.tool.name,
+  );
+  if (!call || call.type !== 'function') return undefined;
+
+  try {
+    const parsed: unknown = JSON.parse(call.function.arguments);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    logger.warn({ label }, 'model returned tool arguments that are not valid JSON');
+    return undefined;
   }
 }
 

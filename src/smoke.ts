@@ -49,7 +49,7 @@ import { isTerminalFailure } from './ingestion/ledger.js';
 import { render } from './conversation/copy.js';
 import { RateLimiter } from './whatsapp/rateLimiter.js';
 import http from 'node:http';
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import {
   callModel,
   MODEL_REQUEST_OPTIONS,
@@ -4764,7 +4764,7 @@ console.log('\nthe in-process queue runs jobs in parallel, safely');
 /**
  * These drive `InProcessQueue` directly rather than the exported singleton,
  * which is built from the environment at import time. Handlers are supplied by
- * the test, so nothing here touches Mongo, Meta, Anthropic or Veris.
+ * the test, so nothing here touches Mongo, Meta, OpenAI or Veris.
  *
  * The bug being pinned: this queue used to hold one promise chain for the whole
  * process, so every job of every type ran one after another and the
@@ -5105,7 +5105,7 @@ await check('tryAcquire reports honestly and never waits', async () => {
 
 /* ------------------------------------------------------------------ */
 
-console.log('\nanthropic resilience — throttling is ours to absorb, not the candidate\'s');
+console.log('\nopenai resilience — throttling is ours to absorb, not the candidate\'s');
 
 /**
  * These run the real SDK, with the real retry settings, against a stub server on
@@ -5113,7 +5113,7 @@ console.log('\nanthropic resilience — throttling is ours to absorb, not the ca
  *
  * Driving the transport rather than mocking it is deliberate: the retry, the
  * backoff and the `Retry-After` handling all live inside the SDK, so a test that
- * stubbed `messages.create` would be testing an imitation of the thing that
+ * stubbed `chat.completions.create` would be testing an imitation of the thing that
  * actually has to work.
  */
 interface Stub {
@@ -5139,8 +5139,7 @@ async function modelStub(
       res.end(
         JSON.stringify(
           step.body ?? {
-            type: 'error',
-            error: { type: 'rate_limit_error', message: 'stubbed' },
+            error: { type: 'rate_limit_error', code: 'rate_limit_exceeded', message: 'stubbed' },
           },
         ),
       );
@@ -5159,22 +5158,27 @@ async function modelStub(
 
 /** A well-formed successful completion, as the SDK expects to parse it. */
 const OK_BODY = {
-  id: 'msg_test',
-  type: 'message',
-  role: 'assistant',
+  id: 'chatcmpl_test',
+  object: 'chat.completion',
+  created: 0,
   model: 'stub',
-  content: [{ type: 'text', text: 'ok' }],
-  stop_reason: 'end_turn',
-  stop_sequence: null,
-  usage: { input_tokens: 1, output_tokens: 1 },
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok', refusal: null },
+      finish_reason: 'stop',
+      logprobs: null,
+    },
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
 };
 
 async function withStub<T>(
   plan: Parameters<typeof modelStub>[0],
-  run: (client: Anthropic, stub: Stub) => Promise<T>,
+  run: (client: OpenAI, stub: Stub) => Promise<T>,
 ): Promise<T> {
   const stub = await modelStub(plan);
-  const client = new Anthropic({
+  const client = new OpenAI({
     apiKey: 'test-key',
     baseURL: stub.url,
     ...MODEL_REQUEST_OPTIONS,
@@ -5188,10 +5192,10 @@ async function withStub<T>(
   }
 }
 
-const ask = (client: Anthropic) =>
-  client.messages.create({
+const ask = (client: OpenAI) =>
+  client.chat.completions.create({
     model: 'stub',
-    max_tokens: 16,
+    max_completion_tokens: 16,
     messages: [{ role: 'user', content: 'hello' }],
   });
 
@@ -5199,7 +5203,7 @@ await check('a successful request goes through untouched', async () => {
   resetModelStatsForTests();
   await withStub([{ status: 200, body: OK_BODY }], async (client, stub) => {
     const response = await callModel('test', () => ask(client));
-    assert.equal(response.content[0]?.type, 'text');
+    assert.equal(response.choices[0]?.message.content, 'ok');
     assert.equal(stub.requests(), 1, 'a healthy request was retried');
   });
   assert.equal(modelStats().transient, 0);
@@ -5211,7 +5215,7 @@ await check('a 429 followed by success is retried and succeeds', async () => {
     [{ status: 429 }, { status: 200, body: OK_BODY }],
     async (client, stub) => {
       const response = await callModel('test', () => ask(client));
-      assert.equal(response.content[0]?.type, 'text');
+      assert.equal(response.choices[0]?.message.content, 'ok');
       assert.equal(stub.requests(), 2, 'the 429 was not retried');
     },
   );
@@ -5274,7 +5278,7 @@ await check('a non-retryable error is not retried and is not called throttling',
     [
       {
         status: 400,
-        body: { type: 'error', error: { type: 'invalid_request_error', message: 'bad' } },
+        body: { error: { type: 'invalid_request_error', code: null, message: 'bad' } },
       },
     ],
     async (client, stub) => {

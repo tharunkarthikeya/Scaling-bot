@@ -268,7 +268,7 @@ async function main(): Promise<void> {
       role: describePlan(plan),
       port: config.PORT,
       env: config.NODE_ENV,
-      model: config.CLAUDE_MODEL,
+      model: config.OPENAI_MODEL,
       shadowMode: config.SHADOW_MODE,
       queue: redisEnabled() ? 'redis' : 'in-process',
       storage: storageDriver(),

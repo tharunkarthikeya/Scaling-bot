@@ -32,13 +32,12 @@
  * ground.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { LANGUAGE_NAMES, type Language } from './language.js';
 import { TUNABLES } from './rules.js';
 
-import { callModel, modelClient } from './model.js';
+import { callTool, type ModelTool } from './model.js';
 
 export interface FaqEntry {
   id: string;
@@ -279,10 +278,10 @@ When in doubt, "no_answer". A question routed to a person costs one message. A
 wrong answer about money or a visa costs the agency far more.
 `.trim();
 
-const ANSWER_TOOL: Anthropic.Tool = {
+const ANSWER_TOOL: ModelTool = {
   name: 'answer',
   description: 'Report whether the approved answers cover the question. Call exactly once.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       kind: {
@@ -339,34 +338,18 @@ export async function answerFromFaq(params: {
       : (params.languageOther?.trim().slice(0, 40) || 'English');
 
   try {
-    const response = await callModel('faq', () =>
-      modelClient().messages.create({
-      model: config.CLAUDE_MODEL,
-      max_tokens: TUNABLES.maxAnswerTokens,
-      system: [
-        // The FAQ is part of the cached prefix: it is identical on every call,
-        // and it is the larger half of the input. Putting anything
-        // per-candidate above this line would kill the cache for every answer.
-        { type: 'text', text: ANSWER_PROMPT, cache_control: { type: 'ephemeral' } },
-        { type: 'text', text: faqContext(), cache_control: { type: 'ephemeral' } },
-      ],
-      tools: [ANSWER_TOOL],
-      tool_choice: { type: 'tool', name: 'answer' },
-      messages: [
-        {
-          role: 'user',
-          content: `Candidate's language: ${language}\n\nCandidate asked:\n${question}`,
-        },
-      ],
-      }),
-    );
+    const returned = await callTool('faq', {
+      // The FAQ is part of the cached prefix: it is identical on every call,
+      // and it is the larger half of the input. Putting anything
+      // per-candidate above it would kill the cache for every answer.
+      system: [ANSWER_PROMPT, faqContext()],
+      user: `Candidate's language: ${language}\n\nCandidate asked:\n${question}`,
+      tool: ANSWER_TOOL,
+      maxTokens: TUNABLES.maxAnswerTokens,
+    });
+    if (!returned) return { kind: 'no_answer' };
 
-    const call = response.content.find(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'answer',
-    );
-    if (!call) return { kind: 'no_answer' };
-
-    const input = (call.input ?? {}) as { kind?: string; text?: unknown; used?: unknown };
+    const input = returned as { kind?: string; text?: unknown; used?: unknown };
 
     if (input.kind === 'staff') return { kind: 'staff' };
     if (input.kind !== 'answered') return { kind: 'no_answer' };

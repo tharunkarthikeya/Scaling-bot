@@ -434,7 +434,7 @@ async function main(): Promise<void> {
     replyLatencyMs: replyLatency.summary(),
     replyTimeouts: counts.replyTimeouts,
     server: metrics,
-    mockAnthropic: mock,
+    mockOpenai: mock,
     database: db,
     stages,
     mockVeris: ocrMock,
@@ -608,7 +608,7 @@ function print(r: Record<string, any>): void {
   line('requests/sec (HTTP to /webhook)', r.throughput.requestsPerSecond);
   line('bot replies observed', s?.graph?.sends ?? 'unavailable');
   line('replies/sec (mean)', r.throughput.repliesPerSecond);
-  line('anthropic requests', s?.model?.calls ?? 'unavailable');
+  line('openai requests', s?.model?.calls ?? 'unavailable');
   line('test duration (s)', r.durationSeconds);
 
   console.log('\nLATENCY — ACK (webhook returns 200; enqueues only)');
@@ -651,16 +651,16 @@ function print(r: Record<string, any>): void {
     line('per-second series', JSON.stringify(s.replyRate.perSecond.slice(0, 40)));
   } else line('reply rate', 'unavailable');
 
-  console.log('\nANTHROPIC');
+  console.log('\nOPENAI');
   if (s?.model) {
     line('calls / transient / shed / failed', `${s.model.calls} / ${s.model.transient} / ${s.model.shed} / ${s.model.failed}`);
     line('gate concurrency / queued', `${s.model.concurrency} / ${s.model.waiting}`);
   }
-  if (r.mockAnthropic) {
-    line('mock: total / completed / errors', `${r.mockAnthropic.total} / ${r.mockAnthropic.completed} / ${r.mockAnthropic.errors}`);
-    line('mock: max concurrent', r.mockAnthropic.maxConcurrent);
-    line('mock: 429 sent', r.mockAnthropic.sent429);
-    line('mock: latency p50/p95/max', `${r.mockAnthropic.latency?.p50} / ${r.mockAnthropic.latency?.p95} / ${r.mockAnthropic.latency?.max} ms`);
+  if (r.mockOpenai) {
+    line('mock: total / completed / errors', `${r.mockOpenai.total} / ${r.mockOpenai.completed} / ${r.mockOpenai.errors}`);
+    line('mock: max concurrent', r.mockOpenai.maxConcurrent);
+    line('mock: 429 sent', r.mockOpenai.sent429);
+    line('mock: latency p50/p95/max', `${r.mockOpenai.latency?.p50} / ${r.mockOpenai.latency?.p95} / ${r.mockOpenai.latency?.max} ms`);
   }
 
   console.log('\nEVENT LOOP');

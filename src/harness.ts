@@ -87,20 +87,17 @@ try {
   console.log(`  ${red('FAIL')} copy           ${err instanceof Error ? err.message : String(err)}`);
 }
 
-let anthropicOk = false;
+let openaiOk = false;
 try {
-  const { default: Anthropic } = await import('@anthropic-ai/sdk');
-  const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
-  // count_tokens is free and still validates the key and the model id.
-  await client.messages.countTokens({
-    model: config.CLAUDE_MODEL,
-    messages: [{ role: 'user', content: 'ping' }],
-  });
-  anthropicOk = true;
-  console.log(`  ${green('ok')}   anthropic      key valid, model ${config.CLAUDE_MODEL}`);
+  const { default: OpenAI } = await import('openai');
+  const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
+  // Retrieving the model is free and still validates the key and the model id.
+  await client.models.retrieve(config.OPENAI_MODEL);
+  openaiOk = true;
+  console.log(`  ${green('ok')}   openai         key valid, model ${config.OPENAI_MODEL}`);
 } catch (err) {
   console.log(
-    `  ${red('FAIL')} anthropic      ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`,
+    `  ${red('FAIL')} openai         ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`,
   );
   console.log(dim('       free-text answers will fall back to "I did not follow that"'));
 }
@@ -1209,8 +1206,8 @@ verdict(
 
 verdict(
   'model replies',
-  anthropicOk,
-  anthropicOk ? 'working' : 'unverified — free text would not be understood',
+  openaiOk,
+  openaiOk ? 'working' : 'unverified — free text would not be understood',
 );
 
 /* A specialist question, answered about something else (§8).

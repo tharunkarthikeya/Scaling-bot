@@ -12,7 +12,7 @@
  * mixing them:
  *
  *   a tap        resolved locally in `interpret.ts` — no model call at all
- *   free text    falls through to the model — one Anthropic call
+ *   free text    falls through to the model — one OpenAI call
  *
  * A tap-only script would make the bot look far faster than it is; a text-only
  * script would make it look far slower. The real flow is mostly taps with a

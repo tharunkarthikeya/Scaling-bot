@@ -37,7 +37,6 @@
  * file existed. A model outage costs depth of profile, never the registration.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { GeneratedQuestion } from '../db/models.js';
@@ -47,7 +46,7 @@ import { TUNABLES } from './rules.js';
 
 export type { GeneratedQuestion };
 
-import { callModel, ModelUnavailableError, modelClient } from './model.js';
+import { callTool, ModelUnavailableError, type ModelTool } from './model.js';
 
 /**
  * Most questions any candidate is asked about their trade.
@@ -221,10 +220,10 @@ If the job is too vague to ask anything useful about — "work", "any job",
 nobody can use and costs the candidate a turn.
 `.trim();
 
-const QUESTIONS_TOOL: Anthropic.Tool = {
+const QUESTIONS_TOOL: ModelTool = {
   name: 'questions',
   description: 'Return the screening questions for this trade. Call exactly once.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       questions: {
@@ -344,28 +343,15 @@ export async function questionsForOccupation(params: {
       : (params.languageOther?.trim().slice(0, 40) || 'English');
 
   try {
-    const response = await callModel('trade-questions', () =>
-      modelClient().messages.create({
-      model: config.CLAUDE_MODEL,
-      max_tokens: TUNABLES.maxQuestionTokens,
-      system: [{ type: 'text', text: QUESTION_PROMPT, cache_control: { type: 'ephemeral' } }],
-      tools: [QUESTIONS_TOOL],
-      tool_choice: { type: 'tool', name: 'questions' },
-      messages: [
-        {
-          role: 'user',
-          content: `Candidate's language: ${language}\n\nTheir job, in their words:\n${occupation}`,
-        },
-      ],
-      }),
-    );
+    const input = await callTool('trade-questions', {
+      system: [QUESTION_PROMPT],
+      user: `Candidate's language: ${language}\n\nTheir job, in their words:\n${occupation}`,
+      tool: QUESTIONS_TOOL,
+      maxTokens: TUNABLES.maxQuestionTokens,
+    });
+    if (!input) return [];
 
-    const call = response.content.find(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'questions',
-    );
-    if (!call) return [];
-
-    const returned = (call.input as { questions?: unknown })?.questions;
+    const returned = input.questions;
     if (!Array.isArray(returned)) return [];
 
     const seen = new Set<string>();
@@ -389,7 +375,7 @@ export async function questionsForOccupation(params: {
   } catch (err) {
     // Deliberately not swallowed. An empty list from here is *stored*, along
     // with the occupation it was computed for, and the stored pair is what stops
-    // this running again — so returning [] because Anthropic was busy for two
+    // this running again — so returning [] because OpenAI was busy for two
     // seconds would record "this candidate has no trade questions" permanently.
     // The caller catches this and writes nothing, leaving the next turn to try.
     if (err instanceof ModelUnavailableError) throw err;

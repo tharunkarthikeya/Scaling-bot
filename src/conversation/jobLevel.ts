@@ -34,10 +34,9 @@
  * `interpret.ts` resolves a tapped button without a call.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { callModel, ModelUnavailableError, modelClient } from './model.js';
+import { callTool, ModelUnavailableError, type ModelTool } from './model.js';
 
 /**
  * How much a CV adds for this job.
@@ -173,10 +172,10 @@ return unknown. Do not guess. Unknown is treated as skilled, which costs one
 question and never costs a document.
 `.trim();
 
-const LEVEL_TOOL: Anthropic.Tool = {
+const LEVEL_TOOL: ModelTool = {
   name: 'job_level',
   description: 'Return how much a CV adds for this job. Call exactly once.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       level: {
@@ -193,7 +192,7 @@ const LEVEL_TOOL: Anthropic.Tool = {
 /**
  * Classifies the job a candidate says they want.
  *
- * Throws `ModelUnavailableError` when Anthropic could not be reached, exactly
+ * Throws `ModelUnavailableError` when OpenAI could not be reached, exactly
  * as `questionsForOccupation` does and for the same reason: the caller stores
  * what comes back, and storing `unknown` because the model was busy for two
  * seconds would settle the question permanently on a non-answer. Nothing is
@@ -213,28 +212,20 @@ export async function classifyJobLevel(params: { job: string }): Promise<JobLeve
   }
 
   try {
-    const response = await callModel('job-level', () =>
-      modelClient().messages.create({
-        model: config.CLAUDE_MODEL,
-        max_tokens: 128,
-        // Deterministic and candidate-free, so it caches as a prefix across
-        // every classification — the same rule `INTERPRETER_PROMPT` follows.
-        system: [{ type: 'text', text: LEVEL_PROMPT, cache_control: { type: 'ephemeral' } }],
-        tools: [LEVEL_TOOL],
-        tool_choice: { type: 'tool', name: 'job_level' },
-        messages: [{ role: 'user', content: `The job, in their words:\n${job}` }],
-      }),
-    );
-
-    const call = response.content.find(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'job_level',
-    );
-    if (!call) {
+    const input = await callTool('job-level', {
+      // Deterministic and candidate-free, so it caches as a prefix across
+      // every classification — the same rule `INTERPRETER_PROMPT` follows.
+      system: [LEVEL_PROMPT],
+      user: `The job, in their words:\n${job}`,
+      tool: LEVEL_TOOL,
+      maxTokens: 128,
+    });
+    if (!input) {
       logger.warn({ job }, 'job level: no tool call returned');
       return 'unknown';
     }
 
-    const returned = (call.input as { level?: unknown })?.level;
+    const returned = input.level;
     // Filtered rather than trusted. A model that returns "medium" must not
     // become a fourth level nothing in the flow knows how to read.
     if (typeof returned !== 'string' || !LEVELS.has(returned)) {

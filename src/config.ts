@@ -260,9 +260,9 @@ const schema = z.object({
    */
   STAFF_PHONE_DEFAULT_COUNTRY_CODE: z.string().regex(/^\d*$/).default('91'),
 
-  ANTHROPIC_API_KEY: z.string().min(1),
+  OPENAI_API_KEY: z.string().min(1),
   // Model is read from env so it can be changed without touching code.
-  CLAUDE_MODEL: z.string().default('claude-opus-5'),
+  OPENAI_MODEL: z.string().default('gpt-6-luna'),
 
   /* ---------------------------------------------------------------- */
   /* Model resilience (see `conversation/model.ts`)                     */
@@ -292,7 +292,7 @@ const schema = z.object({
   /**
    * Model calls allowed in flight at once.
    *
-   * A bound on *our* fan-out, not a claim about Anthropic's limits, which are
+   * A bound on *our* fan-out, not a claim about OpenAI's limits, which are
    * an account fact this code has no business guessing. Matched to
    * `QUEUE_CONCURRENCY_INBOUND` because that is what actually generates the
    * calls: a turn makes at most one interpretation and at most one reply, in
@@ -321,7 +321,7 @@ const schema = z.object({
    * The counterpart to MODEL_MAX_CONCURRENCY, and deliberately a different kind
    * of limit. Concurrency is bounded per process, because what it protects is
    * this process's memory. Rate is bounded across every process, because what it
-   * protects is an organisation-wide quota that Anthropic enforces per minute
+   * protects is an organisation-wide quota that OpenAI enforces per minute
    * and that four replicas would otherwise spend four times over.
    *
    * Off by default: the right number is an account fact, and a limiter set from

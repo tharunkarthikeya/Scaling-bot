@@ -16,7 +16,7 @@
  *      whether a key is honoured, and if it is, this creates no second job.
  *
  * The same fetch guard the load rig uses is installed first, with exactly one
- * host allowlisted, so a stray call to Meta, Anthropic, the CRM or anything
+ * host allowlisted, so a stray call to Meta, OpenAI, the CRM or anything
  * else fails loudly instead of leaving the machine.
  *
  * Values are never printed — only shapes, types and lengths. Headers are never
@@ -143,7 +143,7 @@ PREFLIGHT
   outbound guard           INSTALLED — only ${HOST} permitted; all else throws
 
   NOT contacted: production MongoDB (no DB connection opened at all),
-                 CRM, Anthropic, Meta/WhatsApp Graph, Redis.
+                 CRM, OpenAI, Meta/WhatsApp Graph, Redis.
   Secrets: API key read from config and sent as a header; never logged.
 `);
 

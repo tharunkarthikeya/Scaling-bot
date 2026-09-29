@@ -14,4 +14,4 @@ The rig's fetch guard refuses the Veris host outright, so a document sent by
 accident fails loudly rather than reaching anyone.
 
 Document load belongs in a later, separate test with a Veris mock alongside the
-Anthropic one.
+OpenAI one.

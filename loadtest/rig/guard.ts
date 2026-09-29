@@ -6,15 +6,15 @@
  * blocklist, so a call this file has never heard of fails loudly on the first
  * attempt rather than quietly reaching a real service — which is the failure
  * mode that actually matters when the alternative is messaging real candidates
- * or spending a real Anthropic budget.
+ * or spending a real OpenAI budget.
  *
  *   graph.facebook.com    intercepted and answered locally. Never dialled.
  *   127.0.0.1 / localhost passed through — the mock, the app, the rig itself.
- *   anything else         throws. graph, api.anthropic.com over its real host,
+ *   anything else         throws. graph, api.openai.com over its real host,
  *                         the CRM, Veris: none of them can be reached from here.
  *
- * Anthropic is *not* intercepted here on purpose. It goes over real HTTP to the
- * local mock via `ANTHROPIC_BASE_URL`, so the SDK's own transport, retries,
+ * OpenAI is *not* intercepted here on purpose. It goes over real HTTP to the
+ * local mock via `OPENAI_BASE_URL`, so the SDK's own transport, retries,
  * backoff and 429 handling are all exercised. Intercepting it would test this
  * file instead of the thing being measured.
  *

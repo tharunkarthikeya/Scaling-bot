@@ -1035,12 +1035,12 @@ These are deliberate — flagging rather than hiding them:
 
 ## Model
 
-Read from `CLAUDE_MODEL`; your `.env` currently sets `claude-haiku-4-5`.
+Read from `OPENAI_MODEL` (default `gpt-6-luna`), with the key in `OPENAI_API_KEY`.
 
-Requests deliberately send no `thinking` or `effort` parameter, so the same code
-runs on Haiku and on Opus without changes — `effort` errors on Haiku 4.5. If you
-move to `claude-opus-5` for better handling of messy multilingual replies, it is
-a one-line env change.
+Every call goes through `callTool` in `src/conversation/model.ts` on Chat
+Completions with `reasoning_effort: "none"` — GPT-6 Luna only accepts
+function calling there without reasoning, and it keeps replies fast. Moving to
+another OpenAI model is a one-line env change.
 #   S c a l i n g - b o t 
  
  

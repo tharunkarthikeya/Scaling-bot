@@ -12,7 +12,6 @@
  * "naan welder, 6 varusham", "mera passport expire ho gaya", "chennai la irukken".
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { Choice } from './language.js';
@@ -20,7 +19,7 @@ import { CORE_LANGUAGES } from './language.js';
 import type { FlowStep } from './flow.js';
 import { INTERPRETER_PROMPT, TUNABLES } from './rules.js';
 
-import { callModel, ModelUnavailableError, modelClient } from './model.js';
+import { callTool, ModelUnavailableError, type ModelTool } from './model.js';
 
 /**
  * What came back from reading one message.
@@ -218,10 +217,10 @@ function resolveLocally(params: InterpretParams): Interpretation | undefined {
  * The model path
  * ───────────────────────────────────────────────────────────────────────────*/
 
-const INTERPRET_TOOL: Anthropic.Tool = {
+const INTERPRET_TOOL: ModelTool = {
   name: 'interpret',
   description: 'Report what the candidate’s reply means. Call this exactly once.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       classification: {
@@ -434,34 +433,19 @@ export async function interpret(params: InterpretParams): Promise<Interpretation
   if (!raw) return { kind: 'unclear', raw };
 
   try {
-    const response = await callModel('interpret', () =>
-      modelClient().messages.create({
-      model: config.CLAUDE_MODEL,
-      max_tokens: TUNABLES.maxInterpretTokens,
-      system: [
-        { type: 'text', text: INTERPRETER_PROMPT, cache_control: { type: 'ephemeral' } },
-      ],
-      tools: [INTERPRET_TOOL],
+    const returned = await callTool('interpret', {
+      system: [INTERPRETER_PROMPT],
+      user: `${describeQuestion(params.step, params.choices)}\n\nCandidate's reply:\n${raw}`,
       // Forced, so the reply is always a parseable object rather than prose.
-      tool_choice: { type: 'tool', name: 'interpret' },
-      messages: [
-        {
-          role: 'user',
-          content: `${describeQuestion(params.step, params.choices)}\n\nCandidate's reply:\n${raw}`,
-        },
-      ],
-      }),
-    );
-
-    const call = response.content.find(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'interpret',
-    );
-    if (!call) {
+      tool: INTERPRET_TOOL,
+      maxTokens: TUNABLES.maxInterpretTokens,
+    });
+    if (!returned) {
       logger.warn({ step: params.step.id }, 'interpreter returned no tool call');
       return { kind: 'unclear', raw };
     }
 
-    const input = (call.input ?? {}) as {
+    const input = returned as {
       classification?: string;
       option_ids?: unknown;
       value?: unknown;

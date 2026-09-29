@@ -37,7 +37,7 @@ function short(err: unknown): string {
 }
 
 console.log(`\n\x1b[1mAdira bot — diagnostics\x1b[0m`);
-console.log(`${DIM}environment: ${config.NODE_ENV}   model: ${config.CLAUDE_MODEL}${RESET}\n`);
+console.log(`${DIM}environment: ${config.NODE_ENV}   model: ${config.OPENAI_MODEL}${RESET}\n`);
 
 /* 1. The single most common reason a working bot stays silent ------------- */
 
@@ -159,23 +159,20 @@ try {
   record('fail', 'redis', short(err), 'Check REDIS_URL.');
 }
 
-/* 4. Anthropic ------------------------------------------------------------ */
+/* 4. OpenAI --------------------------------------------------------------- */
 
 try {
-  const { default: Anthropic } = await import('@anthropic-ai/sdk');
-  const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+  const { default: OpenAI } = await import('openai');
+  const client = new OpenAI({ apiKey: config.OPENAI_API_KEY });
   // Free, and still validates both the key and the model id.
-  await client.messages.countTokens({
-    model: config.CLAUDE_MODEL,
-    messages: [{ role: 'user', content: 'ping' }],
-  });
-  record('ok', 'anthropic', `key valid, model ${config.CLAUDE_MODEL}`);
+  await client.models.retrieve(config.OPENAI_MODEL);
+  record('ok', 'openai', `key valid, model ${config.OPENAI_MODEL}`);
 } catch (err) {
   record(
     'fail',
-    'anthropic',
+    'openai',
     short(err),
-    'Check ANTHROPIC_API_KEY and CLAUDE_MODEL. Without this every reply is the fallback message.',
+    'Check OPENAI_API_KEY and OPENAI_MODEL. Without this every reply is the fallback message.',
   );
 }
 

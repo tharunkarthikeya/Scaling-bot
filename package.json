@@ -34,7 +34,7 @@
     "bench:inspect": "node --expose-gc --import tsx src/bench-inspect.ts",
     "loadtest:mongo": "docker compose -f loadtest/docker-compose.yml up -d",
     "loadtest:mongo:down": "docker compose -f loadtest/docker-compose.yml down -v",
-    "loadtest:mock": "tsx loadtest/mock-anthropic/server.ts",
+    "loadtest:mock": "tsx loadtest/mock-openai/server.ts",
     "loadtest:mock-ocr": "tsx loadtest/mock-veris/server.ts",
     "loadtest:rig": "node --max-old-space-size=4096 --import tsx loadtest/rig/index.ts",
     "loadtest": "tsx loadtest/generator/index.ts",
@@ -53,7 +53,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.65.0",
     "@aws-sdk/client-s3": "^3.1116.0",
     "bullmq": "^5.34.0",
     "codex": "^0.2.3",
@@ -61,6 +60,7 @@
     "fastify": "^5.2.0",
     "ioredis": "^5.4.2",
     "mongodb": "^6.12.0",
+    "openai": "^7.23.0",
     "pino": "^9.6.0",
     "veriis": "^0.1.1",
     "zod": "^3.24.1"
