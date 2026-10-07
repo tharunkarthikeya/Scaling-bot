@@ -32,6 +32,8 @@ import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
 import { attendanceSuccessMessage, parseAttendanceCommand } from './attendance.js';
 import {
+  LOCATION_NOT_RECEIVED_MESSAGE,
+  firstAttendanceDelivery,
   forgetPendingAttendance,
   locationRequestMessage,
   pendingAttendance,
@@ -308,7 +310,19 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
           continue;
         }
 
-        const pending = msg.location ? await pendingAttendance(msg.waId) : undefined;
+        const pending = await pendingAttendance(msg.waId);
+        if (pending && !msg.location) {
+          // Most often a live location, which WhatsApp does not pass to bots:
+          // it arrives as an "unsupported" message with no coordinates.
+          logger.info(
+            { wamid: msg.wamid, rawType: msg.rawType },
+            'attendance waiting for a location; message carried none',
+          );
+          if (await firstAttendanceDelivery(msg.wamid)) {
+            await sendText(msg.waId, LOCATION_NOT_RECEIVED_MESSAGE, msg.phoneNumberId);
+          }
+          continue;
+        }
         if (msg.location && pending) {
           const submission = await submitAttendanceEvent({
             message_id: msg.wamid,

@@ -57,6 +57,27 @@ export async function forgetPendingAttendance(waId: string): Promise<void> {
   local.delete(waId);
 }
 
+const answered = new Map<string, number>();
+
+/**
+ * True the first time a message is seen. Meta can deliver one message several
+ * times within a second, and each delivery must not earn its own reply.
+ */
+export async function firstAttendanceDelivery(wamid: string): Promise<boolean> {
+  if (redisEnabled()) {
+    const set = await sharedRedis().set(key('attendance', 'answered', wamid), '1', 'PX', 3_600_000, 'NX');
+    return set === 'OK';
+  }
+  const now = Date.now();
+  for (const [id, expires] of answered) if (expires <= now) answered.delete(id);
+  if (answered.has(wamid)) return false;
+  answered.set(wamid, now + 3_600_000);
+  return true;
+}
+
+export const LOCATION_NOT_RECEIVED_MESSAGE =
+  'Location not received. Tap "Send location" and choose "Send your current location". Live location cannot be used for attendance.';
+
 export function locationRequestMessage(command: AttendanceCommand): string {
   const action = command.action === 'check_in' ? 'check in' : 'check out';
   return `${command.statedName}, tap "Send location" and share your current location to complete your ${action}. Attendance is only marked at the office.`;

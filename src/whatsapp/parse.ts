@@ -29,6 +29,8 @@ export interface InboundMessage {
   };
   /** A shared location pin. Staff send one to complete an attendance command. */
   location?: { latitude: number; longitude: number };
+  /** Meta's own message type, e.g. `unsupported` for a live location. */
+  rawType?: string;
   /** Present when the candidate replied to a specific earlier message. */
   contextWamid?: string;
   /**
@@ -96,6 +98,7 @@ export function parseWebhook(body: unknown): ParsedWebhook {
           contextWamid: msg.context?.id,
           phoneNumberId,
           groupId: msg.group_id ? String(msg.group_id) : undefined,
+          rawType: msg.type ? String(msg.type) : undefined,
         };
 
         if (msg.type === 'text') {
