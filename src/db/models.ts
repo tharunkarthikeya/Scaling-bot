@@ -654,6 +654,30 @@ export interface CandidateDoc {
      * exists over there.
      */
     identitySha256?: Record<string, string>;
+    /**
+     * How the last attempt to hand the CV over went.
+     *
+     * `resumeSha256` only says what landed. This also says what did not: an
+     * upload the CRM refused, or one that never reached it, used to leave no
+     * trace except a log line — and at the handover the digest was recorded
+     * whether the upload landed or not, so a failed CV was never sent again
+     * and the recruiter saw "No resume on file" for a CV sitting in our
+     * storage. Its absence on a synced candidate with a CV is what the sweep
+     * reads as "never confirmed", which is also how existing records are
+     * backfilled.
+     *
+     *   delivered  the CRM has this file (or already had a CV of its own)
+     *   pending    not there yet; `reconcileCrmSync` comes back for it
+     *   rejected   refused for good, or out of attempts; resending the same
+     *              file would be refused the same way
+     */
+    cv?: {
+      status: 'delivered' | 'pending' | 'rejected';
+      sha256?: string;
+      attempts: number;
+      lastAttemptAt: Date;
+      lastError?: string;
+    };
   };
 
   /** CRM review state for a completed B2B enquiry. Approval gates sourcing export. */

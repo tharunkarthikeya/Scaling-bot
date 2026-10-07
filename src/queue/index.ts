@@ -42,6 +42,12 @@ export interface JobPayloads {
      * one whose outcome is recorded.
      */
     partial?: boolean;
+    /**
+     * Only the CV, for a candidate already handed over: the sweep's retry of a
+     * CV that did not land. The profile is not resent — nothing about it
+     * changed, and the CV is the only thing outstanding.
+     */
+    cvOnly?: boolean;
   };
   /**
    * Copying a finished conversation into the ATS database (`ats/export.ts`).

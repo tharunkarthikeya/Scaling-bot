@@ -99,6 +99,7 @@ export function syncModeFor(
 export async function syncCandidateToCrm(payload: {
   waId: string;
   partial?: boolean;
+  cvOnly?: boolean;
 }): Promise<void> {
   const { waId } = payload;
 
@@ -118,6 +119,11 @@ export async function syncCandidateToCrm(payload: {
 
   if (externalCandidateDeliveryBlocked(candidate)) {
     logger.info({ waId }, 'crm sync skipped: nationality ineligible or still being checked');
+    return;
+  }
+
+  if (payload.cvOnly) {
+    await syncCvOnly(candidate);
     return;
   }
 
@@ -179,9 +185,11 @@ export async function syncCandidateToCrm(payload: {
     // submission. After creation because the CRM assigns the id the file is
     // filed against — and the bytes go over, never a path into our own storage,
     // which the CRM has no way to read.
-    if (cv && !sentWithSubmission) {
-      await uploadCv(candidate, result.candidate_id, cv);
-    }
+    const cvDelivery: CvDelivery | undefined = !cv
+      ? undefined
+      : sentWithSubmission
+        ? { status: 'delivered', sha256: cv.sha256, attempts: 1, lastAttemptAt: new Date() }
+        : await uploadCv(candidate, result.candidate_id, cv);
 
     // And the Aadhaar and passport scans, for the records the submission above
     // just created or refreshed.
@@ -196,9 +204,12 @@ export async function syncCandidateToCrm(payload: {
       lastAttemptAt: new Date(),
       syncedAt: new Date(),
       lastError: undefined,
-      // Whatever went with the submission or straight after it, the CRM now
-      // holds this file — so a later partial does not send it again.
-      resumeSha256: cv?.sha256 ?? candidate.crmSync?.resumeSha256,
+      // Only a file that actually landed. Recording the digest of an upload
+      // that failed told every later sync the CRM already had it, so that CV
+      // was never offered again.
+      resumeSha256:
+        cvDelivery?.status === 'delivered' ? cv!.sha256 : candidate.crmSync?.resumeSha256,
+      ...(cvDelivery ? { cv: cvDelivery } : {}),
       // Merged rather than replaced: what landed this time joins what landed
       // before it, and a scan that failed today keeps its slot empty so the
       // next sync offers it again.
@@ -339,10 +350,11 @@ async function syncPartial(candidate: CandidateDoc): Promise<void> {
     // inline, because the inline path exists for the CV policy and a partial is
     // not held to it.
     const cv = await readCv(candidate);
-    const sent =
+    const cvDelivery =
       cv && cv.sha256 !== candidate.crmSync?.resumeSha256
         ? await uploadCv(candidate, result.candidate_id, cv)
-        : false;
+        : undefined;
+    const sent = cvDelivery?.status === 'delivered';
 
     // The identity scans, on the same terms as the CV: once each, and only
     // once the record they attach to exists. A candidate who sends their
@@ -356,6 +368,7 @@ async function syncPartial(candidate: CandidateDoc): Promise<void> {
       partialSyncedAt: new Date(),
       partialError: undefined,
       ...(sent ? { resumeSha256: cv!.sha256 } : {}),
+      ...(cvDelivery ? { cv: cvDelivery } : {}),
       ...(Object.keys(identity).length
         ? { identitySha256: { ...(candidate.crmSync?.identitySha256 ?? {}), ...identity } }
         : {}),
@@ -472,23 +485,28 @@ async function readCv(candidate: CandidateDoc): Promise<CvFile | undefined> {
   }
 }
 
+type CvDelivery = NonNullable<NonNullable<CandidateDoc['crmSync']>['cv']>;
+
 /**
- * Hands a CV to a candidate the CRM already has.
+ * Hands a CV to a candidate the CRM already has, and says how that went.
  *
- * Best-effort on purpose. A candidate who reached the CRM without their file
- * attached is a far better outcome than one who did not reach it at all, so a
- * failure here is logged and the sync still counts as done — the profile is
- * what the CRM's workflow runs on, and the file can be re-sent.
+ * Never throws. A candidate who reached the CRM without their file attached is
+ * a far better outcome than one who did not reach it at all, so a failure here
+ * never fails the sync — but it is recorded rather than only logged: the
+ * returned delivery goes onto `crmSync.cv`, and a `pending` one is what
+ * `reconcileCrmSync` comes back for.
  *
  * A 409 is the ordinary case rather than a fault: the CRM keeps the résumé it
  * already holds, because a recruiter may have read it and formed a view, and
- * swapping the document under that view is not a refresh.
+ * swapping the document under that view is not a refresh. That is the file
+ * being *there*, so it counts as delivered.
  */
 async function uploadCv(
   candidate: CandidateDoc,
   crmCandidateId: string,
   cv: CvFile,
-): Promise<boolean> {
+): Promise<CvDelivery> {
+  const attempts = nextCvAttempt(candidate, cv.sha256);
   try {
     await uploadResume({
       candidateId: crmCandidateId,
@@ -497,20 +515,84 @@ async function uploadCv(
       mimeType: cv.mimeType,
     });
     logger.info({ waId: candidate.waId, crmId: crmCandidateId }, 'cv uploaded to crm');
-    return true;
+    return { status: 'delivered', sha256: cv.sha256, attempts, lastAttemptAt: new Date() };
   } catch (err) {
-    const conflict = err instanceof CrmError && err.status === 409;
-    logger[conflict ? 'info' : 'error'](
-      { err, waId: candidate.waId, crmId: crmCandidateId },
-      conflict
-        ? 'the crm already holds a cv for this candidate; keeping theirs'
-        : 'cv upload to crm failed; the candidate is synced without it',
+    const crmErr = err instanceof CrmError ? err : undefined;
+    if (crmErr?.status === 409) {
+      logger.info(
+        { waId: candidate.waId, crmId: crmCandidateId, code: crmErr.code },
+        'the crm already holds a cv for this candidate; keeping theirs',
+      );
+      return { status: 'delivered', sha256: cv.sha256, attempts, lastAttemptAt: new Date() };
+    }
+
+    // Only transport and server errors are worth another go. A file the CRM
+    // refused outright — an unsupported type, a candidate it no longer has —
+    // would be refused identically next time.
+    const retryable = crmErr ? crmErr.retryable : true;
+    const status = retryable && attempts < config.CRM_SYNC_MAX_ATTEMPTS ? 'pending' : 'rejected';
+    logger.error(
+      { err, waId: candidate.waId, crmId: crmCandidateId, attempts, status: crmErr?.status },
+      status === 'pending'
+        ? 'cv upload to crm failed; it will be retried'
+        : 'cv upload to crm refused; the candidate is synced without it',
     );
-    // A conflict is the CRM keeping the résumé it already has, which is the
-    // file being *there* rather than the upload having failed — so it counts as
-    // delivered and no partial sync offers it again.
-    return conflict;
+    return {
+      status,
+      sha256: cv.sha256,
+      attempts,
+      lastAttemptAt: new Date(),
+      lastError: crmErr?.message ?? String(err),
+    };
   }
+}
+
+/** Which attempt this is at delivering the file with this digest. */
+function nextCvAttempt(candidate: CandidateDoc, sha256: string | undefined): number {
+  const prior = candidate.crmSync?.cv;
+  return prior?.status === 'pending' && prior.sha256 === sha256 ? prior.attempts + 1 : 1;
+}
+
+/**
+ * The sweep's retry: the CV alone, for a candidate already handed over.
+ *
+ * Reached for a CV that failed earlier and for a synced candidate whose CV was
+ * never confirmed at all — which covers everyone handed over before delivery
+ * was tracked, including those whose failed upload was recorded as sent. For a
+ * candidate whose CV did land, the CRM answers 409 and the record is simply
+ * marked delivered; nothing is replaced.
+ *
+ * Deliberately ignores `resumeSha256`: on exactly the records this exists to
+ * repair, that digest claims a delivery that never happened.
+ */
+async function syncCvOnly(candidate: CandidateDoc): Promise<void> {
+  const crmId = candidate.crmSync?.candidateId;
+  if (candidate.crmSync?.status !== 'synced' || !crmId) return;
+  if (!candidate.documents?.cv?.documentId) return;
+  // A second job queued by an earlier sweep, after the first settled it.
+  if (candidate.crmSync.cv && candidate.crmSync.cv.status !== 'pending') return;
+
+  const cv = await readCv(candidate);
+  let delivery: CvDelivery;
+  if (cv) {
+    delivery = await uploadCv(candidate, crmId, cv);
+  } else {
+    // Our own storage could not produce it. Possibly a blip, so it is retried
+    // like any other failure rather than written off on the first go.
+    const attempts = nextCvAttempt(candidate, undefined);
+    delivery = {
+      status: attempts < config.CRM_SYNC_MAX_ATTEMPTS ? 'pending' : 'rejected',
+      attempts,
+      lastAttemptAt: new Date(),
+      lastError: 'the cv could not be read from bot storage',
+    };
+  }
+
+  await setSync(candidate, {
+    ...candidate.crmSync!,
+    ...(delivery.status === 'delivered' && cv ? { resumeSha256: cv.sha256 } : {}),
+    cv: delivery,
+  });
 }
 
 /**
@@ -657,12 +739,39 @@ export async function reconcileCrmSync(): Promise<number> {
     .limit(50)
     .toArray();
 
+  // Handed over, holding a CV, and the CRM's copy of it not confirmed: either
+  // never checked (everyone synced before `crmSync.cv` existed — which is how
+  // the CVs lost before this fix are backfilled), or a failed upload due
+  // another go. Fifty a sweep, so a backfill trickles rather than floods.
+  const cvOutstanding = await recordsFor(undefined)
+    .find({
+      stage: 'REGISTRATION_COMPLETED',
+      'crmSync.status': 'synced',
+      'documents.cv.documentId': { $exists: true, $ne: null },
+      $or: [
+        { 'crmSync.cv': { $exists: false } },
+        {
+          'crmSync.cv.status': 'pending',
+          'crmSync.cv.lastAttemptAt': { $lt: stale },
+        },
+      ],
+    })
+    .project<{ waId: string }>({ waId: 1 })
+    .limit(50)
+    .toArray();
+
   for (const candidate of pending) {
     await queue.enqueue('crm_sync', { waId: candidate.waId });
   }
-
-  if (pending.length) {
-    logger.info({ count: pending.length }, 'requeued candidates for crm sync');
+  for (const candidate of cvOutstanding) {
+    await queue.enqueue('crm_sync', { waId: candidate.waId, cvOnly: true });
   }
-  return pending.length;
+
+  if (pending.length || cvOutstanding.length) {
+    logger.info(
+      { count: pending.length, cvs: cvOutstanding.length },
+      'requeued candidates for crm sync',
+    );
+  }
+  return pending.length + cvOutstanding.length;
 }
