@@ -22,7 +22,7 @@ import {
   type ApplicationStatus,
 } from './db/models.js';
 import { queue } from './queue/index.js';
-import { markAsRead, sendText } from './whatsapp/client.js';
+import { markAsRead, sendLocationRequest, sendText } from './whatsapp/client.js';
 import { captureAttachment } from './ingestion/whatsapp.js';
 import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
 import { record, renderMetrics } from './metrics/index.js';
@@ -31,6 +31,12 @@ import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
 import { attendanceSuccessMessage, parseAttendanceCommand } from './attendance.js';
+import {
+  forgetPendingAttendance,
+  locationRequestMessage,
+  pendingAttendance,
+  rememberPendingAttendance,
+} from './attendance-pending.js';
 import {
   crmConfigured,
   fetchWhatsappReplyPolicy,
@@ -261,10 +267,16 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       // a rejected command remains silent and can never claim success.
       const attendancePhoneNumberId =
         config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID ?? config.WHATSAPP_PHONE_NUMBER_ID;
+      //
+      // A punch only counts from the office. The text command is first sent
+      // without a location: the CRM answers "off_site" for a known employee
+      // whose office is pinned, and the bot then asks for their location. The
+      // location they share completes the command. Unknown senders are still
+      // refused silently, so nobody else is ever asked where they are.
       if (msg.phoneNumberId === attendancePhoneNumberId) {
         const attendanceCommand = parseAttendanceCommand(msg.text);
         if (attendanceCommand) {
-          const result = await submitAttendanceEvent({
+          const submission = await submitAttendanceEvent({
             message_id: msg.wamid,
             sender_phone: msg.waId,
             stated_name: attendanceCommand.statedName,
@@ -273,15 +285,54 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
             chat_type: 'private',
           });
           logger.info(
-            { wamid: msg.wamid, action: attendanceCommand.action, result },
+            { wamid: msg.wamid, action: attendanceCommand.action, result: submission.result },
             'private attendance message handled',
           );
-          if (result === 'recorded') {
+          if (submission.result === 'recorded') {
             await sendText(
               msg.waId,
               attendanceSuccessMessage(attendanceCommand.action),
               msg.phoneNumberId,
             );
+          } else if (submission.result === 'off_site') {
+            await rememberPendingAttendance(msg.waId, {
+              ...attendanceCommand,
+              commandWamid: msg.wamid,
+            });
+            await sendLocationRequest(
+              msg.waId,
+              locationRequestMessage(attendanceCommand),
+              msg.phoneNumberId,
+            );
+          }
+          continue;
+        }
+
+        const pending = msg.location ? await pendingAttendance(msg.waId) : undefined;
+        if (msg.location && pending) {
+          const submission = await submitAttendanceEvent({
+            message_id: msg.wamid,
+            sender_phone: msg.waId,
+            stated_name: pending.statedName,
+            action: pending.action,
+            occurred_at: msg.timestamp.toISOString(),
+            chat_type: 'private',
+            latitude: msg.location.latitude,
+            longitude: msg.location.longitude,
+            command_message_id: pending.commandWamid,
+          });
+          logger.info(
+            { wamid: msg.wamid, action: pending.action, result: submission.result },
+            'attendance location handled',
+          );
+          if (submission.result === 'recorded') {
+            await forgetPendingAttendance(msg.waId);
+            await sendText(msg.waId, attendanceSuccessMessage(pending.action), msg.phoneNumberId);
+          } else if (submission.result === 'off_site') {
+            // The command stays pending, so sharing again from the office works.
+            await sendText(msg.waId, submission.detail, msg.phoneNumberId);
+          } else {
+            await forgetPendingAttendance(msg.waId);
           }
           continue;
         }
@@ -362,7 +413,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         waId: msg.waId,
         direction: 'inbound',
         wamid: msg.wamid,
-        type: msg.type === 'interactive' ? 'interactive' : msg.type,
+        type: msg.type === 'location' ? 'other' : msg.type,
         text: msg.text,
         // The tapped option id and the message it came from. Both are parsed
         // from the webhook and both must be persisted: the worker reads this

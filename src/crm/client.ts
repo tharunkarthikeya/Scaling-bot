@@ -336,7 +336,18 @@ export interface CrmAttendanceEvent {
   action: 'check_in' | 'check_out';
   occurred_at: string;
   chat_type: 'private';
+  /** Where the employee was when they shared their location. */
+  latitude?: number;
+  longitude?: number;
+  /** The text command this location completes. */
+  command_message_id?: string;
 }
+
+export type AttendanceSubmission =
+  | { result: 'recorded' }
+  | { result: 'rejected' }
+  /** Away from the office: the reason is meant for the employee. */
+  | { result: 'off_site'; detail: string };
 
 /**
  * File a private-chat attendance event in the CRM. A 4xx is a rejected command and
@@ -345,7 +356,7 @@ export interface CrmAttendanceEvent {
  */
 export async function submitAttendanceEvent(
   event: CrmAttendanceEvent,
-): Promise<'recorded' | 'rejected'> {
+): Promise<AttendanceSubmission> {
   if (!crmConfigured()) throw new Error('CRM is not configured for attendance');
   let res: Response;
   try {
@@ -360,13 +371,15 @@ export async function submitAttendanceEvent(
       `CRM attendance request failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  if (res.ok) return 'recorded';
+  if (res.ok) return { result: 'recorded' };
   const failure = await readError(res);
   if (isRetryable(res.status)) {
     throw new Error(`CRM attendance returned ${res.status}: ${failure.detail}`);
   }
   logger.warn({ status: res.status, detail: failure.detail }, 'CRM rejected attendance command');
-  return 'rejected';
+  // 403 is the office-radius refusal, the one rejection the employee is told about.
+  if (res.status === 403) return { result: 'off_site', detail: failure.detail };
+  return { result: 'rejected' };
 }
 
 /** Submits one finished registration. Safe to call again with the same payload. */

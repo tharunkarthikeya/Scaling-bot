@@ -10,7 +10,7 @@ export interface InboundMessage {
   phone: string;
   profileName?: string;
   timestamp: Date;
-  type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'interactive' | 'other';
+  type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'interactive' | 'location' | 'other';
   text?: string;
   /**
    * The option id carried by a tapped button or list row.
@@ -27,6 +27,8 @@ export interface InboundMessage {
     caption?: string;
     sha256?: string;
   };
+  /** A shared location pin. Staff send one to complete an attendance command. */
+  location?: { latitude: number; longitude: number };
   /** Present when the candidate replied to a specific earlier message. */
   contextWamid?: string;
   /**
@@ -112,6 +114,13 @@ export function parseWebhook(body: unknown): ParsedWebhook {
           parsed.type = 'interactive';
           parsed.replyId = msg.button?.payload ? String(msg.button.payload) : undefined;
           parsed.text = msg.button?.text ?? '';
+        } else if (msg.type === 'location') {
+          const latitude = Number(msg.location?.latitude);
+          const longitude = Number(msg.location?.longitude);
+          if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+            parsed.type = 'location';
+            parsed.location = { latitude, longitude };
+          }
         } else if (MEDIA_TYPES.has(msg.type)) {
           const media = msg[msg.type] as AnyRecord;
           parsed.type = msg.type === 'sticker' ? 'other' : msg.type;

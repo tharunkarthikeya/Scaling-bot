@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { attendanceSuccessMessage, parseAttendanceCommand } from './attendance.js';
 import { parseWebhook } from './whatsapp/parse.js';
+import { locationRequestMessage } from './attendance-pending.js';
 
 assert.deepEqual(parseAttendanceCommand('Asha - check in'), {
   statedName: 'Asha',
@@ -51,4 +52,29 @@ const parsed = parseWebhook({
 assert.equal(parsed.messages[0]?.groupId, 'attendance-group');
 assert.equal(parsed.messages[0]?.waId, '919876543210');
 
-console.log('\n\x1b[32m12 attendance checks passed\x1b[0m\n');
+const shared = parseWebhook({
+  object: 'whatsapp_business_account',
+  entry: [{
+    changes: [{
+      field: 'messages',
+      value: {
+        metadata: { phone_number_id: 'phone-1' },
+        messages: [{
+          from: '917806822702',
+          id: 'wamid-2',
+          timestamp: '1788748260',
+          type: 'location',
+          location: { latitude: 13.0571, longitude: 80.2646, name: 'Office' },
+        }],
+      },
+    }],
+  }],
+});
+assert.equal(shared.messages[0]?.type, 'location');
+assert.deepEqual(shared.messages[0]?.location, { latitude: 13.0571, longitude: 80.2646 });
+assert.match(
+  locationRequestMessage({ statedName: 'Asha', action: 'check_in' }),
+  /^Asha, tap "Send location".*check in/,
+);
+
+console.log('\n\x1b[32m15 attendance checks passed\x1b[0m\n');

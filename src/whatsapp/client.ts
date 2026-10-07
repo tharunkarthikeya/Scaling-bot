@@ -309,6 +309,33 @@ export async function send(
 }
 
 /**
+ * Asks for the recipient's current location with WhatsApp's "Send location"
+ * button. Attendance uses it: a punch only counts from the office.
+ */
+export async function sendLocationRequest(
+  to: string,
+  body: string,
+  from?: FromNumber,
+): Promise<SendResult> {
+  const interactive = {
+    type: 'location_request_message',
+    body: { text: clip(body, INTERACTIVE_BODY_LIMIT) },
+    action: { name: 'send_location' },
+  };
+  if (config.SHADOW_MODE) {
+    logger.info({ to, interactive }, 'shadow mode: location request suppressed');
+    return { shadowed: true };
+  }
+  await budgets.replies.acquire();
+  const json = await graphPost(
+    `${sendingNumberFor(from)}/messages`,
+    { messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'interactive', interactive },
+    from,
+  );
+  return { wamid: json?.messages?.[0]?.id, shadowed: false };
+}
+
+/**
  * Sends the approved re-engagement template. This is the only thing that may be
  * sent once the 24-hour window has closed.
  */
