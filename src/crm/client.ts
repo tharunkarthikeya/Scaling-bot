@@ -345,7 +345,7 @@ export interface CrmAttendanceEvent {
 
 export type AttendanceSubmission =
   | { result: 'recorded' }
-  | { result: 'rejected' }
+  | { result: 'rejected'; detail: string }
   /** Away from the office: the reason is meant for the employee. */
   | { result: 'off_site'; detail: string };
 
@@ -379,7 +379,7 @@ export async function submitAttendanceEvent(
   logger.warn({ status: res.status, detail: failure.detail }, 'CRM rejected attendance command');
   // 403 is the office-radius refusal, the one rejection the employee is told about.
   if (res.status === 403) return { result: 'off_site', detail: failure.detail };
-  return { result: 'rejected' };
+  return { result: 'rejected', detail: failure.detail };
 }
 
 /** Submits one finished registration. Safe to call again with the same payload. */

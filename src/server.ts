@@ -332,9 +332,22 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
             // The command stays pending, so sharing again from the office works.
             await sendText(msg.waId, submission.detail, msg.phoneNumberId);
           } else {
+            // The text step already proved this sender is staff, so say why
+            // rather than leaving them waiting on a reply that never comes.
             await forgetPendingAttendance(msg.waId);
+            await sendText(
+              msg.waId,
+              `Attendance not recorded: ${submission.detail}`,
+              msg.phoneNumberId,
+            );
           }
           continue;
+        }
+        if (msg.location) {
+          logger.info(
+            { wamid: msg.wamid, waId: msg.waId },
+            'location received with no attendance command waiting',
+          );
         }
       }
 
