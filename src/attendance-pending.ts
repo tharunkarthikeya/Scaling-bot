@@ -78,6 +78,10 @@ export async function firstAttendanceDelivery(wamid: string): Promise<boolean> {
 export const LOCATION_NOT_RECEIVED_MESSAGE =
   'Location not received. Tap "Send location" and choose "Send your current location". Live location cannot be used for attendance.';
 
+/** A live location reaches the bot as an "unsupported" message with no coordinates. */
+export const LIVE_LOCATION_MESSAGE =
+  'You shared your live location. Live location cannot be used for attendance. Please send your current location: tap "Send location" and choose "Send your current location".';
+
 export function locationRequestMessage(command: AttendanceCommand): string {
   const action = command.action === 'check_in' ? 'check in' : 'check out';
   return `${command.statedName}, tap "Send location" and share your current location to complete your ${action}. Attendance is only marked at the office.`;

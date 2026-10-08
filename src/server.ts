@@ -32,6 +32,7 @@ import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
 import { attendanceSuccessMessage, parseAttendanceCommand } from './attendance.js';
 import {
+  LIVE_LOCATION_MESSAGE,
   LOCATION_NOT_RECEIVED_MESSAGE,
   firstAttendanceDelivery,
   forgetPendingAttendance,
@@ -319,7 +320,11 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
             'attendance waiting for a location; message carried none',
           );
           if (await firstAttendanceDelivery(msg.wamid)) {
-            await sendText(msg.waId, LOCATION_NOT_RECEIVED_MESSAGE, msg.phoneNumberId);
+            await sendText(
+              msg.waId,
+              msg.rawType === 'unsupported' ? LIVE_LOCATION_MESSAGE : LOCATION_NOT_RECEIVED_MESSAGE,
+              msg.phoneNumberId,
+            );
           }
           continue;
         }
