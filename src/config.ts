@@ -125,6 +125,18 @@ const schema = z.object({
    * fleet was subscribed while every message to the other number went nowhere.
    */
   WHATSAPP_WABA_ID_SGMY: blankable(z.string().min(1).optional()),
+  /**
+   * The WhatsApp Business Account the attendance number belongs to.
+   *
+   * Only `doctor` reads it, and only to prove the webhook subscription on that
+   * line. Worth its own variable because the attendance number sits on a WABA
+   * of its own here: an unsubscribed WABA delivers nothing, which from the
+   * outside is indistinguishable from the bot ignoring the number — and with
+   * no variable naming it, `doctor` could only warn that it was unable to
+   * check. That blind spot is what let the whole staff's attendance line stay
+   * silent without anything reporting a fault.
+   */
+  WHATSAPP_ATTENDANCE_WABA_ID: blankable(z.string().min(1).optional()),
 
   /* ---------------------------------------------------------------- */
   /* Credentials, where the second line does not share them             */

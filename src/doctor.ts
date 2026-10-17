@@ -225,6 +225,16 @@ const lines: Array<{ label: string; id: string; variable: string }> = configured
         variable: 'WHATSAPP_PHONE_NUMBER_ID_SGMY',
       };
     }
+    if (id === config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID) {
+      // Named separately so a failure here points at the variable that actually
+      // configures it. Reported as an additional id, an operator would go and
+      // check a list this number is not in.
+      return {
+        label: 'whatsapp number (attendance line)',
+        id,
+        variable: 'WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID',
+      };
+    }
     return {
       label: `whatsapp number (${id})`,
       id,
@@ -289,6 +299,17 @@ const wabas: Array<{ label: string; id?: string; variable: string; line?: string
         },
       ]
     : []),
+  ...(config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID &&
+  config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID !== config.WHATSAPP_PHONE_NUMBER_ID
+    ? [
+        {
+          label: 'webhook subscription (attendance line)',
+          id: config.WHATSAPP_ATTENDANCE_WABA_ID,
+          variable: 'WHATSAPP_ATTENDANCE_WABA_ID',
+          line: config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID,
+        },
+      ]
+    : []),
 ];
 
 for (const waba of wabas) {
@@ -330,7 +351,12 @@ for (const waba of wabas) {
 // identical from the outside to the bot ignoring that number.
 {
   const named = new Set(
-    [config.WHATSAPP_PHONE_NUMBER_ID, config.WHATSAPP_PHONE_NUMBER_ID_SGMY].filter(Boolean),
+    [
+      config.WHATSAPP_PHONE_NUMBER_ID,
+      config.WHATSAPP_PHONE_NUMBER_ID_SGMY,
+      // Checked above on its own WABA variable, when that is set.
+      ...(config.WHATSAPP_ATTENDANCE_WABA_ID ? [config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID] : []),
+    ].filter(Boolean),
   );
   const extra = configuredLines().filter((id) => !named.has(id));
   if (extra.length) {

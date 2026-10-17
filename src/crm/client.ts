@@ -332,7 +332,8 @@ export async function fetchBotSuppressionNumbers(): Promise<string[]> {
 export interface CrmAttendanceEvent {
   message_id: string;
   sender_phone: string;
-  stated_name: string;
+  /** Omitted when the employee wrote no name; the number is the identity. */
+  stated_name?: string;
   action: 'check_in' | 'check_out';
   occurred_at: string;
   chat_type: 'private';
@@ -343,11 +344,60 @@ export interface CrmAttendanceEvent {
   command_message_id?: string;
 }
 
+/**
+ * What the CRM did with a private attendance command.
+ *
+ * One variant per thing the bot has to *do*, because every one of these has an
+ * answer owed to the person holding the phone. The previous three collapsed
+ * every refusal but the radius into `rejected`, and the only branch the caller
+ * had for `rejected` on the text step was to say nothing — so "you already
+ * checked in today", "you have no check-in to check out of" and "that name is
+ * not yours" were all delivered to the employee as silence.
+ */
 export type AttendanceSubmission =
-  | { result: 'recorded' }
-  | { result: 'rejected'; detail: string }
-  /** Away from the office: the reason is meant for the employee. */
-  | { result: 'off_site'; detail: string };
+  /** Filed. `duplicate` is a redelivery of a punch already on record. */
+  | { result: 'recorded'; duplicate: boolean; time?: string; site?: string }
+  /** No location was sent and this employee's office is pinned: ask for one. */
+  | { result: 'location_required'; detail: string }
+  /** A location was sent and it was not at any office. */
+  | { result: 'off_site'; detail: string }
+  /** Authenticated and on site, but the punch conflicts with the day's record. */
+  | { result: 'conflict'; detail: string }
+  /** A real employee's number, with a name that is not theirs. */
+  | { result: 'name_mismatch'; detail: string }
+  /** Not a staff number. Never answered, so the line reveals nothing. */
+  | { result: 'unknown_sender'; detail: string }
+  /** Refused for a reason this bot does not model. */
+  | { result: 'rejected'; detail: string };
+
+/**
+ * Classify a refusal.
+ *
+ * `code` is what decides it. The wording fallbacks exist only for a CRM
+ * deployed before the codes were added — the bot and the CRM ship separately,
+ * and during a rollout either one can be the older half.
+ */
+function attendanceRefusal(status: number, failure: CrmFailure): AttendanceSubmission {
+  const { code, detail } = failure;
+  if (code === 'location_required') return { result: 'location_required', detail };
+  if (code === 'off_site') return { result: 'off_site', detail };
+  if (code === 'conflict') return { result: 'conflict', detail };
+  if (code === 'name_mismatch') return { result: 'name_mismatch', detail };
+  if (code === 'unknown_sender') return { result: 'unknown_sender', detail };
+  if (status === 403) {
+    return /location is required/i.test(detail)
+      ? { result: 'location_required', detail }
+      : { result: 'off_site', detail };
+  }
+  if (status === 409) return { result: 'conflict', detail };
+  if (status === 422 && /name does not match/i.test(detail)) {
+    return { result: 'name_mismatch', detail };
+  }
+  if (status === 422 && /not linked to one active/i.test(detail)) {
+    return { result: 'unknown_sender', detail };
+  }
+  return { result: 'rejected', detail };
+}
 
 /**
  * File a private-chat attendance event in the CRM. A 4xx is a rejected command and
@@ -371,15 +421,31 @@ export async function submitAttendanceEvent(
       `CRM attendance request failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  if (res.ok) return { result: 'recorded' };
+  if (res.ok) {
+    // The office time and office name make the confirmation checkable. A CRM
+    // too old to send them still records the punch, so they stay optional.
+    const body = (await res.json().catch(() => ({}))) as {
+      status?: unknown;
+      recorded_time?: unknown;
+      site?: unknown;
+    };
+    return {
+      result: 'recorded',
+      duplicate: body.status === 'duplicate',
+      ...(typeof body.recorded_time === 'string' ? { time: body.recorded_time } : {}),
+      ...(typeof body.site === 'string' ? { site: body.site } : {}),
+    };
+  }
   const failure = await readError(res);
   if (isRetryable(res.status)) {
     throw new Error(`CRM attendance returned ${res.status}: ${failure.detail}`);
   }
-  logger.warn({ status: res.status, detail: failure.detail }, 'CRM rejected attendance command');
-  // 403 is the office-radius refusal, the one rejection the employee is told about.
-  if (res.status === 403) return { result: 'off_site', detail: failure.detail };
-  return { result: 'rejected', detail: failure.detail };
+  const refusal = attendanceRefusal(res.status, failure);
+  logger.warn(
+    { status: res.status, code: failure.code, result: refusal.result, detail: failure.detail },
+    'CRM rejected attendance command',
+  );
+  return refusal;
 }
 
 /** Submits one finished registration. Safe to call again with the same payload. */

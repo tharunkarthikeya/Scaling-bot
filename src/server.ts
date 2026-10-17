@@ -22,7 +22,7 @@ import {
   type ApplicationStatus,
 } from './db/models.js';
 import { queue } from './queue/index.js';
-import { markAsRead, sendLocationRequest, sendText } from './whatsapp/client.js';
+import { markAsRead, sendText } from './whatsapp/client.js';
 import { captureAttachment } from './ingestion/whatsapp.js';
 import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
 import { record, renderMetrics } from './metrics/index.js';
@@ -30,21 +30,13 @@ import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
-import { attendanceSuccessMessage, parseAttendanceCommand } from './attendance.js';
 import {
-  LIVE_LOCATION_MESSAGE,
-  LOCATION_NOT_RECEIVED_MESSAGE,
-  firstAttendanceDelivery,
-  forgetPendingAttendance,
-  locationRequestMessage,
-  pendingAttendance,
-  rememberPendingAttendance,
-} from './attendance-pending.js';
-import {
-  crmConfigured,
-  fetchWhatsappReplyPolicy,
-  submitAttendanceEvent,
-} from './crm/client.js';
+  attendanceLineId,
+  attendanceLineIsDedicated,
+  handleAttendanceMessage,
+  offerAttendanceHelp,
+} from './attendance-workflow.js';
+import { crmConfigured, fetchWhatsappReplyPolicy } from './crm/client.js';
 import {
   coexistencePage,
   completeCoexistence,
@@ -262,112 +254,22 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         continue;
       }
 
-      // Attendance-shaped private messages are intercepted before candidate
-      // processing even if this instance's staff cache is stale. The CRM owns
-      // the authoritative phone-to-staff match and rejects unknown senders.
-      // Its endpoint is idempotent by wamid, so a temporary failure can safely
-      // make Meta redeliver. A recorded command receives one clear confirmation;
-      // a rejected command remains silent and can never claim success.
-      const attendancePhoneNumberId =
-        config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID ?? config.WHATSAPP_PHONE_NUMBER_ID;
+      // Attendance is handled before candidate processing, and completely.
       //
-      // A punch only counts from the office. The text command is first sent
-      // without a location: the CRM answers "off_site" for a known employee
-      // whose office is pinned, and the bot then asks for their location. The
-      // location they share completes the command. Unknown senders are still
-      // refused silently, so nobody else is ever asked where they are.
-      if (msg.phoneNumberId === attendancePhoneNumberId) {
-        const attendanceCommand = parseAttendanceCommand(msg.text);
-        if (attendanceCommand) {
-          const submission = await submitAttendanceEvent({
-            message_id: msg.wamid,
-            sender_phone: msg.waId,
-            stated_name: attendanceCommand.statedName,
-            action: attendanceCommand.action,
-            occurred_at: msg.timestamp.toISOString(),
-            chat_type: 'private',
-          });
-          logger.info(
-            { wamid: msg.wamid, action: attendanceCommand.action, result: submission.result },
-            'private attendance message handled',
-          );
-          if (submission.result === 'recorded') {
-            await sendText(
-              msg.waId,
-              attendanceSuccessMessage(attendanceCommand.action),
-              msg.phoneNumberId,
-            );
-          } else if (submission.result === 'off_site') {
-            await rememberPendingAttendance(msg.waId, {
-              ...attendanceCommand,
-              commandWamid: msg.wamid,
-            });
-            await sendLocationRequest(
-              msg.waId,
-              locationRequestMessage(attendanceCommand),
-              msg.phoneNumberId,
-            );
-          }
-          continue;
-        }
-
-        const pending = await pendingAttendance(msg.waId);
-        if (pending && !msg.location) {
-          // Most often a live location, which WhatsApp does not pass to bots:
-          // it arrives as an "unsupported" message with no coordinates.
-          logger.info(
-            { wamid: msg.wamid, rawType: msg.rawType },
-            'attendance waiting for a location; message carried none',
-          );
-          if (await firstAttendanceDelivery(msg.wamid)) {
-            await sendText(
-              msg.waId,
-              msg.rawType === 'unsupported' ? LIVE_LOCATION_MESSAGE : LOCATION_NOT_RECEIVED_MESSAGE,
-              msg.phoneNumberId,
-            );
-          }
-          continue;
-        }
-        if (msg.location && pending) {
-          const submission = await submitAttendanceEvent({
-            message_id: msg.wamid,
-            sender_phone: msg.waId,
-            stated_name: pending.statedName,
-            action: pending.action,
-            occurred_at: msg.timestamp.toISOString(),
-            chat_type: 'private',
-            latitude: msg.location.latitude,
-            longitude: msg.location.longitude,
-            command_message_id: pending.commandWamid,
-          });
-          logger.info(
-            { wamid: msg.wamid, action: pending.action, result: submission.result },
-            'attendance location handled',
-          );
-          if (submission.result === 'recorded') {
-            await forgetPendingAttendance(msg.waId);
-            await sendText(msg.waId, attendanceSuccessMessage(pending.action), msg.phoneNumberId);
-          } else if (submission.result === 'off_site') {
-            // The command stays pending, so sharing again from the office works.
-            await sendText(msg.waId, submission.detail, msg.phoneNumberId);
-          } else {
-            // The text step already proved this sender is staff, so say why
-            // rather than leaving them waiting on a reply that never comes.
-            await forgetPendingAttendance(msg.waId);
-            await sendText(
-              msg.waId,
-              `Attendance not recorded: ${submission.detail}`,
-              msg.phoneNumberId,
-            );
-          }
-          continue;
-        }
-        if (msg.location) {
-          logger.info(
-            { wamid: msg.wamid, waId: msg.waId },
-            'location received with no attendance command waiting',
-          );
-        }
+      // The CRM owns the authoritative phone-to-staff match and the office
+      // radius; this only decides whether the message belongs to attendance at
+      // all. On a line set aside for attendance nothing else answers, so a
+      // staff message that is not a command is told the format rather than
+      // falling through to candidate onboarding — which is where every
+      // unrecognised attendance message used to go, to be silenced there as an
+      // internal number. See `attendance-workflow.ts`.
+      if (msg.phoneNumberId === attendanceLineId()) {
+        const outcome = await handleAttendanceMessage(msg);
+        if (outcome === 'handled') continue;
+        // Staff who wrote something that was not a command are told the format
+        // here. Everyone else carries on into candidate processing, because
+        // candidates do reach the bot on this number.
+        if (attendanceLineIsDedicated() && (await offerAttendanceHelp(msg))) continue;
       }
 
       // The CRM is authoritative for whether this number still belongs to a

@@ -77,14 +77,24 @@ function csv(value: string | undefined): string[] {
 /**
  * Every number the agency runs, in the order they were configured.
  *
- * The main line, the SGMY one where it is set, and everything in
- * `WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS`. Deduplicated, because the same id
- * named twice is one number and a fleet count that says otherwise is a report
- * somebody will act on.
+ * The main line, the SGMY one where it is set, the attendance line, and
+ * everything in `WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS`. Deduplicated, because
+ * the same id named twice is one number and a fleet count that says otherwise
+ * is a report somebody will act on.
  *
- * Read by `doctor` and the smoke checks. Nothing about *identity* consults it:
- * a candidate is the number they are holding, and that is the same fact on
- * every line here. See `idempotencyKeyFor` in `crm/mapping.ts`.
+ * The attendance line belongs here even though no candidate conversation ever
+ * happens on it. This list is what `doctor` walks, and the attendance number is
+ * configured by `WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID` alone — it is not among
+ * the additional ids on this deployment — so leaving it out meant the one line
+ * the whole staff depends on was the one line nothing ever checked. A wrong
+ * token, an unsubscribed WABA or a mistyped id on it reported as a healthy
+ * fleet, and the only symptom anybody saw was staff saying attendance does not
+ * work.
+ *
+ * Read by `doctor`, the coexistence onboarding and the smoke checks. Nothing
+ * about *identity* consults it: a candidate is the number they are holding, and
+ * that is the same fact on every line here. See `idempotencyKeyFor` in
+ * `crm/mapping.ts`.
  */
 export function configuredLines(): string[] {
   return [
@@ -92,6 +102,7 @@ export function configuredLines(): string[] {
       [
         config.WHATSAPP_PHONE_NUMBER_ID,
         config.WHATSAPP_PHONE_NUMBER_ID_SGMY,
+        config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID,
         ...csv(config.WHATSAPP_ADDITIONAL_PHONE_NUMBER_IDS),
       ].filter((id): id is string => !!id),
     ),
