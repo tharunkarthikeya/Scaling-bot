@@ -27,8 +27,17 @@ export interface InboundMessage {
     caption?: string;
     sha256?: string;
   };
-  /** A shared location pin. Staff send one to complete an attendance command. */
-  location?: { latitude: number; longitude: number };
+  /**
+   * A shared location pin. Staff send one to complete an attendance command.
+   *
+   * `name` and `address` are what tell a *current location* apart from a place
+   * the sender chose. WhatsApp attaches them when the pin came from the
+   * nearby-places list or from a point picked on the map; a plain "Send your
+   * current location" carries coordinates and nothing else. It is the only
+   * signal there is — the payload has no "this is really where they are" flag —
+   * so it is kept rather than dropped. See `attendance-workflow.ts`.
+   */
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
   /** Meta's own message type, e.g. `unsupported` for a live location. */
   rawType?: string;
   /** Present when the candidate replied to a specific earlier message. */
@@ -121,8 +130,15 @@ export function parseWebhook(body: unknown): ParsedWebhook {
           const latitude = Number(msg.location?.latitude);
           const longitude = Number(msg.location?.longitude);
           if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+            const name = msg.location?.name ? String(msg.location.name) : undefined;
+            const address = msg.location?.address ? String(msg.location.address) : undefined;
             parsed.type = 'location';
-            parsed.location = { latitude, longitude };
+            parsed.location = {
+              latitude,
+              longitude,
+              ...(name ? { name } : {}),
+              ...(address ? { address } : {}),
+            };
           }
         } else if (MEDIA_TYPES.has(msg.type)) {
           const media = msg[msg.type] as AnyRecord;

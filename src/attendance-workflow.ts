@@ -41,6 +41,7 @@ import {
 } from './attendance.js';
 import {
   ATTENDANCE_RESEND_MESSAGE,
+  PICKED_LOCATION_MESSAGE,
   locationProblemMessage,
   type LocationProblem,
   firstAttendanceDelivery,
@@ -272,6 +273,39 @@ export async function handleAttendanceMessage(msg: InboundMessage): Promise<Atte
   const pending = (await pendingAttendance(msg.waId)) as PendingCommand | undefined;
 
   if (msg.location) {
+    // A pin that names a place is not where the sender is. WhatsApp attaches a
+    // name or an address when the pin came from the nearby-places list or from
+    // a point picked on the map; "Send your current location" carries neither.
+    // Both are how a punch gets made from somewhere the employee is not, and
+    // the second is deliberate: drag the map onto the office from home and the
+    // coordinates are perfect.
+    //
+    // Unlike an off-site pin this is *not* recorded and flagged. The employee
+    // can fix it in two taps, so they are asked to, and the command is left
+    // waiting so the next pin completes it with nothing retyped.
+    if (
+      pending &&
+      config.ATTENDANCE_REQUIRE_CURRENT_LOCATION &&
+      (msg.location.name || msg.location.address)
+    ) {
+      logger.info(
+        {
+          wamid: msg.wamid,
+          waId: msg.waId,
+          name: msg.location.name,
+          address: msg.location.address,
+        },
+        'attendance pin was a chosen place, not a current location',
+      );
+      // Re-held rather than left alone, so the ten-minute window restarts and
+      // a second attempt is not racing the clock.
+      await rememberPendingAttendance(msg.waId, {
+        ...pending,
+        commandWamid: pending.commandWamid ?? msg.wamid,
+      });
+      await replyOnce(msg, PICKED_LOCATION_MESSAGE);
+      return 'handled';
+    }
     if (!pending) {
       // The ten-minute window closed, or the bot restarted with no Redis and
       // the command was only ever in that process's memory. Either way the

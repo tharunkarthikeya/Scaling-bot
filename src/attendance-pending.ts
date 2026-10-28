@@ -166,6 +166,20 @@ export const ATTENDANCE_HELP_MESSAGE =
   'To mark attendance, send "check in" or "check out" from this number. ' +
   'I will then ask you to share your current location, which has to be at the office.';
 
+/**
+ * What to send when the pin was a place rather than where the sender is.
+ *
+ * Said plainly, because the person reading it has just shared something they
+ * believe is their location and is about to be told it did not count. Naming
+ * the two taps is what makes it fixable on the next try rather than a second
+ * refusal.
+ */
+export const PICKED_LOCATION_MESSAGE =
+  'That is a saved place, not your current location, so it cannot be used for attendance. ' +
+  'Tap "Send location", then "Send your current location" at the top — do not pick a ' +
+  'shop or place name from the list, and do not move the map pin. Your command is still ' +
+  'waiting, so just send the location again.';
+
 /** The same help, once the sender has shown they are mid-command. */
 export const ATTENDANCE_RESEND_MESSAGE =
   'Your attendance command has expired. Send "check in" or "check out" again, ' +

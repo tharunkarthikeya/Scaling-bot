@@ -6,6 +6,7 @@ import {
 } from './attendance.js';
 import { parseWebhook } from './whatsapp/parse.js';
 import { locationProblem, readableRefusal } from './attendance-workflow.js';
+import { PICKED_LOCATION_MESSAGE } from './attendance-pending.js';
 import {
   ATTENDANCE_HELP_MESSAGE,
   ATTENDANCE_RESEND_MESSAGE,
@@ -261,9 +262,15 @@ const shared = parseWebhook({
     }],
   }],
 });
-check('a shared pin carries its coordinates', () => {
+check('a shared pin carries its coordinates, and what named it', () => {
   assert.equal(shared.messages[0]?.type, 'location');
-  assert.deepEqual(shared.messages[0]?.location, { latitude: 13.0571, longitude: 80.2646 });
+  // `name` is kept rather than dropped: it is the only thing that separates a
+  // place somebody chose from where they are standing. See `parse.ts`.
+  assert.deepEqual(shared.messages[0]?.location, {
+    latitude: 13.0571,
+    longitude: 80.2646,
+    name: 'Office',
+  });
 });
 
 /**
@@ -321,6 +328,45 @@ check('a real pin survives the parser with its coordinates', () => {
 check('a text message mid-command is not a location failure', () => {
   const msg = inbound({ id: 'wamid-text-1', type: 'text', text: { body: 'done' } });
   assert.equal(locationProblem(msg!), 'not_a_location');
+});
+
+check('a current-location pin carries coordinates and nothing else', () => {
+  const msg = inbound({
+    id: 'wamid-pin-current',
+    type: 'location',
+    location: { latitude: 13.060263, longitude: 80.259109 },
+  });
+  assert.equal(msg?.location?.name, undefined);
+  assert.equal(msg?.location?.address, undefined);
+});
+
+check('a pin chosen from the places list keeps what names it', () => {
+  // The whole of the signal. Meta sends no "this is really where they are"
+  // flag, so a name or an address is the only thing separating a shop somebody
+  // tapped - or a point they dragged the map onto - from where they stand.
+  const msg = inbound({
+    id: 'wamid-pin-place',
+    type: 'location',
+    location: {
+      latitude: 13.060263,
+      longitude: 80.259109,
+      name: 'Mount Chambers',
+      address: '758 Anna Salai, Chennai',
+    },
+  });
+  assert.equal(msg?.location?.name, 'Mount Chambers');
+  assert.equal(msg?.location?.address, '758 Anna Salai, Chennai');
+  // Still a usable pin as far as the parser goes: attendance refuses it, not
+  // parsing, and the coordinates have to survive for the log.
+  assert.equal(msg?.location?.latitude, 13.060263);
+});
+
+check('the picked-location reply names both taps and keeps the command alive', () => {
+  assert.match(PICKED_LOCATION_MESSAGE, /current location/i);
+  assert.match(PICKED_LOCATION_MESSAGE, /do not move the map/i);
+  // Nothing to retype is the point: being told to start over is how staff gave
+  // up on this the first time.
+  assert.match(PICKED_LOCATION_MESSAGE, /still waiting/i);
 });
 
 console.log(`\n\x1b[32m${checks} attendance checks passed\x1b[0m\n`);

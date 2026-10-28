@@ -674,6 +674,21 @@ const schema = z.object({
    */
   CRM_PARTIAL_SYNC: bool.default('true'),
   /**
+   * Whether an attendance pin must be a "Send your current location".
+   *
+   * On, a pin carrying a place name or an address is sent back to be redone:
+   * those are the two ways somebody marks attendance from where they are not —
+   * tapping a shop in the nearby-places list, or dragging the map to the office
+   * from home. A genuine current-location send carries coordinates alone.
+   *
+   * It is a setting rather than a constant because the signal is Meta's, not
+   * ours, and the cost of it being wrong is the fault this whole path exists to
+   * stop: if a real current-location send ever arrives carrying an address,
+   * this would refuse every honest punch. Turning it off is then one
+   * environment variable and a restart, not a release.
+   */
+  ATTENDANCE_REQUIRE_CURRENT_LOCATION: bool.default('true'),
+  /**
    * How long answers are collected before a partial snapshot is sent.
    *
    * Every answered question and every arrived document schedules one, and
