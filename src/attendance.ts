@@ -33,12 +33,25 @@ export function attendanceSuccessMessage(action: AttendanceAction): string {
  */
 export function attendanceRecordedMessage(
   action: AttendanceAction,
-  details: { time?: string; site?: string } = {},
+  details: { time?: string; site?: string; locationStatus?: string } = {},
 ): string {
   const base = attendanceSuccessMessage(action);
-  if (!details.time) return base;
-  const where = details.site ? ` at ${details.site}` : '';
-  return `${base.replace(/\.$/, '')} at ${details.time}${where}.`;
+  const confirmed = details.time
+    ? `${base.replace(/\.$/, '')} at ${details.time}${details.site ? ` at ${details.site}` : ''}.`
+    : base;
+  // A punch the CRM could not place at an office is still recorded — losing
+  // somebody the day over a 400 m WiFi fix is the worse error — but saying only
+  // "recorded" would hide that a manager is going to be asked about it. Telling
+  // them here is also the cheapest way to catch the real cause: someone who
+  // tapped a shop name in the location picker finds out the same minute,
+  // instead of at the end of the month.
+  if (details.locationStatus === 'off_site') {
+    return `${confirmed} Your location did not match the office, so this one goes to your manager for review. If you are at the office, share your location again using "Send your current location".`;
+  }
+  if (details.locationStatus === 'unverified') {
+    return `${confirmed} Your location could not be read, so this one goes to your manager for review. Live location does not reach us — next time use "Send your current location" instead.`;
+  }
+  return confirmed;
 }
 
 const ACTION = '\\b(?:check(?:ed)?|clock(?:ed)?)\\s*[-_ ]?\\s*(?:in|out)\\b';

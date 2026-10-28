@@ -192,9 +192,13 @@ check('an unsupported type is described as a type, not as a live location', () =
   assert.doesNotMatch(message, /you shared/i);
   assert.match(message, /current location/i);
 });
-check('live location is named as guidance in both location failures', () => {
+check('both location failures name live location and the place-name trap', () => {
   for (const problem of ['unreadable', 'unsupported_type'] as const) {
-    assert.match(locationProblemMessage(problem, true), /live location cannot be used/i);
+    const message = locationProblemMessage(problem, true);
+    assert.match(message, /live location/i);
+    // The commonest cause of a pin from the wrong side of the city: tapping a
+    // shop in WhatsApp's nearby-places list instead of the top option.
+    assert.match(message, /shop or place name/i);
   }
 });
 check('with no command on file, the command is asked for too', () => {

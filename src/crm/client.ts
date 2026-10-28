@@ -342,7 +342,21 @@ export interface CrmAttendanceEvent {
   longitude?: number;
   /** The text command this location completes. */
   command_message_id?: string;
+  /**
+   * Set when the bot asked for a location and the answer carried none it could
+   * use. In practice that is a live location: WhatsApp does not deliver one to
+   * the Cloud API at all — it arrives as an `unsupported` message with no
+   * coordinates — so the employee has shared what they believe is their
+   * location and the bot has nothing to send.
+   *
+   * Without this the CRM would answer `location_required` and the bot would ask
+   * for the same thing again, which is the loop staff were stuck in.
+   */
+  location_unavailable?: boolean;
 }
+
+/** What the CRM established about where a punch was made. */
+export type AttendanceLocationStatus = 'on_site' | 'off_site' | 'unverified';
 
 /**
  * What the CRM did with a private attendance command.
@@ -355,8 +369,20 @@ export interface CrmAttendanceEvent {
  * not yours" were all delivered to the employee as silence.
  */
 export type AttendanceSubmission =
-  /** Filed. `duplicate` is a redelivery of a punch already on record. */
-  | { result: 'recorded'; duplicate: boolean; time?: string; site?: string }
+  /**
+   * Filed. `duplicate` is a redelivery of a punch already on record.
+   *
+   * `locationStatus` is what the CRM could establish about where it was made.
+   * The punch stands either way — `off_site` and `unverified` go to a manager
+   * for review rather than back to the employee as a refusal.
+   */
+  | {
+      result: 'recorded';
+      duplicate: boolean;
+      time?: string;
+      site?: string;
+      locationStatus?: AttendanceLocationStatus;
+    }
   /** No location was sent and this employee's office is pinned: ask for one. */
   | { result: 'location_required'; detail: string }
   /** A location was sent and it was not at any office. */
@@ -428,12 +454,20 @@ export async function submitAttendanceEvent(
       status?: unknown;
       recorded_time?: unknown;
       site?: unknown;
+      location_status?: unknown;
     };
+    const locationStatus =
+      body.location_status === 'on_site' ||
+      body.location_status === 'off_site' ||
+      body.location_status === 'unverified'
+        ? body.location_status
+        : undefined;
     return {
       result: 'recorded',
       duplicate: body.status === 'duplicate',
       ...(typeof body.recorded_time === 'string' ? { time: body.recorded_time } : {}),
       ...(typeof body.site === 'string' ? { site: body.site } : {}),
+      ...(locationStatus ? { locationStatus } : {}),
     };
   }
   const failure = await readError(res);

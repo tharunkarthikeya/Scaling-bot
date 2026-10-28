@@ -173,6 +173,7 @@ async function answerSubmission(
         attendanceRecordedMessage(command.action, {
           time: submission.time,
           site: submission.site,
+          locationStatus: submission.locationStatus,
         }),
       );
       return 'handled';
@@ -299,14 +300,42 @@ export async function handleAttendanceMessage(msg: InboundMessage): Promise<Atte
   }
 
   if (pending) {
-    // Most often a live location, which WhatsApp does not pass to bots: it
-    // arrives as an "unsupported" message with no coordinates.
+    const problem = locationProblem(msg);
+    // `not_a_location` is an ordinary message that happens to arrive while a
+    // punch is waiting — a "ok", a greeting, a typo. It is not an attempt to
+    // share a location and must not become a punch, so that one is still
+    // answered by asking.
+    if (problem === 'not_a_location') {
+      logger.info(
+        { wamid: msg.wamid, rawType: msg.rawType },
+        'attendance waiting for a location; message was not an attempt at one',
+      );
+      await replyOnce(msg, locationProblemMessage(problem, true));
+      return 'handled';
+    }
+    // They *did* try to send a location and nothing usable arrived. Almost
+    // always a live location, which WhatsApp never delivers to the Cloud API:
+    // it comes through as `unsupported` with no coordinates, so asking again
+    // gets the same nothing back. That loop was the complaint — staff sharing
+    // their location from inside the office and never getting marked.
+    //
+    // So the punch is filed with the location left unestablished, and the CRM
+    // flags it for a manager instead of refusing it.
     logger.info(
-      { wamid: msg.wamid, rawType: msg.rawType },
-      'attendance waiting for a location; message carried none',
+      { wamid: msg.wamid, rawType: msg.rawType, problem },
+      'attendance location unusable; filing the punch unverified',
     );
-    await replyOnce(msg, locationProblemMessage(locationProblem(msg), true));
-    return 'handled';
+    const submission = await submitAttendanceEvent({
+      message_id: msg.wamid,
+      sender_phone: msg.waId,
+      ...(pending.statedName ? { stated_name: pending.statedName } : {}),
+      action: pending.action,
+      occurred_at: msg.timestamp.toISOString(),
+      chat_type: 'private',
+      location_unavailable: true,
+      ...(pending.commandWamid ? { command_message_id: pending.commandWamid } : {}),
+    });
+    return answerSubmission(msg, pending, submission, 'location');
   }
 
   return 'not_attendance';

@@ -99,9 +99,16 @@ export type LocationProblem =
   | 'not_a_location';
 
 /** How to send a location that counts. Appended when a command is waiting. */
+// The two taps that go wrong, named explicitly. WhatsApp's location screen
+// puts "Send your current location" at the top and a list of nearby shops and
+// landmarks under it; tapping one of those sends *that place's* coordinates,
+// which can be several hundred metres from the person holding the phone and
+// arrives here looking exactly like a genuine pin. Live location is the other
+// one, and it reaches the Cloud API with no coordinates at all.
 const SHARE_CURRENT_LOCATION =
-  'Tap "Send location" and choose "Send your current location". ' +
-  'A live location cannot be used for attendance.';
+  'Tap "Send location", then "Send your current location" at the top. ' +
+  'Do not pick a shop or place name from the list below it, and do not use ' +
+  'live location — neither one can be used for attendance.';
 
 /**
  * The same, for somebody with no command on file.
@@ -140,7 +147,7 @@ export function locationRequestMessage(command: AttendanceCommand): string {
   // "undefined, tap Send location" is what the template produced before the
   // name became optional.
   const greeting = command.statedName ? `${command.statedName}, t` : 'T';
-  return `${greeting}ap "Send location" and share your current location to complete your ${action}. Attendance is only marked at the office.`;
+  return `${greeting}ap "Send location", then "Send your current location" at the top, to complete your ${action}. Do not pick a shop or place name from the list below it — that sends the shop's location, not yours.`;
 }
 
 /**
