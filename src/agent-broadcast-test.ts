@@ -1,20 +1,19 @@
-/** New job orders to Sourcing Hub agents: wording, sending line, and refusals. Offline. */
+/** New job orders to Sourcing Hub agents: wording, image, sending line, and refusals. Offline. */
 import assert from 'node:assert/strict';
 
 // Before config is parsed: these are read once, at import.
 process.env.REDIS_URL = '';
 process.env.SHADOW_MODE = 'false';
 process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID = 'AGENT-LINE';
-process.env.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE = 'agent_new_job_order';
+process.env.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE = 'agent_job_order_details';
 process.env.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE_LANG = 'en';
 process.env.STAFF_PHONE_DEFAULT_COUNTRY_CODE = '91';
 process.env.CRM_API_URL = 'https://crm.example.com';
 process.env.WHATSAPP_AGENT_JOB_ORDER_DEFAULT_IMAGE = 'https://example.com/default.jpg';
 
 const { config, graphBaseUrl } = await import('./config.js');
-const { agentJobOrderImage, agentJobOrderParameters, notifyAgentOfJobOrder } = await import(
-  './agents/notify.js'
-);
+const { DEFAULT_AGENT_DOCUMENTS, agentJobOrderImage, agentJobOrderParameters, notifyAgentOfJobOrder } =
+  await import('./agents/notify.js');
 
 type Call = { url: string; body: any };
 const calls: Call[] = [];
@@ -46,34 +45,85 @@ const ORDER = {
   agent_id: 'AGT-1',
   agent_name: 'Imran',
   phone: '98765 43210',
-  title: 'Pipe Fitter',
-  destination_country: 'Saudi Arabia',
-  headcount: 12,
-  salary: 'SAR 1800',
-  min_experience: '3 years',
+  title: 'Production Operator',
+  destination_country: 'Czech Republic',
+  industry: 'Automotive',
+  headcount: 30,
+  gender: 'Male & Female',
+  salary: 'EUR 900',
+  min_experience: '1-2 years',
+  process_time: '6-8 months',
+  b2b_rate: '4.9 with Ticket',
+  candidate_pays: 'VFS, Embassy fee',
+  advance_payment: '€946',
+  balance_payment: 'After visa',
+  requirements: ['Relevant work experience', 'Basic English', 'Valid passport & PCC', 'Updated CV'],
+  documents: ['CV', 'Passport copy (all pages including cover pages)', 'PCC', 'Experience certificates'],
+  documents_single_pdf: true,
   poster_url: '/public/job-posters/0123456789abcdef0123456789abcdef.jpg',
+  staff_name: 'Zara',
+  staff_phone: '+91 98849 49735',
 };
 
 console.log('\n\x1b[1mNew job orders to agents\x1b[0m');
 
-await check('the six parameters follow the approved body, in order', () => {
+await check('the sixteen parameters follow the approved detailed body, in order', () => {
   assert.deepEqual(agentJobOrderParameters(ORDER), [
     'Imran',
-    'Pipe Fitter',
-    'Saudi Arabia',
-    '12',
-    'SAR 1800',
-    '3 years',
+    'Czech Republic',
+    'Automotive',
+    'Production Operator',
+    '30',
+    'Male & Female',
+    'EUR 900',
+    '1-2 years',
+    '6-8 months',
+    '4.9 with Ticket',
+    'VFS, Embassy fee',
+    '€946 in advance after offer acceptance; Balance: After visa',
+    'Relevant work experience, Basic English, Valid passport & PCC, Updated CV',
+    'CV, Passport copy (all pages including cover pages), PCC, Experience certificates (in this order, in a single PDF)',
+    'Zara',
+    '+91 98849 49735',
   ]);
 });
 
-await check('a bare order still has six sendable, single-line values', () => {
-  const params = agentJobOrderParameters({ job_order_id: 'X', title: 'Welder\n  TIG' });
-  assert.deepEqual(params, ['Partner', 'Welder TIG', 'Not stated', 'Not stated', 'Not disclosed', 'Any']);
-  for (const value of params) assert.ok(value && !/[\n\t]/.test(value));
+await check('payment and documents read well when only part of them is filled', () => {
+  const only = (extra: object) => agentJobOrderParameters({ job_order_id: 'X', ...extra });
+  assert.equal(only({ advance_payment: '€946' })[11], '€946 in advance after offer acceptance');
+  assert.equal(only({ balance_payment: 'After visa' })[11], 'Balance: After visa');
+  assert.equal(only({ documents: ['CV', 'PCC'] })[13], 'CV, PCC (in this order)');
+  assert.equal(only({ documents: 'CV only' })[13], 'CV only (in this order)');
 });
 
-await check('it sends the template from the agent line to the normalised number', async () => {
+await check('a bare order still has sixteen sendable, single-line values', () => {
+  const params = agentJobOrderParameters({
+    job_order_id: 'X',
+    title: 'Welder\n  TIG',
+    candidate_pays: 'first line\nsecond line',
+  });
+  assert.equal(params.length, 16);
+  assert.deepEqual(params.slice(0, 6), [
+    'Partner', 'Not stated', 'Not stated', 'Welder TIG', 'Not stated', 'Any gender',
+  ]);
+  assert.equal(params[9], 'On request');
+  assert.equal(params[10], 'first line second line');
+  assert.equal(params[11], 'Not stated');
+  assert.equal(params[13], DEFAULT_AGENT_DOCUMENTS);
+  // No staff member on the order: agents are pointed back at this line.
+  assert.deepEqual(params.slice(14), ['Adira Enterprises', 'this WhatsApp number']);
+  for (const value of params) assert.ok(value && !/[\n\t]/.test(value), JSON.stringify(value));
+});
+
+await check('the two older templates still get their six values', () => {
+  for (const older of ['agent_new_job_order', 'agent_job_requirement']) {
+    assert.deepEqual(agentJobOrderParameters(ORDER, older), [
+      'Imran', 'Production Operator', 'Czech Republic', '30', 'EUR 900', '1-2 years',
+    ]);
+  }
+});
+
+await check('it sends the template, with the job order poster, from the agent line', async () => {
   const outcome = await notifyAgentOfJobOrder(ORDER);
   assert.deepEqual(outcome, { sent: true, wamid: 'wamid.TEST', shadowed: false });
   assert.equal(calls.length, 1);
@@ -81,7 +131,7 @@ await check('it sends the template from the agent line to the normalised number'
   const { to, type, template } = firstCall().body;
   assert.equal(to, '919876543210');
   assert.equal(type, 'template');
-  assert.equal(template.name, 'agent_new_job_order');
+  assert.equal(template.name, 'agent_job_order_details');
   assert.equal(template.language.code, 'en');
   const [header, body] = template.components;
   assert.equal(header.type, 'header');
@@ -99,15 +149,15 @@ await check('it sends the template from the agent line to the normalised number'
 });
 
 await check('the header image is the poster when WhatsApp can show it, else the default', () => {
+  assert.equal(agentJobOrderImage('/public/job-posters/a.png'), 'https://crm.example.com/public/job-posters/a.png');
   assert.equal(agentJobOrderImage('https://cdn.example.com/a/poster.PNG'), 'https://cdn.example.com/a/poster.PNG');
-  assert.equal(agentJobOrderImage('/public/job-posters/x.jpeg'), 'https://crm.example.com/public/job-posters/x.jpeg');
   for (const unusable of [undefined, '', '   ', '/public/job-posters/x.webp', 'http://insecure.example.com/a.jpg',
     'https://example.com/page.html', 'not a url']) {
     assert.equal(agentJobOrderImage(unusable), 'https://example.com/default.jpg', `used ${JSON.stringify(unusable)}`);
   }
 });
 
-await check('an order without a poster still sends, with the default image', async () => {
+await check('an order without any image still sends, with the default image', async () => {
   await notifyAgentOfJobOrder({ ...ORDER, poster_url: undefined });
   assert.equal(firstCall().body.template.components[0].parameters[0].image.link, 'https://example.com/default.jpg');
 });

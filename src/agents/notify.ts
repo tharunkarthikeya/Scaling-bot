@@ -32,77 +32,167 @@ export interface AgentJobOrderFacts {
   phone?: string | null;
   title?: string | null;
   destination_country?: string | null;
+  industry?: string | null;
   headcount?: number | null;
   salary?: string | null;
   min_experience?: string | null;
   /**
-   * The job order's website poster, as stored: a CRM path
-   * (`/public/job-posters/…`) or an absolute URL. Optional.
+   * The job order's agent terms (`terms` on the order, sent by
+   * `terms_facts` in the CRM's `app/agent_whatsapp.py`).
    */
+  gender?: string | null;
+  /** e.g. "6-8 months". */
+  process_time?: string | null;
+  /** e.g. "4.9 with Ticket". */
+  b2b_rate?: string | null;
+  /** Costs the candidate bears, e.g. "VFS, Embassy fee". */
+  candidate_pays?: string | null;
+  /** Paid once the candidate accepts the offer, e.g. "€946". */
+  advance_payment?: string | null;
+  /** When the remainder is paid, e.g. "After visa". */
+  balance_payment?: string | null;
+  /** One item each. */
+  requirements?: string[] | string | null;
+  /** In the order they must appear. */
+  documents?: string[] | string | null;
+  /** The documents must arrive as one PDF. */
+  documents_single_pdf?: boolean | null;
+  /** The job order's poster (CRM path or absolute URL): the message image. */
   poster_url?: string | null;
+  /**
+   * The staff member the job order is assigned to (`assignedStaff` on the
+   * order, `staff_facts` in the CRM), for agents' questions.
+   */
+  staff_name?: string | null;
+  staff_phone?: string | null;
 }
 
 export type AgentNotifyOutcome =
   | { sent: true; wamid?: string; shadowed: boolean }
   | { sent: false; reason: string };
 
-/**
- * The template's six body parameters. This array is the contract with Meta.
- * Both templates on WABA 487030077834196 take the same image header
- * (`agentJobOrderImage`) and these six values in this order:
- *
- *   * `agent_job_requirement` (submitted as UTILITY; Meta approved it but
- *     recategorised it MARKETING, because an unrequested job broadcast is
- *     promotional to Meta whatever the wording):
- *
- *         Hello {{1}},
- *
- *         This is a requirement update from Adira Enterprises for your agency.
- *
- *         Position: {{2}}
- *         Country: {{3}}
- *         Vacancies: {{4}}
- *         Salary: {{5}}
- *         Experience: {{6}}
- *
- *         Please reply to this message if you have suitable candidates for
- *         this requirement.
- *
- *   * `agent_new_job_order` (MARKETING): the same values, worded as a job ad.
- *
- * Both are marketing, so Meta may hold one back from a number that has never
- * chatted with the line. Agents who already message Rafi on it receive them.
- *
- * The client's name is never sent. Agents get the same facts the public
- * Current Jobs page shows.
- */
-export function agentJobOrderParameters(facts: AgentJobOrderFacts): string[] {
-  const headcount = Number(facts.headcount);
+/** A list (or one string) as one line: "a, b, c". */
+function joined(value: string[] | string | null | undefined): string {
+  const items = Array.isArray(value) ? value : value ? [value] : [];
+  return items.map((item) => String(item).trim()).filter(Boolean).join(', ');
+}
+
+/** "€946 in advance after offer acceptance; Balance: After visa", as the CRM screen shows it. */
+function paymentTerms(facts: AgentJobOrderFacts): string {
+  const advance = (facts.advance_payment ?? '').trim();
+  const balance = (facts.balance_payment ?? '').trim();
   return [
-    parameter(facts.agent_name, 'Partner'),
-    parameter(facts.title, 'New position'),
-    parameter(facts.destination_country),
-    Number.isInteger(headcount) && headcount > 0 ? String(headcount) : 'Not stated',
-    parameter(facts.salary, 'Not disclosed'),
-    parameter(facts.min_experience, 'Any'),
+    advance && `${advance} in advance after offer acceptance`,
+    balance && `Balance: ${balance}`,
+  ]
+    .filter(Boolean)
+    .join('; ');
+}
+
+/** The documents line: the list, in order, and whether it must be one PDF. */
+function documentsLine(facts: AgentJobOrderFacts): string {
+  const list = joined(facts.documents);
+  if (!list) return '';
+  return facts.documents_single_pdf ? `${list} (in this order, in a single PDF)` : `${list} (in this order)`;
+}
+
+/** What agents are asked to send when the job order does not say. */
+export const DEFAULT_AGENT_DOCUMENTS =
+  'CV, passport copy (all pages including cover pages), PCC, experience certificates, ' +
+  'educational documents and passport size photo, scanned in a single PDF in this order';
+
+/**
+ * The two earlier templates take six values. Kept so a bot deployed before
+ * its env is switched to `agent_job_order_details` still sends a valid message.
+ */
+const SIX_FIELD_TEMPLATES = new Set(['agent_new_job_order', 'agent_job_requirement']);
+
+/**
+ * The template's body parameters. This array is the contract with Meta.
+ *
+ * `agent_job_order_details` (WABA 487030077834196, MARKETING) is an image
+ * header (`agentJobOrderImage`) and then exactly this body, sixteen values:
+ *
+ *     Hello {{1}},
+ *
+ *     This is a requirement update from Adira Enterprises for your agency.
+ *
+ *     🌍 Country: {{2}}
+ *     🏭 Industry: {{3}}
+ *     👷 Position: {{4}}
+ *     👥 Vacancies: {{5}} ({{6}})
+ *     💰 Salary: {{7}}
+ *     🧰 Experience: {{8}}
+ *     ⏳ Process time: {{9}}
+ *     🤝 B2B rate: {{10}}
+ *     💳 Paid by candidate: {{11}}
+ *     📅 Payment terms: {{12}}
+ *
+ *     ✅ Requirements: {{13}}
+ *
+ *     📄 Documents: {{14}}
+ *
+ *     📞 For any queries, contact {{15}} - {{16}}
+ *
+ *     Please reply to this message if you have suitable candidates for this
+ *     requirement.
+ *
+ * The older `agent_job_requirement` / `agent_new_job_order` take only name,
+ * position, country, vacancies, salary and experience, and get those six.
+ *
+ * The client's name and the internal remarks are never sent.
+ */
+export function agentJobOrderParameters(
+  facts: AgentJobOrderFacts,
+  template = config.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE,
+): string[] {
+  const headcount = Number(facts.headcount);
+  const vacancies = Number.isInteger(headcount) && headcount > 0 ? String(headcount) : 'Not stated';
+  const name = parameter(facts.agent_name, 'Partner');
+  const position = parameter(facts.title, 'New position');
+  const country = parameter(facts.destination_country);
+  const salary = parameter(facts.salary, 'Not disclosed');
+  const experience = parameter(facts.min_experience, 'Any');
+
+  if (template && SIX_FIELD_TEMPLATES.has(template)) {
+    return [name, position, country, vacancies, salary, experience];
+  }
+  return [
+    name,
+    country,
+    parameter(facts.industry),
+    position,
+    vacancies,
+    parameter(facts.gender, 'Any gender'),
+    salary,
+    experience,
+    parameter(facts.process_time),
+    parameter(facts.b2b_rate, 'On request'),
+    parameter(facts.candidate_pays),
+    parameter(paymentTerms(facts)),
+    parameter(joined(facts.requirements)),
+    parameter(documentsLine(facts), DEFAULT_AGENT_DOCUMENTS),
+    // With no staff member on the order, agents are pointed back at the line
+    // the message came from, which Rafi reads.
+    parameter(facts.staff_name, 'Adira Enterprises'),
+    parameter(facts.staff_phone, 'this WhatsApp number'),
   ];
 }
 
 /**
- * The picture for the template's image header.
+ * The picture for the template's image header, required on every send.
  *
- * The job order's poster when WhatsApp can use it: an https JPG or PNG. A CRM
- * path is resolved against `CRM_API_URL`, the CRM's public address. WebP, any
- * other type, or no poster falls back to `WHATSAPP_AGENT_JOB_ORDER_DEFAULT_IMAGE`,
- * because the header image is required on every send.
+ * The job order's poster when WhatsApp can show it (an https JPG or PNG; a CRM
+ * path is resolved against `CRM_API_URL`), otherwise
+ * `WHATSAPP_AGENT_JOB_ORDER_DEFAULT_IMAGE`. WhatsApp cannot show WebP.
  */
 export function agentJobOrderImage(posterUrl?: string | null): string {
   const fallback = config.WHATSAPP_AGENT_JOB_ORDER_DEFAULT_IMAGE;
-  const raw = (posterUrl ?? '').trim();
-  if (!raw) return fallback;
+  const value = (posterUrl ?? '').trim();
+  if (!value) return fallback;
   let url: URL;
   try {
-    url = raw.startsWith('/') && config.CRM_API_URL ? new URL(raw, config.CRM_API_URL) : new URL(raw);
+    url = value.startsWith('/') && config.CRM_API_URL ? new URL(value, config.CRM_API_URL) : new URL(value);
   } catch {
     return fallback;
   }

@@ -586,6 +586,13 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       const text = (value: unknown): string | undefined =>
         typeof value === 'string' && value.trim() ? value.trim() : undefined;
 
+      const texts = (value: unknown): string[] =>
+        Array.isArray(value)
+          ? value.map(text).filter((item): item is string => !!item)
+          : text(value)
+            ? [text(value)!]
+            : [];
+
       const jobOrderId = text(body.job_order_id);
       const phone = text(body.phone);
       if (!jobOrderId || !phone) {
@@ -603,7 +610,19 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         headcount: Number.isFinite(headcount) ? headcount : undefined,
         salary: text(body.salary),
         min_experience: text(body.min_experience),
+        industry: text(body.industry),
+        gender: text(body.gender),
+        process_time: text(body.process_time),
+        b2b_rate: text(body.b2b_rate),
+        candidate_pays: text(body.candidate_pays),
+        advance_payment: text(body.advance_payment),
+        balance_payment: text(body.balance_payment),
+        requirements: texts(body.requirements),
+        documents: texts(body.documents),
+        documents_single_pdf: body.documents_single_pdf === true,
         poster_url: text(body.poster_url),
+        staff_name: text(body.staff_name),
+        staff_phone: text(body.staff_phone),
       });
     });
 
