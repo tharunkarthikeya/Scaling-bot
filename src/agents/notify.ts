@@ -48,20 +48,30 @@ export type AgentNotifyOutcome =
 
 /**
  * The template's six body parameters. This array is the contract with Meta.
- * The approved template (`agent_new_job_order`, WABA 487030077834196) is an
- * image header (`agentJobOrderImage`) and then exactly this body:
+ * Both templates on WABA 487030077834196 take the same image header
+ * (`agentJobOrderImage`) and these six values in this order:
  *
- *     Hello {{1}},
+ *   * `agent_job_requirement` (submitted as UTILITY; Meta approved it but
+ *     recategorised it MARKETING, because an unrequested job broadcast is
+ *     promotional to Meta whatever the wording):
  *
- *     Adira Enterprises has a new job opening.
+ *         Hello {{1}},
  *
- *     Position: {{2}}
- *     Country: {{3}}
- *     Vacancies: {{4}}
- *     Salary: {{5}}
- *     Experience: {{6}}
+ *         This is a requirement update from Adira Enterprises for your agency.
  *
- *     If you have suitable candidates, please reply to this message.
+ *         Position: {{2}}
+ *         Country: {{3}}
+ *         Vacancies: {{4}}
+ *         Salary: {{5}}
+ *         Experience: {{6}}
+ *
+ *         Please reply to this message if you have suitable candidates for
+ *         this requirement.
+ *
+ *   * `agent_new_job_order` (MARKETING): the same values, worded as a job ad.
+ *
+ * Both are marketing, so Meta may hold one back from a number that has never
+ * chatted with the line. Agents who already message Rafi on it receive them.
  *
  * The client's name is never sent. Agents get the same facts the public
  * Current Jobs page shows.
