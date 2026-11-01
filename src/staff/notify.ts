@@ -124,7 +124,7 @@ const NOT_STATED = 'Not stated';
  * address pasted into a job title should cost the message its formatting, not
  * cost the staff member their notification.
  */
-function parameter(value: string | null | undefined, fallback = NOT_STATED): string {
+export function parameter(value: string | null | undefined, fallback = NOT_STATED): string {
   const text = (value ?? '').replace(/\s+/g, ' ').trim();
   // 1024 is the per-parameter limit. Truncating loses the tail of a long job
   // title; not truncating loses the whole message.

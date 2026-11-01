@@ -526,6 +526,51 @@ export async function sendSlaAlertTemplate(
 }
 
 /**
+ * Tells one Sourcing Hub agent about a new job order, from the agent line.
+ *
+ * The approved template has an image header followed by the body; parameter
+ * order is fixed by `agentJobOrderParameters` in `agents/notify.ts`. The line is
+ * required, not defaulted: see `WHATSAPP_AGENT_PHONE_NUMBER_ID`.
+ */
+export async function sendAgentJobOrderTemplate(
+  to: string,
+  parameters: string[],
+  imageUrl: string,
+): Promise<SendResult> {
+  const name = config.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE;
+  if (!name) throw new Error('WHATSAPP_AGENT_JOB_ORDER_TEMPLATE is not configured');
+  const line = config.WHATSAPP_AGENT_PHONE_NUMBER_ID;
+  if (!line) throw new Error('WHATSAPP_AGENT_PHONE_NUMBER_ID is not configured');
+
+  if (config.SHADOW_MODE) {
+    logger.info({ to, template: name, parameters, imageUrl, from: line }, 'shadow mode: template suppressed');
+    return { shadowed: true };
+  }
+
+  await budgets.replies.acquire();
+
+  const json = await graphPost(
+    `${line}/messages`,
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name,
+        language: { code: config.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE_LANG },
+        components: [
+          { type: 'header', parameters: [{ type: 'image', image: { link: imageUrl } }] },
+          { type: 'body', parameters: parameters.map((text) => ({ type: 'text', text })) },
+        ],
+      },
+    },
+    line,
+  );
+
+  return { wamid: json?.messages?.[0]?.id, shadowed: false };
+}
+
+/**
  * Best-effort read receipt. Failing to mark read must never block processing.
  *
  * Spends from its own budget, and gives up rather than waiting for one. Both

@@ -257,6 +257,38 @@ const schema = z.object({
   WHATSAPP_SLA_ALERT_TEMPLATE_LANG: z.string().default('en'),
 
   /**
+   * Approved template that tells the CRM's Sourcing Hub agents about a new job
+   * order. `POST /api/agent-job-order` sends it, one agent per call. The body
+   * parameters are listed in `agentJobOrderParameters` (`agents/notify.ts`).
+   *
+   * Unset disables the send, and the endpoint answers
+   * `agent_template_not_configured`.
+   */
+  WHATSAPP_AGENT_JOB_ORDER_TEMPLATE: blankable(z.string().min(1).optional()),
+  WHATSAPP_AGENT_JOB_ORDER_TEMPLATE_LANG: z.string().default('en'),
+
+  /**
+   * The template has an image header, and every send must supply one. The
+   * job order's website poster is used when it is a JPG or PNG; otherwise
+   * this image is. It must be a public https JPG or PNG that Meta can fetch.
+   */
+  WHATSAPP_AGENT_JOB_ORDER_DEFAULT_IMAGE: z
+    .string()
+    .url()
+    .default('https://adiragroups.com/images/hero-skyline.jpg'),
+
+  /**
+   * The line agents hear from: Rafi's Mount Road number, +91 98844 47455
+   * (phone id 558448830676126, WABA 487030077834196).
+   *
+   * There is no fallback to the main line. A template belongs to the WABA it
+   * was approved on, so the agent template only exists on this line's account.
+   * Also, an agent's reply has to reach Rafi, who sees this number in the
+   * WhatsApp Business app.
+   */
+  WHATSAPP_AGENT_PHONE_NUMBER_ID: blankable(z.string().min(1).optional()),
+
+  /**
    * The country code to read a bare ten-digit staff number as.
    *
    * The CRM keeps a staff phone as free text, which is right for a roster that

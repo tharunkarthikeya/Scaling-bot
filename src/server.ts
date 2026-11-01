@@ -27,6 +27,7 @@ import { captureAttachment } from './ingestion/whatsapp.js';
 import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './ingestion/ledger.js';
 import { record, renderMetrics } from './metrics/index.js';
 import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
+import { notifyAgentOfJobOrder } from './agents/notify.js';
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
@@ -544,6 +545,39 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
               .map(text)
               .filter((id): id is string => !!id)
           : undefined,
+      });
+    });
+
+    /**
+     * The CRM telling one Sourcing Hub agent about a new job order.
+     *
+     * One agent per call. The CRM picks the agents and makes sure each job
+     * order goes out only once. Always 200 when well formed, with `sent` and a
+     * `reason` in the body, like the two staff relays above.
+     */
+    app.post('/api/agent-job-order', async (req, res) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const text = (value: unknown): string | undefined =>
+        typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+      const jobOrderId = text(body.job_order_id);
+      const phone = text(body.phone);
+      if (!jobOrderId || !phone) {
+        return res.code(400).send({ error: 'job_order_id and phone are required' });
+      }
+
+      const headcount = Number(body.headcount);
+      return notifyAgentOfJobOrder({
+        job_order_id: jobOrderId,
+        phone,
+        agent_id: text(body.agent_id),
+        agent_name: text(body.agent_name),
+        title: text(body.title),
+        destination_country: text(body.destination_country),
+        headcount: Number.isFinite(headcount) ? headcount : undefined,
+        salary: text(body.salary),
+        min_experience: text(body.min_experience),
+        poster_url: text(body.poster_url),
       });
     });
 
