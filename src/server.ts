@@ -28,6 +28,7 @@ import { ingestionRows, oldestUnfinishedAgeMs, IN_FLIGHT_STATUSES } from './inge
 import { record, renderMetrics } from './metrics/index.js';
 import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
 import { notifyAgentOfJobOrder } from './agents/notify.js';
+import { isAgentResumeMessage } from './agents/resumes.js';
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
@@ -282,6 +283,31 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       if (crmConfigured()) {
         const policy = await fetchWhatsappReplyPolicy(msg.waId);
         if (!policy.should_reply) {
+          // A Sourcing Hub contact sending a document or photo may be an agent
+          // sending a candidate's CV. The `agent_resume` worker hands it to the
+          // CRM, which decides (agents only) and answers. Everything else from
+          // these contacts is still left for a person, as before.
+          if (policy.reason === 'sourcing_contact_number' && isAgentResumeMessage(msg)) {
+            if (await claimEvent(msg.wamid)) {
+              await queue.enqueue(
+                'agent_resume',
+                {
+                  waId: msg.waId,
+                  wamid: msg.wamid,
+                  mediaId: msg.media!.id,
+                  mimeType: msg.media!.mimeType,
+                  filename: msg.media!.filename,
+                  phoneNumberId: msg.phoneNumberId,
+                },
+                { key: `agent-resume-${msg.wamid}` },
+              );
+              logger.info(
+                { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
+                'sourcing contact sent a file; queued as a possible agent résumé',
+              );
+            }
+            continue;
+          }
           logger.info(
             {
               waId: msg.waId,

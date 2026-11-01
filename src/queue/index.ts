@@ -57,6 +57,19 @@ export interface JobPayloads {
    * unreachable is ours to retry rather than theirs to wait for.
    */
   ats_export: { waId: string };
+  /**
+   * A file a Sourcing Hub agent sent: a candidate's résumé for the CRM
+   * (`agents/resumes.ts`). Its own job because VeriIS takes a while to read a
+   * file, far longer than a webhook may wait.
+   */
+  agent_resume: {
+    waId: string;
+    wamid: string;
+    mediaId: string;
+    mimeType?: string;
+    filename?: string;
+    phoneNumberId?: string;
+  };
 }
 
 export type JobName = keyof JobPayloads;

@@ -570,6 +570,65 @@ export async function uploadResume(params: {
   }
 }
 
+/** What the CRM made of one agent's file (`POST /agent-resumes`). */
+export type AgentResumeOutcome =
+  | {
+      status: 'created';
+      candidate_id: string;
+      candidate_code?: string;
+      full_name?: string | null;
+      agent_name?: string;
+    }
+  | { status: 'rejected' | 'error'; code?: string; message?: string; agent_name?: string }
+  | { status: 'ignored'; reason?: string }
+  | { status: 'processing' };
+
+/**
+ * Sends a file a Sourcing Hub agent sent us, for the CRM to read with VeriIS
+ * and turn into a candidate labelled with that agent.
+ *
+ * Always answered 200 with a `status` when the request itself worked. A
+ * transport failure or a 5xx throws a retryable `CrmError`.
+ */
+export async function submitAgentResume(params: {
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+  phone: string;
+  wamid: string;
+  lineId?: string;
+}): Promise<AgentResumeOutcome> {
+  if (!crmConfigured()) throw new CrmError('CRM is not configured', 0, false);
+
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([new Uint8Array(params.buffer)], { type: params.mimeType }),
+    params.filename,
+  );
+  form.append('phone', params.phone);
+  form.append('wamid', params.wamid);
+  if (params.lineId) form.append('line_id', params.lineId);
+
+  let res: Response;
+  try {
+    res = await fetch(url('/agent-resumes'), {
+      method: 'POST',
+      headers: headers(),
+      body: form,
+      signal: AbortSignal.timeout(config.CRM_AGENT_RESUME_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new CrmError(err instanceof Error ? err.message : String(err), 0, true);
+  }
+
+  if (!res.ok) {
+    const { detail, code } = await readError(res);
+    throw new CrmError(detail, res.status, isRetryable(res.status), false, code);
+  }
+  return (await res.json()) as AgentResumeOutcome;
+}
+
 /**
  * Hands over the scan behind one identity record the CRM already holds.
  *

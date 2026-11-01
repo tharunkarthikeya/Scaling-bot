@@ -685,6 +685,12 @@ const schema = z.object({
   CRM_API_KEY: blankable(z.string().min(1).optional()),
   CRM_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   /**
+   * How long to wait for `POST /agent-resumes`. Much longer than
+   * CRM_TIMEOUT_MS because the CRM reads the file with VeriIS before it
+   * answers, and that can take a couple of minutes.
+   */
+  CRM_AGENT_RESUME_TIMEOUT_MS: z.coerce.number().int().positive().default(240_000),
+  /**
    * Submission attempts before a candidate is left for an operator.
    *
    * The record is never discarded — a failed sync means the CRM did not get it
