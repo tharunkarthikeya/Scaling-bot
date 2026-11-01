@@ -51,7 +51,9 @@ await ensureIndexes();
 
 const agentJobs: unknown[] = [];
 const inboundJobs: unknown[] = [];
+const questionJobs: unknown[] = [];
 queue.register('agent_resume', async (payload) => void agentJobs.push(payload));
+queue.register('agent_question', async (payload) => void questionJobs.push(payload));
 queue.register('inbound_message', async (payload) => void inboundJobs.push(payload));
 await queue.start();
 
@@ -92,6 +94,7 @@ let passed = 0;
 async function check(name: string, run: () => Promise<void>) {
   agentJobs.length = 0;
   inboundJobs.length = 0;
+  questionJobs.length = 0;
   await run();
   passed++;
   console.log(`  \x1b[32mok\x1b[0m  ${name}`);
@@ -126,9 +129,21 @@ await check('a photo from a Sourcing Hub contact is queued too', async () => {
   assert.equal(inboundJobs.length, 0);
 });
 
-await check('text from a Sourcing Hub contact is still left alone', async () => {
-  await deliver(AGENT, { id: 'wamid.AGENT-TXT-1', type: 'text', text: { body: 'hello Rafi' } });
+await check('text from a Sourcing Hub contact is queued as an agent question, never as a candidate', async () => {
+  await deliver(AGENT, {
+    id: 'wamid.AGENT-TXT-1',
+    type: 'text',
+    text: { body: 'What is the salary?' },
+    context: { from: '919884447455', id: 'wamid.JOB-ORDER-TEMPLATE' },
+  });
   await settle();
+  assert.deepEqual(questionJobs, [{
+    waId: AGENT,
+    wamid: 'wamid.AGENT-TXT-1',
+    text: 'What is the salary?',
+    contextWamid: 'wamid.JOB-ORDER-TEMPLATE',
+    phoneNumberId: '558448830676126',
+  }]);
   assert.equal(agentJobs.length, 0);
   assert.equal(inboundJobs.length, 0);
 });

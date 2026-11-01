@@ -29,6 +29,7 @@ import { record, renderMetrics } from './metrics/index.js';
 import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
 import { notifyAgentOfJobOrder } from './agents/notify.js';
 import { isAgentResumeMessage } from './agents/resumes.js';
+import { isAgentQuestionMessage } from './agents/questions.js';
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
@@ -304,6 +305,29 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
               logger.info(
                 { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
                 'sourcing contact sent a file; queued as a possible agent résumé',
+              );
+            }
+            continue;
+          }
+          // A text from a Sourcing Hub contact may be an agent asking about a
+          // job order they were sent. The `agent_question` worker answers it
+          // from that job order, or stays silent if there is none.
+          if (
+            policy.reason === 'sourcing_contact_number' &&
+            config.AGENT_QA_ENABLED &&
+            isAgentQuestionMessage(msg)
+          ) {
+            if (await claimEvent(msg.wamid)) {
+              await queue.enqueue(
+                'agent_question',
+                {
+                  waId: msg.waId,
+                  wamid: msg.wamid,
+                  text: msg.text!,
+                  ...(msg.contextWamid ? { contextWamid: msg.contextWamid } : {}),
+                  phoneNumberId: msg.phoneNumberId,
+                },
+                { key: `agent-question-${msg.wamid}` },
               );
             }
             continue;

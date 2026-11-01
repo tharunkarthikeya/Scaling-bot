@@ -20,6 +20,7 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { parameter, staffPhoneToE164 } from '../staff/notify.js';
 import { sendAgentJobOrderTemplate } from '../whatsapp/client.js';
+import { rememberAgentNotice, type AgentJobOrderDetails } from './store.js';
 
 /** One agent and one job order, as the CRM relays them. */
 export interface AgentJobOrderFacts {
@@ -201,6 +202,33 @@ export function agentJobOrderImage(posterUrl?: string | null): string {
   return url.toString();
 }
 
+/**
+ * The job order as the agent was told about it, kept for answering their
+ * questions later. Blank where the order said nothing, so the answerer knows
+ * it does not know (unlike the template, which needs "Not stated").
+ */
+export function agentJobOrderDetails(facts: AgentJobOrderFacts): AgentJobOrderDetails {
+  const clean = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim();
+  const headcount = Number(facts.headcount);
+  return {
+    title: clean(facts.title),
+    destination_country: clean(facts.destination_country),
+    industry: clean(facts.industry),
+    vacancies: Number.isInteger(headcount) && headcount > 0 ? String(headcount) : '',
+    gender: clean(facts.gender),
+    salary: clean(facts.salary),
+    experience: clean(facts.min_experience),
+    process_time: clean(facts.process_time),
+    b2b_rate: clean(facts.b2b_rate),
+    candidate_pays: clean(facts.candidate_pays),
+    payment_terms: clean(paymentTerms(facts)),
+    requirements: clean(joined(facts.requirements)),
+    documents: clean(documentsLine(facts)),
+    staff_name: clean(facts.staff_name),
+    staff_phone: clean(facts.staff_phone),
+  };
+}
+
 /** Send one agent the new-job-order template. Never throws. */
 export async function notifyAgentOfJobOrder(
   facts: AgentJobOrderFacts,
@@ -231,6 +259,18 @@ export async function notifyAgentOfJobOrder(
       { agentId: facts.agent_id, jobOrderId: facts.job_order_id, shadowed: result.shadowed },
       'told an agent about a new job order',
     );
+    // Remembered so the agent's questions about it can be answered. Not in
+    // shadow mode: nothing reached the agent, so there is nothing to answer for.
+    if (!result.shadowed) {
+      await rememberAgentNotice({
+        waId: to,
+        jobOrderId: facts.job_order_id,
+        ...(result.wamid ? { wamid: result.wamid } : {}),
+        lineId: config.WHATSAPP_AGENT_PHONE_NUMBER_ID,
+        sentAt: new Date(),
+        details: agentJobOrderDetails(facts),
+      });
+    }
     return { sent: true, wamid: result.wamid, shadowed: result.shadowed };
   } catch (err) {
     logger.warn(

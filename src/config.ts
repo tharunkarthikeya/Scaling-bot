@@ -289,6 +289,16 @@ const schema = z.object({
   WHATSAPP_AGENT_PHONE_NUMBER_ID: blankable(z.string().min(1).optional()),
 
   /**
+   * Answering agents' questions about the job orders they were sent
+   * (`agents/questions.ts`). An agent's text is answered only when they were
+   * sent a job order in the last AGENT_QA_CONTEXT_DAYS days; anything the job
+   * order does not say is handed to its assigned staff member. Off stops the
+   * replies; agents' texts are then left for Rafi, as before.
+   */
+  AGENT_QA_ENABLED: bool.default('true'),
+  AGENT_QA_CONTEXT_DAYS: z.coerce.number().int().positive().default(30),
+
+  /**
    * The country code to read a bare ten-digit staff number as.
    *
    * The CRM keeps a staff phone as free text, which is right for a roster that

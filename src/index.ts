@@ -10,6 +10,7 @@ import { processOcrJob, sweepRunningExtractions } from './ocr/veris.js';
 import { reconcileCrmSync, syncCandidateToCrm } from './crm/sync.js';
 import { exportToAts } from './ats/export.js';
 import { processAgentResume } from './agents/resumes.js';
+import { processAgentQuestion } from './agents/questions.js';
 import { ensureAtsCollections } from './ats/client.js';
 import { refreshSourcingContactNumbers } from './ats/sourcingGuard.js';
 import { crmConfigured } from './crm/client.js';
@@ -134,6 +135,9 @@ function registerWorkers(): void {
   // VeriIS (`agents/resumes.ts`). The same pool size as CRM sync, since it is
   // the same kind of work, just slower per job.
   queue.register('agent_resume', processAgentResume, config.QUEUE_CONCURRENCY_CRM_SYNC);
+
+  // Agents' questions about the job orders they were sent (`agents/questions.ts`).
+  queue.register('agent_question', processAgentQuestion, config.QUEUE_CONCURRENCY_CRM_SYNC);
 }
 
 async function main(): Promise<void> {
@@ -195,6 +199,7 @@ async function main(): Promise<void> {
     queue.observe('crm_sync');
     queue.observe('ats_export');
     queue.observe('agent_resume');
+    queue.observe('agent_question');
   }
 
   await queue.start();

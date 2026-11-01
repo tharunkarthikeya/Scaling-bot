@@ -62,6 +62,18 @@ export interface JobPayloads {
    * (`agents/resumes.ts`). Its own job because VeriIS takes a while to read a
    * file, far longer than a webhook may wait.
    */
+  /**
+   * A text from a Sourcing Hub agent, answered from the job orders they were
+   * sent (`agents/questions.ts`). The worker stays silent when there are none.
+   */
+  agent_question: {
+    waId: string;
+    wamid: string;
+    text: string;
+    /** The message they replied to, when they used WhatsApp's reply. */
+    contextWamid?: string;
+    phoneNumberId?: string;
+  };
   agent_resume: {
     waId: string;
     wamid: string;
