@@ -86,10 +86,7 @@ const LABELS: Array<[keyof AgentJobOrderNotice['details'], string]> = [
   ['experience', 'Experience'],
   ['process_time', 'Process time'],
   ['b2b_rate', 'B2B rate'],
-  ['candidate_pays', 'Paid by candidate'],
-  ['payment_terms', 'Payment terms'],
-  ['requirements', 'Requirements'],
-  ['documents', 'Documents to send'],
+  ['remarks', 'Remarks'],
 ];
 
 /** One job order as the model sees it. Lines the order left blank are left out. */

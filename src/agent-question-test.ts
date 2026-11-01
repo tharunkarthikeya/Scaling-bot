@@ -76,11 +76,7 @@ const CZECH = {
   salary: 'EUR 900',
   process_time: '6-8 months',
   b2b_rate: '4.9 with Ticket',
-  advance_payment: '€946',
-  balance_payment: 'After visa',
-  requirements: ['Basic English'],
-  documents: ['CV', 'PCC'],
-  documents_single_pdf: true,
+  remarks: '€946 in advance after offer acceptance, balance after visa',
   staff_name: 'Rafi',
   staff_phone: '+91 98844 47455',
 };
@@ -115,7 +111,7 @@ await check('the model is shown only what the job order says', () => {
     details: agentJobOrderDetails({ ...CZECH, salary: undefined } as never),
   });
   assert.match(text, /Position: Production Operators/);
-  assert.match(text, /Payment terms: €946 in advance after offer acceptance; Balance: After visa/);
+  assert.match(text, /Remarks: €946 in advance after offer acceptance, balance after visa/);
   assert.doesNotMatch(text, /Salary/, 'a blank detail must be left out, not shown as known');
   assert.doesNotMatch(text, /Rafi/, 'the staff contact is for the hand-off, not for answers');
 });

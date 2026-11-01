@@ -9,9 +9,9 @@
  * It is a template because an agent has usually not written to that line in
  * the last 24 hours, and Meta refuses free-form text outside that window.
  *
- * Replies need nothing here. An agent's number is a Sourcing Hub contact, so
- * the CRM's reply policy already tells the bot to ignore it, and the line is
- * still on the WhatsApp Business app, where Rafi reads and answers it.
+ * Each send is remembered (`agents/store.ts`) so the agent's questions about
+ * it can be answered (`agents/questions.ts`). The line is still on the
+ * WhatsApp Business app, where Rafi also reads it.
  *
  * Like the staff relay, this never throws. The job order is already saved, so
  * a failed send is a reason in the reply, not a 500.
@@ -22,7 +22,7 @@ import { parameter, staffPhoneToE164 } from '../staff/notify.js';
 import { sendAgentJobOrderTemplate } from '../whatsapp/client.js';
 import { rememberAgentNotice, type AgentJobOrderDetails } from './store.js';
 
-/** One agent and one job order, as the CRM relays them. */
+/** One agent and one job order, as the CRM relays them (`broadcast_job_order`). */
 export interface AgentJobOrderFacts {
   job_order_id: string;
   /** The Sourcing Hub record id, for logs only. */
@@ -37,33 +37,17 @@ export interface AgentJobOrderFacts {
   headcount?: number | null;
   salary?: string | null;
   min_experience?: string | null;
-  /**
-   * The job order's agent terms (`terms` on the order, sent by
-   * `terms_facts` in the CRM's `app/agent_whatsapp.py`).
-   */
+  /** The job order's agent terms (`terms` on the order). */
   gender?: string | null;
   /** e.g. "6-8 months". */
   process_time?: string | null;
   /** e.g. "4.9 with Ticket". */
   b2b_rate?: string | null;
-  /** Costs the candidate bears, e.g. "VFS, Embassy fee". */
-  candidate_pays?: string | null;
-  /** Paid once the candidate accepts the offer, e.g. "€946". */
-  advance_payment?: string | null;
-  /** When the remainder is paid, e.g. "After visa". */
-  balance_payment?: string | null;
-  /** One item each. */
-  requirements?: string[] | string | null;
-  /** In the order they must appear. */
-  documents?: string[] | string | null;
-  /** The documents must arrive as one PDF. */
-  documents_single_pdf?: boolean | null;
+  /** The job order's remarks (`description`), written for agents. */
+  remarks?: string | null;
   /** The job order's poster (CRM path or absolute URL): the message image. */
   poster_url?: string | null;
-  /**
-   * The staff member the job order is assigned to (`assignedStaff` on the
-   * order, `staff_facts` in the CRM), for agents' questions.
-   */
+  /** The staff member the job order is assigned to (`assignedStaff`). */
   staff_name?: string | null;
   staff_phone?: string | null;
 }
@@ -72,47 +56,17 @@ export type AgentNotifyOutcome =
   | { sent: true; wamid?: string; shadowed: boolean }
   | { sent: false; reason: string };
 
-/** A list (or one string) as one line: "a, b, c". */
-function joined(value: string[] | string | null | undefined): string {
-  const items = Array.isArray(value) ? value : value ? [value] : [];
-  return items.map((item) => String(item).trim()).filter(Boolean).join(', ');
-}
-
-/** "€946 in advance after offer acceptance; Balance: After visa", as the CRM screen shows it. */
-function paymentTerms(facts: AgentJobOrderFacts): string {
-  const advance = (facts.advance_payment ?? '').trim();
-  const balance = (facts.balance_payment ?? '').trim();
-  return [
-    advance && `${advance} in advance after offer acceptance`,
-    balance && `Balance: ${balance}`,
-  ]
-    .filter(Boolean)
-    .join('; ');
-}
-
-/** The documents line: the list, in order, and whether it must be one PDF. */
-function documentsLine(facts: AgentJobOrderFacts): string {
-  const list = joined(facts.documents);
-  if (!list) return '';
-  return facts.documents_single_pdf ? `${list} (in this order, in a single PDF)` : `${list} (in this order)`;
-}
-
-/** What agents are asked to send when the job order does not say. */
-export const DEFAULT_AGENT_DOCUMENTS =
+/** What the 16-value template's Documents line said when an order gave none. */
+const DEFAULT_AGENT_DOCUMENTS =
   'CV, passport copy (all pages including cover pages), PCC, experience certificates, ' +
   'educational documents and passport size photo, scanned in a single PDF in this order';
 
 /**
- * The two earlier templates take six values. Kept so a bot deployed before
- * its env is switched to `agent_job_order_details` still sends a valid message.
- */
-const SIX_FIELD_TEMPLATES = new Set(['agent_new_job_order', 'agent_job_requirement']);
-
-/**
  * The template's body parameters. This array is the contract with Meta.
  *
- * `agent_job_order_details` (WABA 487030077834196, MARKETING) is an image
- * header (`agentJobOrderImage`) and then exactly this body, sixteen values:
+ * `agent_job_order_brief` (WABA 487030077834196, MARKETING, id
+ * 1109809694992856) is an image header (`agentJobOrderImage`) and then
+ * exactly this body, thirteen values:
  *
  *     Hello {{1}},
  *
@@ -126,22 +80,24 @@ const SIX_FIELD_TEMPLATES = new Set(['agent_new_job_order', 'agent_job_requireme
  *     🧰 Experience: {{8}}
  *     ⏳ Process time: {{9}}
  *     🤝 B2B rate: {{10}}
- *     💳 Paid by candidate: {{11}}
- *     📅 Payment terms: {{12}}
  *
- *     ✅ Requirements: {{13}}
+ *     📝 Remarks: {{11}}
  *
- *     📄 Documents: {{14}}
- *
- *     📞 For any queries, contact {{15}} - {{16}}
+ *     📞 For any queries, contact {{12}} - {{13}}
  *
  *     Please reply to this message if you have suitable candidates for this
  *     requirement.
  *
- * The older `agent_job_requirement` / `agent_new_job_order` take only name,
- * position, country, vacancies, salary and experience, and get those six.
+ * Earlier templates still get a valid message, so a bot deployed before its
+ * env names the new template keeps working:
  *
- * The client's name and the internal remarks are never sent.
+ * * `agent_job_order_details` (16 values): the same lines, plus Paid by
+ *   candidate, Payment terms and Requirements (no longer collected: "Not
+ *   stated") and Documents (the standard list) instead of Remarks.
+ * * `agent_job_requirement` / `agent_new_job_order` (6 values): name,
+ *   position, country, vacancies, salary, experience.
+ *
+ * The client's name is never sent.
  */
 export function agentJobOrderParameters(
   facts: AgentJobOrderFacts,
@@ -155,10 +111,11 @@ export function agentJobOrderParameters(
   const salary = parameter(facts.salary, 'Not disclosed');
   const experience = parameter(facts.min_experience, 'Any');
 
-  if (template && SIX_FIELD_TEMPLATES.has(template)) {
+  if (template === 'agent_new_job_order' || template === 'agent_job_requirement') {
     return [name, position, country, vacancies, salary, experience];
   }
-  return [
+
+  const details = [
     name,
     country,
     parameter(facts.industry),
@@ -169,15 +126,18 @@ export function agentJobOrderParameters(
     experience,
     parameter(facts.process_time),
     parameter(facts.b2b_rate, 'On request'),
-    parameter(facts.candidate_pays),
-    parameter(paymentTerms(facts)),
-    parameter(joined(facts.requirements)),
-    parameter(documentsLine(facts), DEFAULT_AGENT_DOCUMENTS),
-    // With no staff member on the order, agents are pointed back at the line
-    // the message came from, which Rafi reads.
+  ];
+  // With no staff member on the order, agents are pointed back at the line
+  // the message came from, which Rafi reads.
+  const contact = [
     parameter(facts.staff_name, 'Adira Enterprises'),
     parameter(facts.staff_phone, 'this WhatsApp number'),
   ];
+
+  if (template === 'agent_job_order_details') {
+    return [...details, 'Not stated', 'Not stated', 'Not stated', DEFAULT_AGENT_DOCUMENTS, ...contact];
+  }
+  return [...details, parameter(facts.remarks, 'None'), ...contact];
 }
 
 /**
@@ -220,10 +180,7 @@ export function agentJobOrderDetails(facts: AgentJobOrderFacts): AgentJobOrderDe
     experience: clean(facts.min_experience),
     process_time: clean(facts.process_time),
     b2b_rate: clean(facts.b2b_rate),
-    candidate_pays: clean(facts.candidate_pays),
-    payment_terms: clean(paymentTerms(facts)),
-    requirements: clean(joined(facts.requirements)),
-    documents: clean(documentsLine(facts)),
+    remarks: clean(facts.remarks),
     staff_name: clean(facts.staff_name),
     staff_phone: clean(facts.staff_phone),
   };

@@ -5,15 +5,14 @@ import assert from 'node:assert/strict';
 process.env.REDIS_URL = '';
 process.env.SHADOW_MODE = 'false';
 process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID = 'AGENT-LINE';
-process.env.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE = 'agent_job_order_details';
+process.env.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE = 'agent_job_order_brief';
 process.env.WHATSAPP_AGENT_JOB_ORDER_TEMPLATE_LANG = 'en';
 process.env.STAFF_PHONE_DEFAULT_COUNTRY_CODE = '91';
 process.env.CRM_API_URL = 'https://crm.example.com';
 process.env.WHATSAPP_AGENT_JOB_ORDER_DEFAULT_IMAGE = 'https://example.com/default.jpg';
 
 const { config, graphBaseUrl } = await import('./config.js');
-const { DEFAULT_AGENT_DOCUMENTS, agentJobOrderImage, agentJobOrderParameters, notifyAgentOfJobOrder } =
-  await import('./agents/notify.js');
+const { agentJobOrderImage, agentJobOrderParameters, notifyAgentOfJobOrder } = await import('./agents/notify.js');
 
 type Call = { url: string; body: any };
 const calls: Call[] = [];
@@ -40,85 +39,69 @@ async function check(name: string, run: () => Promise<void> | void) {
   console.log(`  \x1b[32mok\x1b[0m  ${name}`);
 }
 
+/** Exactly what the CRM's `broadcast_job_order` sends, for one agent. */
 const ORDER = {
   job_order_id: 'ORD-123-4567',
   agent_id: 'AGT-1',
   agent_name: 'Imran',
   phone: '98765 43210',
-  title: 'Production Operator',
-  destination_country: 'Czech Republic',
-  industry: 'Automotive',
-  headcount: 30,
-  gender: 'Male & Female',
-  salary: 'EUR 900',
-  min_experience: '1-2 years',
-  process_time: '6-8 months',
-  b2b_rate: '4.9 with Ticket',
-  candidate_pays: 'VFS, Embassy fee',
-  advance_payment: '€946',
-  balance_payment: 'After visa',
-  requirements: ['Relevant work experience', 'Basic English', 'Valid passport & PCC', 'Updated CV'],
-  documents: ['CV', 'Passport copy (all pages including cover pages)', 'PCC', 'Experience certificates'],
-  documents_single_pdf: true,
+  title: 'Heavy Equipment Technicians - Mechanical & Electrical',
+  destination_country: 'Saudi Arabia',
+  industry: 'Steel',
+  headcount: 10,
+  gender: 'Male',
+  salary: 'SAR 2500 to 3500',
+  min_experience: '8+ Years',
+  process_time: '2-3 months',
+  b2b_rate: '1.2 with Ticket',
+  remarks: 'Knowledge in maintenance of Forklift,\nMobile Cranes and EOT Cranes',
   poster_url: '/public/job-posters/0123456789abcdef0123456789abcdef.jpg',
-  staff_name: 'Zara',
-  staff_phone: '+91 98849 49735',
+  staff_name: 'Rafi',
+  staff_phone: '+91 98844 47455',
 };
 
 console.log('\n\x1b[1mNew job orders to agents\x1b[0m');
 
-await check('the sixteen parameters follow the approved detailed body, in order', () => {
+await check('the thirteen parameters follow agent_job_order_brief, in order', () => {
   assert.deepEqual(agentJobOrderParameters(ORDER), [
     'Imran',
-    'Czech Republic',
-    'Automotive',
-    'Production Operator',
-    '30',
-    'Male & Female',
-    'EUR 900',
-    '1-2 years',
-    '6-8 months',
-    '4.9 with Ticket',
-    'VFS, Embassy fee',
-    '€946 in advance after offer acceptance; Balance: After visa',
-    'Relevant work experience, Basic English, Valid passport & PCC, Updated CV',
-    'CV, Passport copy (all pages including cover pages), PCC, Experience certificates (in this order, in a single PDF)',
-    'Zara',
-    '+91 98849 49735',
+    'Saudi Arabia',
+    'Steel',
+    'Heavy Equipment Technicians - Mechanical & Electrical',
+    '10',
+    'Male',
+    'SAR 2500 to 3500',
+    '8+ Years',
+    '2-3 months',
+    '1.2 with Ticket',
+    // Remarks typed over several lines travel as one: Meta refuses a newline.
+    'Knowledge in maintenance of Forklift, Mobile Cranes and EOT Cranes',
+    'Rafi',
+    '+91 98844 47455',
   ]);
 });
 
-await check('payment and documents read well when only part of them is filled', () => {
-  const only = (extra: object) => agentJobOrderParameters({ job_order_id: 'X', ...extra });
-  assert.equal(only({ advance_payment: '€946' })[11], '€946 in advance after offer acceptance');
-  assert.equal(only({ balance_payment: 'After visa' })[11], 'Balance: After visa');
-  assert.equal(only({ documents: ['CV', 'PCC'] })[13], 'CV, PCC (in this order)');
-  assert.equal(only({ documents: 'CV only' })[13], 'CV only (in this order)');
-});
-
-await check('a bare order still has sixteen sendable, single-line values', () => {
-  const params = agentJobOrderParameters({
-    job_order_id: 'X',
-    title: 'Welder\n  TIG',
-    candidate_pays: 'first line\nsecond line',
-  });
-  assert.equal(params.length, 16);
-  assert.deepEqual(params.slice(0, 6), [
+await check('a bare order still has thirteen sendable, single-line values', () => {
+  const params = agentJobOrderParameters({ job_order_id: 'X', title: 'Welder\n  TIG' });
+  assert.deepEqual(params, [
     'Partner', 'Not stated', 'Not stated', 'Welder TIG', 'Not stated', 'Any gender',
+    'Not disclosed', 'Any', 'Not stated', 'On request', 'None',
+    // No staff member on the order: agents are pointed back at this line.
+    'Adira Enterprises', 'this WhatsApp number',
   ]);
-  assert.equal(params[9], 'On request');
-  assert.equal(params[10], 'first line second line');
-  assert.equal(params[11], 'Not stated');
-  assert.equal(params[13], DEFAULT_AGENT_DOCUMENTS);
-  // No staff member on the order: agents are pointed back at this line.
-  assert.deepEqual(params.slice(14), ['Adira Enterprises', 'this WhatsApp number']);
   for (const value of params) assert.ok(value && !/[\n\t]/.test(value), JSON.stringify(value));
 });
 
-await check('the two older templates still get their six values', () => {
+await check('the earlier templates still get the number of values they were approved with', () => {
+  const details = agentJobOrderParameters(ORDER, 'agent_job_order_details');
+  assert.equal(details.length, 16);
+  assert.deepEqual(details.slice(10, 13), ['Not stated', 'Not stated', 'Not stated']);
+  assert.match(details[13]!, /^CV, passport copy/);
+  assert.deepEqual(details.slice(14), ['Rafi', '+91 98844 47455']);
   for (const older of ['agent_new_job_order', 'agent_job_requirement']) {
     assert.deepEqual(agentJobOrderParameters(ORDER, older), [
-      'Imran', 'Production Operator', 'Czech Republic', '30', 'EUR 900', '1-2 years',
+      'Imran', 'Heavy Equipment Technicians - Mechanical & Electrical', 'Saudi Arabia', '10',
+      'SAR 2500 to 3500', '8+ Years',
     ]);
   }
 });
@@ -131,7 +114,7 @@ await check('it sends the template, with the job order poster, from the agent li
   const { to, type, template } = firstCall().body;
   assert.equal(to, '919876543210');
   assert.equal(type, 'template');
-  assert.equal(template.name, 'agent_job_order_details');
+  assert.equal(template.name, 'agent_job_order_brief');
   assert.equal(template.language.code, 'en');
   const [header, body] = template.components;
   assert.equal(header.type, 'header');

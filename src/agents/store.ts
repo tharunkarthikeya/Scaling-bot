@@ -24,10 +24,7 @@ export interface AgentJobOrderDetails {
   experience: string;
   process_time: string;
   b2b_rate: string;
-  candidate_pays: string;
-  payment_terms: string;
-  requirements: string;
-  documents: string;
+  remarks: string;
   staff_name: string;
   staff_phone: string;
 }
