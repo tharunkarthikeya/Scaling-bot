@@ -21,6 +21,7 @@
  * exactly as before. Their message was always left for a person to read.
  */
 import { CrmError, submitAgentResume, type AgentResumeOutcome } from '../crm/client.js';
+import { isBotSuppressedNumber } from '../crm/suppression.js';
 import { logger } from '../logger.js';
 import type { JobPayloads } from '../queue/index.js';
 import { downloadMedia, MediaTooLargeError, sendText } from '../whatsapp/client.js';
@@ -114,6 +115,14 @@ async function reply(payload: JobPayloads['agent_resume'], text: string): Promis
  * CRM unreachable, a 5xx, or the same message still being processed.
  */
 export async function processAgentResume(payload: JobPayloads['agent_resume']): Promise<void> {
+  // The webhook checked this before queueing. Checked again because the number
+  // may have been added to the suppression list while the job waited, and a
+  // suppressed number gets nothing: no CRM intake and no reply.
+  if (await isBotSuppressedNumber(payload.waId)) {
+    logger.info({ wamid: payload.wamid }, 'queued agent résumé from a bot-suppressed number dropped');
+    return;
+  }
+
   let media;
   try {
     media = await downloadMedia(payload.mediaId, payload.filename, payload.phoneNumberId);

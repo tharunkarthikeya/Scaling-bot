@@ -440,10 +440,38 @@ async function persistOutbound(
   await setState(candidate, { lastOutboundAt: now });
 }
 
+/**
+ * Why the candidate conversation must not message this number, or undefined
+ * when it may.
+ *
+ * `handleInboundMessage` already refuses both kinds of number before a turn
+ * starts, but scheduled sends (the §21 reminder, the idle-session notice) start
+ * from a stored record. An agent who first wrote to the public number as a
+ * candidate has such a record, and so does anyone suppressed after they began,
+ * so the check sits on the send itself. Errors throw: not knowing is not
+ * permission.
+ */
+async function candidateSendBlocked(
+  phone: string,
+): Promise<'bot_suppressed' | 'sourcing_contact' | undefined> {
+  if (await isBotSuppressedNumber(phone)) return 'bot_suppressed';
+  if (await isSourcingWhatsAppNumber(phone)) return 'sourcing_contact';
+  return undefined;
+}
+
 /** Sends one message. A closed 24-hour window is recorded, not retried. */
 async function reply(candidate: CandidateDoc, outbound: Outbound, step?: string): Promise<void> {
   const body = outbound.body.trim();
   if (!body) return;
+
+  const blocked = await candidateSendBlocked(candidate.phone);
+  if (blocked) {
+    logger.info(
+      { waId: candidate.waId, step, reason: blocked },
+      'candidate message not sent: number is outside the candidate workflow',
+    );
+    return;
+  }
 
   try {
     // From the number this conversation belongs to. Sending from the other one
@@ -4200,6 +4228,16 @@ export async function sendReminders(limit = 50): Promise<number> {
     const insideWindow = (candidate.windowExpiresAt?.getTime() ?? 0) > Date.now();
 
     try {
+      // After the claim, so a skipped record is not picked up again every run.
+      const blocked = await candidateSendBlocked(candidate.phone);
+      if (blocked) {
+        logger.info(
+          { waId: candidate.waId, reason: blocked },
+          'reminder not sent: number is outside the candidate workflow',
+        );
+        continue;
+      }
+
       if (insideWindow) {
         await askResume(candidate, copy.REMINDER, copy.REMINDER_CHOICES, MENU.reminder, {
           name: candidate.profile?.fullName ?? candidate.profileName ?? '',

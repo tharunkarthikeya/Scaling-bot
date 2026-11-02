@@ -23,6 +23,7 @@
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import type { CrmCandidatePayload } from './mapping.js';
+import type { AgentJobOrderFacts } from '../agents/notify.js';
 
 export interface CrmCandidateResponse {
   success: boolean;
@@ -279,6 +280,13 @@ export interface CrmWhatsappReplyPolicy {
   should_reply: boolean;
   action: 'continue' | 'ignore';
   reason: string;
+  /**
+   * With `sourcing_contact_number`: the Sourcing Hub row type the number is on
+   * (`agent`, `client`, `association`, `unknown`), `agent` when it is on any
+   * agent row. Absent from a CRM older than this field, which the webhook
+   * treats as "not an agent".
+   */
+  sourcing_type?: string;
 }
 
 /** Ask the CRM whether this sender is currently an internal/business contact. */
@@ -327,6 +335,28 @@ export async function fetchBotSuppressionNumbers(): Promise<string[]> {
     throw new Error('CRM bot suppression directory returned an invalid response');
   }
   return body.numbers.filter((value): value is string => typeof value === 'string');
+}
+
+/**
+ * The CRM's open job orders, newest first, with only what an agent may be told
+ * (`agent_job_order_facts` in the CRM: never the client's name). The context
+ * for answering an agent's question beyond the orders sent to them. Throws on
+ * any failure; the caller decides what an unanswerable question gets.
+ */
+export async function fetchOpenAgentJobOrders(): Promise<AgentJobOrderFacts[]> {
+  if (!crmConfigured()) return [];
+
+  const res = await fetch(url('/agent-job-orders'), {
+    headers: headers(),
+    signal: AbortSignal.timeout(config.CRM_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`CRM agent job orders returned ${res.status}`);
+  const body = (await res.json()) as { items?: unknown };
+  if (!Array.isArray(body.items)) throw new Error('CRM agent job orders returned an invalid response');
+  return body.items.filter(
+    (item): item is AgentJobOrderFacts =>
+      !!item && typeof item === 'object' && typeof (item as AgentJobOrderFacts).job_order_id === 'string',
+  );
 }
 
 export interface CrmAttendanceEvent {

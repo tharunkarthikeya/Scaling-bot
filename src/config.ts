@@ -289,11 +289,11 @@ const schema = z.object({
   WHATSAPP_AGENT_PHONE_NUMBER_ID: blankable(z.string().min(1).optional()),
 
   /**
-   * Answering agents' questions about the job orders they were sent
-   * (`agents/questions.ts`). An agent's text is answered only when they were
-   * sent a job order in the last AGENT_QA_CONTEXT_DAYS days; anything the job
-   * order does not say is handed to its assigned staff member. Off stops the
-   * replies; agents' texts are then left for Rafi, as before.
+   * Answering agents' texts (`agents/questions.ts`) from the job orders sent
+   * to them in the last AGENT_QA_CONTEXT_DAYS days and the CRM's other open
+   * job orders. Anything those do not say is handed to the order's assigned
+   * staff member, or to "our team" when no order is in question. Off stops
+   * the replies; agents' texts are then left for Rafi, as before.
    */
   AGENT_QA_ENABLED: bool.default('true'),
   AGENT_QA_CONTEXT_DAYS: z.coerce.number().int().positive().default(30),

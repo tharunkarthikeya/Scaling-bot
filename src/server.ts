@@ -257,6 +257,22 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         continue;
       }
 
+      // CRM Data Management's suppression list is absolute: a number on it gets
+      // nothing from any line, not an attendance reply, not an agent résumé or
+      // question answer, not the candidate conversation, not even a read
+      // receipt. So it is decided first. It used to come after the reply
+      // policy, which reports only its first match: a suppressed agent came
+      // back `sourcing_contact_number`, and the agent workers answered them.
+      // Checked before the event is claimed or a turn is stored, so nothing is
+      // left behind. A failed directory refresh throws, and Meta retries.
+      if (await isBotSuppressedNumber(msg.waId)) {
+        logger.info(
+          { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
+          'CRM bot-suppressed inbound ignored before any bot workflow',
+        );
+        continue;
+      }
+
       // Attendance is handled before candidate processing, and completely.
       //
       // The CRM owns the authoritative phone-to-staff match and the office
@@ -284,11 +300,19 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       if (crmConfigured()) {
         const policy = await fetchWhatsappReplyPolicy(msg.waId);
         if (!policy.should_reply) {
-          // A Sourcing Hub contact sending a document or photo may be an agent
-          // sending a candidate's CV. The `agent_resume` worker hands it to the
-          // CRM, which decides (agents only) and answers. Everything else from
-          // these contacts is still left for a person, as before.
-          if (policy.reason === 'sourcing_contact_number' && isAgentResumeMessage(msg)) {
+          // Only a Sourcing Hub *agent* is handed to the agent workers. Every
+          // client and association number, the first contact or any other, is
+          // left for a person and sent nothing. Routing every Sourcing Hub
+          // number here let a client's file draw a "too large" or "could not
+          // process" reply before the CRM had said whether they were an agent.
+          // A CRM too old to report `sourcing_type` gives nobody this route.
+          const agent =
+            policy.reason === 'sourcing_contact_number' && policy.sourcing_type === 'agent';
+
+          // An agent sending a document or photo is sending a candidate's CV.
+          // The `agent_resume` worker hands it to the CRM, which reads it and
+          // answers.
+          if (agent && isAgentResumeMessage(msg)) {
             if (await claimEvent(msg.wamid)) {
               await queue.enqueue(
                 'agent_resume',
@@ -309,14 +333,10 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
             }
             continue;
           }
-          // A text from a Sourcing Hub contact may be an agent asking about a
-          // job order they were sent. The `agent_question` worker answers it
-          // from that job order, or stays silent if there is none.
-          if (
-            policy.reason === 'sourcing_contact_number' &&
-            config.AGENT_QA_ENABLED &&
-            isAgentQuestionMessage(msg)
-          ) {
+          // A text from an agent may be a question about a job order they were
+          // sent. The `agent_question` worker answers it from that job order,
+          // or stays silent if there is none.
+          if (agent && config.AGENT_QA_ENABLED && isAgentQuestionMessage(msg)) {
             if (await claimEvent(msg.wamid)) {
               await queue.enqueue(
                 'agent_question',
@@ -359,17 +379,6 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
         logger.info(
           { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
           'staff inbound ignored without read receipt',
-        );
-        continue;
-      }
-
-      // CRM Data Management owns one deny-list for every connected bot line.
-      // Check before the event is claimed or the inbound turn is persisted, so
-      // a suppressed contact leaves no candidate workflow state behind.
-      if (await isBotSuppressedNumber(msg.waId)) {
-        logger.info(
-          { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
-          'CRM bot-suppressed inbound ignored before bot workflow',
         );
         continue;
       }

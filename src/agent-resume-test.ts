@@ -8,16 +8,22 @@ process.env.CRM_API_URL = 'https://crm.example.com';
 process.env.CRM_API_KEY = 'service-key';
 
 const { agentResumeReply, isAgentResumeMessage, processAgentResume } = await import('./agents/resumes.js');
+const { refreshBotSuppressionNumbers } = await import('./crm/suppression.js');
 
 type Call = { url: string; init?: RequestInit };
 const calls: Call[] = [];
 let crmReply: () => Response;
+/** The CRM suppression directory, as last-ten-digit keys. */
+let suppressed: string[] = [];
 
 const MEDIA_ID = 'MEDIA-1';
 const FILE_URL = 'https://media.example.com/file-1';
 
 globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
   const url = String(input);
+  if (url === 'https://crm.example.com/bot-suppression-directory') {
+    return Response.json({ numbers: suppressed });
+  }
   calls.push({ url, init });
   if (url.endsWith(`/${MEDIA_ID}`)) {
     return Response.json({ url: FILE_URL, mime_type: 'application/pdf', file_size: 9 });
@@ -126,6 +132,18 @@ await check('a message the CRM is still reading is retried for its outcome', asy
   crmReply = () => Response.json({ status: 'processing' });
   await assert.rejects(processAgentResume(JOB), /still being processed/);
   assert.equal(sentTexts().length, 0);
+});
+
+await check('an agent suppressed while the job waited gets nothing: no download, no intake, no reply', async () => {
+  suppressed = ['9876543210'];
+  await refreshBotSuppressionNumbers();
+  try {
+    await processAgentResume(JOB);
+    assert.deepEqual(calls, []);
+  } finally {
+    suppressed = [];
+    await refreshBotSuppressionNumbers();
+  }
 });
 
 console.log(`\n${passed} passed\n`);

@@ -1,9 +1,11 @@
 /**
  * The webhook gate for Sourcing Hub senders, against an in-memory MongoDB.
  *
- * A file from a Sourcing Hub contact is queued as a possible agent résumé
- * (once, even if Meta delivers it twice). Their text is still dropped, and
- * nothing from them ever reaches the candidate conversation.
+ * A file from a Sourcing Hub agent is queued as an agent résumé (once, even if
+ * Meta delivers it twice), their text as an agent question. Clients and
+ * associations, on any of their contact numbers, get nothing, and no Sourcing
+ * Hub number ever reaches the candidate conversation. A number on the CRM
+ * suppression list gets nothing at all, on any line.
  */
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -29,20 +31,37 @@ const { buildServer } = await import('./server.js');
 
 const AGENT = '919876543210';
 const CANDIDATE = '919000000009';
+/** An agent the administrator also suppressed. */
+const SUPPRESSED_AGENT = '919811122233';
+/** A Gulf candidate, suppressed. The CRM serves it as its last ten digits. */
+const SUPPRESSED_GULF = '971501234567';
+/** A Sourcing Hub client's first and second contacts. */
+const CLIENT_CONTACTS = ['919555555555', '971551112222'];
+/** A Sourcing Hub row from a CRM too old to report `sourcing_type`. */
+const UNTYPED_SOURCING = '919444444444';
+
+/** Every CRM or Graph call other than the two gate lookups. */
+const otherCalls: string[] = [];
+
+const SOURCING = { should_reply: false, action: 'ignore', reason: 'sourcing_contact_number' };
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
   if (String(input) === 'https://crm.example.com/whatsapp/reply-policy') {
     const { phone } = JSON.parse(String(init?.body)) as { phone: string };
-    return Response.json(
-      phone === AGENT
-        ? { should_reply: false, action: 'ignore', reason: 'sourcing_contact_number' }
-        : { should_reply: true, action: 'continue', reason: 'external_number' },
-    );
+    // The CRM's answer before suppression was checked first: a suppressed
+    // agent came back as an agent. The bot must not rely on that order.
+    if (phone === AGENT || phone === SUPPRESSED_AGENT) {
+      return Response.json({ ...SOURCING, sourcing_type: 'agent' });
+    }
+    if (CLIENT_CONTACTS.includes(phone)) return Response.json({ ...SOURCING, sourcing_type: 'client' });
+    if (phone === UNTYPED_SOURCING) return Response.json(SOURCING);
+    return Response.json({ should_reply: true, action: 'continue', reason: 'external_number' });
   }
   if (String(input) === 'https://crm.example.com/bot-suppression-directory') {
-    return Response.json({ numbers: [] });
+    return Response.json({ numbers: ['9811122233', '1501234567'] });
   }
+  otherCalls.push(String(input));
   return realFetch(input, init);
 }) as typeof fetch;
 
@@ -59,7 +78,11 @@ await queue.start();
 
 const app = await buildServer();
 
-async function deliver(waId: string, message: Record<string, unknown>): Promise<number> {
+async function deliver(
+  waId: string,
+  message: Record<string, unknown>,
+  line = '558448830676126',
+): Promise<number> {
   const raw = Buffer.from(
     JSON.stringify({
       object: 'whatsapp_business_account',
@@ -69,7 +92,7 @@ async function deliver(waId: string, message: Record<string, unknown>): Promise<
           field: 'messages',
           value: {
             messaging_product: 'whatsapp',
-            metadata: { phone_number_id: '558448830676126' },
+            metadata: { phone_number_id: line },
             contacts: [{ wa_id: waId, profile: { name: 'Imran' } }],
             messages: [{ from: waId, timestamp: String(Math.floor(Date.now() / 1000)), ...message }],
           },
@@ -95,6 +118,7 @@ async function check(name: string, run: () => Promise<void>) {
   agentJobs.length = 0;
   inboundJobs.length = 0;
   questionJobs.length = 0;
+  otherCalls.length = 0;
   await run();
   passed++;
   console.log(`  \x1b[32mok\x1b[0m  ${name}`);
@@ -158,6 +182,65 @@ await check('a candidate sending a document still goes to the candidate conversa
   await settle();
   assert.equal(agentJobs.length, 0);
   assert.equal(inboundJobs.length, 1);
+});
+
+await check('every contact of a Sourcing Hub client gets nothing, first contact or second', async () => {
+  for (const [i, phone] of CLIENT_CONTACTS.entries()) {
+    await deliver(phone, {
+      id: `wamid.CLIENT-DOC-${i}`,
+      type: 'document',
+      document: { id: `MEDIA-C${i}`, mime_type: 'application/pdf', filename: 'requirement.pdf' },
+    });
+    await deliver(phone, { id: `wamid.CLIENT-TXT-${i}`, type: 'text', text: { body: 'Need 20 welders' } });
+  }
+  await settle();
+  assert.equal(agentJobs.length, 0, 'a client was handed to the agent résumé worker');
+  assert.equal(questionJobs.length, 0, 'a client was handed to the agent question worker');
+  assert.equal(inboundJobs.length, 0, 'a client reached the candidate conversation');
+});
+
+await check('a Sourcing Hub number without a reported type is not treated as an agent', async () => {
+  await deliver(UNTYPED_SOURCING, {
+    id: 'wamid.UNTYPED-DOC',
+    type: 'document',
+    document: { id: 'MEDIA-U', mime_type: 'application/pdf', filename: 'cv.pdf' },
+  });
+  await settle();
+  assert.equal(agentJobs.length + questionJobs.length + inboundJobs.length, 0);
+});
+
+await check('a suppressed agent gets nothing: no résumé intake, no question answer, no candidate flow', async () => {
+  assert.equal(await deliver(SUPPRESSED_AGENT, {
+    id: 'wamid.SUP-AGENT-DOC',
+    type: 'document',
+    document: { id: 'MEDIA-4', mime_type: 'application/pdf', filename: 'cv.pdf' },
+  }), 200);
+  assert.equal(await deliver(SUPPRESSED_AGENT, {
+    id: 'wamid.SUP-AGENT-TXT',
+    type: 'text',
+    text: { body: 'Any update on the welder job?' },
+  }), 200);
+  await settle();
+  assert.equal(agentJobs.length, 0, 'a suppressed agent was queued for résumé intake');
+  assert.equal(questionJobs.length, 0, 'a suppressed agent was queued for an answer');
+  assert.equal(inboundJobs.length, 0, 'a suppressed agent reached the candidate conversation');
+});
+
+await check('a suppressed Gulf number is matched on its last ten digits and ignored', async () => {
+  await deliver(SUPPRESSED_GULF, { id: 'wamid.SUP-GULF', type: 'text', text: { body: 'Hi' } });
+  await settle();
+  assert.equal(inboundJobs.length, 0);
+});
+
+await check('a suppressed number on the attendance line is not answered by attendance either', async () => {
+  const line = config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID ?? 'ATTENDANCE-LINE';
+  assert.equal(
+    await deliver(SUPPRESSED_AGENT, { id: 'wamid.SUP-ATT', type: 'text', text: { body: 'IN' } }, line),
+    200,
+  );
+  await settle();
+  assert.deepEqual(otherCalls, [], 'the attendance workflow ran for a suppressed number');
+  assert.equal(inboundJobs.length + agentJobs.length + questionJobs.length, 0);
 });
 
 console.log(`\n${passed} passed\n`);
