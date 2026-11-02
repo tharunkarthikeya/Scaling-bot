@@ -46,9 +46,9 @@ const MAX_REPLY_CHARS = 1500;
  * One job order the agent may be told about. `sentAt` (and usually `wamid`)
  * mark one the bot sent this agent; an open order from the CRM has neither.
  */
-export type AgentJobOrderContext = Pick<AgentJobOrderNotice, 'jobOrderId' | 'details'> & {
+export type AgentJobOrderContext = Omit<AgentJobOrderNotice, 'waId' | 'sentAt'> & {
+  waId?: string;
   sentAt?: Date;
-  wamid?: string;
 };
 
 /** A text an agent typed. Files go to the résumé intake instead. */
