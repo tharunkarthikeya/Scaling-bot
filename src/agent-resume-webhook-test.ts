@@ -5,7 +5,8 @@
  * Meta delivers it twice), their text as an agent question. Clients and
  * associations, on any of their contact numbers, get nothing, and no Sourcing
  * Hub number ever reaches the candidate conversation. A number on the CRM
- * suppression list gets nothing at all, on any line.
+ * suppression list gets nothing at all, on any line — except an active
+ * employee's own attendance, on the attendance line, which it never takes away.
  */
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -22,6 +23,9 @@ process.env.SHADOW_MODE = 'true';
 process.env.MOCK_WHATSAPP_MEDIA = 'true';
 process.env.CRM_API_URL = 'https://crm.example.com';
 process.env.CRM_API_KEY = 'service-key';
+// Fixed here rather than read from `.env`, so the attendance-line checks test
+// the attendance line wherever this runs.
+process.env.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID = '1344483985421841';
 
 const { config } = await import('./config.js');
 const { connectDb, closeDb } = await import('./db/client.js');
@@ -39,9 +43,16 @@ const SUPPRESSED_GULF = '971501234567';
 const CLIENT_CONTACTS = ['919555555555', '971551112222'];
 /** A Sourcing Hub row from a CRM too old to report `sourcing_type`. */
 const UNTYPED_SOURCING = '919444444444';
+/**
+ * An employee on attendance whose phone is also on the suppression list — as
+ * five of the eleven attendance staff were on 2026-11-02.
+ */
+const SUPPRESSED_STAFF = '918438588507';
 
-/** Every CRM or Graph call other than the two gate lookups. */
+/** Every CRM or Graph call other than the gate lookups and attendance. */
 const otherCalls: string[] = [];
+/** What the bot sent to `POST /attendance/events`, in order. */
+const attendanceEvents: Array<Record<string, unknown>> = [];
 
 const SOURCING = { should_reply: false, action: 'ignore', reason: 'sourcing_contact_number' };
 
@@ -59,7 +70,29 @@ globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     return Response.json({ should_reply: true, action: 'continue', reason: 'external_number' });
   }
   if (String(input) === 'https://crm.example.com/bot-suppression-directory') {
-    return Response.json({ numbers: ['9811122233', '1501234567'] });
+    return Response.json({ numbers: ['9811122233', '1501234567', '8438588507'] });
+  }
+  if (String(input) === 'https://crm.example.com/attendance/directory') {
+    return Response.json({
+      contacts: [{ id: 'staff-1', name: 'Bakkiammal', phone: '+91 8438588507', role: 'staff', active: true }],
+      count: 1,
+    });
+  }
+  if (String(input) === 'https://crm.example.com/attendance/events') {
+    // The CRM's two answers for a staff member at the office: a bare command
+    // is asked for a location, and a command with one is recorded.
+    const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    attendanceEvents.push(event);
+    if (event.latitude === undefined) {
+      return Response.json(
+        { code: 'location_required', detail: 'Location is required.' },
+        { status: 403 },
+      );
+    }
+    return Response.json(
+      { status: 'recorded', recorded_time: '09:42', site: 'Royapettah', location_status: 'on_site' },
+      { status: 201 },
+    );
   }
   otherCalls.push(String(input));
   return realFetch(input, init);
@@ -119,6 +152,7 @@ async function check(name: string, run: () => Promise<void>) {
   inboundJobs.length = 0;
   questionJobs.length = 0;
   otherCalls.length = 0;
+  attendanceEvents.length = 0;
   await run();
   passed++;
   console.log(`  \x1b[32mok\x1b[0m  ${name}`);
@@ -240,6 +274,44 @@ await check('a suppressed number on the attendance line is not answered by atten
   );
   await settle();
   assert.deepEqual(otherCalls, [], 'the attendance workflow ran for a suppressed number');
+  assert.equal(attendanceEvents.length, 0, 'a suppressed non-employee reached the attendance CRM');
+  assert.equal(inboundJobs.length + agentJobs.length + questionJobs.length, 0);
+});
+
+await check('a suppressed employee still marks attendance on the attendance line, start to finish', async () => {
+  const line = config.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID!;
+  assert.equal(
+    await deliver(SUPPRESSED_STAFF, { id: 'wamid.STAFF-IN', type: 'text', text: { body: 'check in' } }, line),
+    200,
+  );
+  assert.equal(
+    await deliver(
+      SUPPRESSED_STAFF,
+      { id: 'wamid.STAFF-PIN', type: 'location', location: { latitude: 13.05428, longitude: 80.264568 } },
+      line,
+    ),
+    200,
+  );
+  await settle();
+  assert.equal(attendanceEvents.length, 2, 'the command and its location both reach the CRM');
+  assert.equal(attendanceEvents[0]?.sender_phone, SUPPRESSED_STAFF);
+  assert.equal(attendanceEvents[0]?.action, 'check_in');
+  assert.equal(attendanceEvents[0]?.latitude, undefined);
+  assert.equal(attendanceEvents[1]?.latitude, 13.05428);
+  assert.equal(attendanceEvents[1]?.command_message_id, 'wamid.STAFF-IN');
+  assert.deepEqual(otherCalls, []);
+  assert.equal(
+    inboundJobs.length + agentJobs.length + questionJobs.length,
+    0,
+    'a suppressed employee was let past attendance into another workflow',
+  );
+});
+
+await check('a suppressed employee gets nothing on any other line', async () => {
+  await deliver(SUPPRESSED_STAFF, { id: 'wamid.STAFF-CAND', type: 'text', text: { body: 'check in' } });
+  await settle();
+  assert.equal(attendanceEvents.length, 0, 'attendance ran off the attendance line');
+  assert.deepEqual(otherCalls, []);
   assert.equal(inboundJobs.length + agentJobs.length + questionJobs.length, 0);
 });
 

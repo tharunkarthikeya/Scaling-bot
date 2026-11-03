@@ -69,7 +69,7 @@ Every outcome has a reply. A recognised employee always hears one of:
 | --- | --- |
 | Recorded | `Attendance check in successful at 09:42 at Mount Road.` |
 | Location needed | the "Send location" prompt |
-| Away from every office | `Attendance not recorded. You are at the wrong location.` |
+| Away from their own office | `Attendance not recorded: you are not at the Royapettah office. …` — the command stays waiting for 10 minutes, so a fresh pin completes it |
 | Conflicts with the day | `Attendance not recorded. Check-in already recorded for this attendance date.` |
 | Name is not theirs | that the name does not match, and to send the command on its own |
 | A pin with nothing waiting | to send the command again, then share the pin |
@@ -91,6 +91,22 @@ The same holds, more simply, when `WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID` is unset
 and the candidate line doubles as the attendance line: a candidate who happened
 to type "check in" is not lost.
 
+## Staff numbers on the suppression list
+
+CRM Data Management's bot-suppression list silences a number on every line:
+no candidate conversation, no agent résumé or question answer, no read receipt.
+It does **not** take an employee's attendance away. On the attendance line, a
+suppressed number that the CRM lists as an active employee on attendance
+(`GET /attendance/directory`) goes through the attendance workflow and nothing
+else; on every other line it still gets nothing.
+
+> On 2026-11-02 the suppression check was moved ahead of attendance, and five
+> of the eleven attendance staff — Sreya, Bakkiammal, Sharmila, Sahi and Noorul —
+> had phones on that list. From then on their `check in` got no reply and no
+> punch, and their days filed as absent. The webhook test
+> `a suppressed employee still marks attendance on the attendance line` holds
+> the exception in place.
+
 ## CRM policy
 
 The CRM owns every rule below. The bot decides nothing about attendance.
@@ -102,9 +118,12 @@ The CRM owns every rule below. The bot decides nothing about attendance.
   minutes after shift end — 09:00 to 20:00 on the default shift. A punch is
   **never** refused for its time of day; the day calculation decides what the
   time is worth
-- Offices: Mount Road (300 m) and Royapettah (350 m). Any office counts, not
-  only the employee's own, so somebody sitting at the other branch's desk is not
-  locked out. An office with no pin enforces nothing
+- Offices: Mount Road (500 m) and Royapettah (400 m), in `app/attendance/sites.py`.
+  Each employee is measured against **their own** branch's office only — the
+  Location column in User Management, else their desk. A pin outside that radius
+  is refused: nothing is recorded, nothing goes to a manager, and with no punch
+  the day is absent (the user's rule since 2026-10-29). An office with no pin
+  enforces nothing
 - One check-in and one check-out per attendance date; a check-out needs a
   check-in first
 - Sundays are the weekly leave, unless a rotational weekly off was approved for
@@ -112,6 +131,8 @@ The CRM owns every rule below. The bot decides nothing about attendance.
 - Grace: 60 paid minutes and 2 paid occasions per month, shared across late
   arrivals and early departures
 - A day with only half its punches is provisional for 2 days, then unpaid
+- A day with no punch at all is absent as soon as the flexible window closes
+  (20:00 on the default shift). A manager's added punch recalculates it
 
 Endpoints: `POST /attendance/events` for the bot, `GET /attendance/month/{year}/{month}`
 for signed-in users, and the permission, duty-plan and extra-OT routes for

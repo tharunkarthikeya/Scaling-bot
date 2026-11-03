@@ -353,11 +353,13 @@ export async function handleAttendanceMessage(msg: InboundMessage): Promise<Atte
     // gets the same nothing back. That loop was the complaint — staff sharing
     // their location from inside the office and never getting marked.
     //
-    // So the punch is filed with the location left unestablished, and the CRM
-    // flags it for a manager instead of refusing it.
+    // So the CRM is told the location could not be read. Since 2026-10-29 it
+    // refuses that as `off_site` with its own explanation (nothing recorded,
+    // nothing sent to a manager), and the command is held again below so a
+    // proper "Send your current location" completes it.
     logger.info(
       { wamid: msg.wamid, rawType: msg.rawType, problem },
-      'attendance location unusable; filing the punch unverified',
+      'attendance location unusable; reporting it to the CRM',
     );
     const submission = await submitAttendanceEvent({
       message_id: msg.wamid,
@@ -405,6 +407,18 @@ export async function offerAttendanceHelp(msg: InboundMessage): Promise<boolean>
     );
     return false;
   }
+  await sendAttendanceHelp(msg);
+  return true;
+}
+
+/**
+ * Answer a known staff member whose message was neither a command nor part of
+ * one. Split from `offerAttendanceHelp` for the caller that already knows the
+ * sender is staff: a staff phone on the CRM suppression list is reported by the
+ * reply policy as `suppressed_number`, not `internal_user_number`, and must
+ * still be told how to mark attendance.
+ */
+export async function sendAttendanceHelp(msg: InboundMessage): Promise<void> {
   logger.info(
     { wamid: msg.wamid, waId: msg.waId, type: msg.type },
     'staff message on the attendance line was not a command; sent the format',
@@ -418,5 +432,4 @@ export async function offerAttendanceHelp(msg: InboundMessage): Promise<boolean>
     msg,
     msg.location ? ATTENDANCE_RESEND_MESSAGE : locationProblemMessage(locationProblem(msg), false),
   );
-  return true;
 }

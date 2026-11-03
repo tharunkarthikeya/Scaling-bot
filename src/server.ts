@@ -32,12 +32,14 @@ import { isAgentResumeMessage } from './agents/resumes.js';
 import { isAgentQuestionMessage } from './agents/questions.js';
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
+import { isAttendanceStaffNumber } from './crm/attendance-staff.js';
 import { purgeCrmCandidateData } from './privacy/purge.js';
 import {
   attendanceLineId,
   attendanceLineIsDedicated,
   handleAttendanceMessage,
   offerAttendanceHelp,
+  sendAttendanceHelp,
 } from './attendance-workflow.js';
 import { crmConfigured, fetchWhatsappReplyPolicy } from './crm/client.js';
 import {
@@ -265,7 +267,24 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       // back `sourcing_contact_number`, and the agent workers answered them.
       // Checked before the event is claimed or a turn is stored, so nothing is
       // left behind. A failed directory refresh throws, and Meta retries.
+      //
+      // One exception: an employee's own attendance. The list is for silencing
+      // conversations, and staff phones end up on it — on 2026-11-02 five of
+      // the eleven attendance staff were, and from then on their "check in"
+      // got no reply and no punch. So on the attendance line, a suppressed
+      // number the CRM lists as an active employee on attendance is answered by
+      // attendance and by nothing else: never the candidate or agent workflow.
+      const onAttendanceLine = msg.phoneNumberId === attendanceLineId();
       if (await isBotSuppressedNumber(msg.waId)) {
+        if (onAttendanceLine && (await isAttendanceStaffNumber(msg.waId))) {
+          const outcome = await handleAttendanceMessage(msg);
+          if (outcome !== 'handled' && attendanceLineIsDedicated()) await sendAttendanceHelp(msg);
+          logger.info(
+            { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId, outcome },
+            'CRM bot-suppressed staff number answered by attendance only',
+          );
+          continue;
+        }
         logger.info(
           { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
           'CRM bot-suppressed inbound ignored before any bot workflow',
@@ -282,7 +301,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
       // falling through to candidate onboarding — which is where every
       // unrecognised attendance message used to go, to be silenced there as an
       // internal number. See `attendance-workflow.ts`.
-      if (msg.phoneNumberId === attendanceLineId()) {
+      if (onAttendanceLine) {
         const outcome = await handleAttendanceMessage(msg);
         if (outcome === 'handled') continue;
         // Staff who wrote something that was not a command are told the format
