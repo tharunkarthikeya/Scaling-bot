@@ -11,10 +11,16 @@
  *   AGENT_QA_CONTEXT_DAYS days, then the CRM's other open job orders (the ones
  *   every active agent is sent anyway), so "do you have welders for Qatar?"
  *   is answered even before any order was broadcast to them;
- * * anything the details do not answer is handed to the staff member assigned
- *   to that job order: "For this, please contact Rafi (+91 ...)", or, with no
- *   order to point to, "our team will get back to you on this number". The
- *   same happens if the model or the CRM is unavailable.
+ * * anything the details do not answer is handed to the staff member who
+ *   handles this agent (`handlingStaff` in the Sourcing Hub, which the CRM's
+ *   reply policy reports): "For any queries, please contact Zara - +91 ...".
+ *   An agent with nobody assigned falls back to the job order's own contact
+ *   on an older notice, else "our team will get back to you on this number".
+ *   The same happens if the model or the CRM is unavailable.
+ * * that hand-off is sent once, not on every message: an agent already
+ *   pointed to that person gets no reply to the next question the details do
+ *   not answer (Rafi still reads it on the WhatsApp Business app). A new
+ *   staff member, and so a new number, is handed off once again.
  *
  * An agent never reaches the candidate conversation. Files are not handled
  * here: they are résumés (`agents/resumes.ts`).
@@ -33,6 +39,7 @@ import {
   recentAgentNotices,
   recentAgentQuestions,
   recordAgentQuestion,
+  wasHandedOff,
   type AgentJobOrderNotice,
   type AgentQuestion,
 } from './store.js';
@@ -133,7 +140,7 @@ export function agentQuestionPrompt(
   if (history.length) {
     parts.push(
       `Recent conversation:\n${history
-        .map((row) => `Agent: ${row.question}\nYou: ${row.reply}`)
+        .map((row) => `Agent: ${row.question}\nYou: ${row.reply || '(no reply; left for the staff member)'}`)
         .join('\n')}`,
     );
   }
@@ -141,8 +148,24 @@ export function agentQuestionPrompt(
   return parts.join('\n\n');
 }
 
-/** "For this, please contact Rafi (+91 ...), who handles the Welder (Qatar) requirement." */
-export function handOffReply(notice: AgentJobOrderContext | undefined): string {
+/** The staff member who handles an agent, as the CRM reported them. */
+export interface AgentStaff {
+  name?: string;
+  phone?: string;
+}
+
+/**
+ * The hand-off reply. The agent's own staff member when one is assigned:
+ * "For any queries, please contact Zara - +91 ...". Otherwise the job order's
+ * contact from an older notice: "For this, please contact Rafi (+91 ...), who
+ * handles the Welder (Qatar) requirement." Otherwise the team, on this number.
+ */
+export function handOffReply(notice: AgentJobOrderContext | undefined, staff?: AgentStaff): string {
+  const name = staff?.name?.trim() ?? '';
+  const phone = staff?.phone?.trim() ?? '';
+  if (name || phone) {
+    return `For any queries, please contact ${name && phone ? `${name} - ${phone}` : name || phone}.`;
+  }
   const d = notice?.details;
   if (!d?.staff_name && !d?.staff_phone) {
     return 'For this, our team will get back to you on this number shortly.';
@@ -156,6 +179,17 @@ export function handOffReply(notice: AgentJobOrderContext | undefined): string {
   return order
     ? `For this, please contact ${who}, who handles the ${order} requirement.`
     : `For this, please contact ${who}.`;
+}
+
+/**
+ * Whom a hand-off points the agent to, for sending it once: the contact's
+ * number (digits only), else their name, else "team". Same rule as
+ * `handOffReply`.
+ */
+export function handOffKey(notice: AgentJobOrderContext | undefined, staff?: AgentStaff): string {
+  const pick = (name?: string, phone?: string) =>
+    (phone ?? '').replace(/\D/g, '') || (name ?? '').trim().toLowerCase();
+  return pick(staff?.name, staff?.phone) || pick(notice?.details.staff_name, notice?.details.staff_phone) || 'team';
 }
 
 /**
@@ -237,7 +271,39 @@ export async function processAgentQuestion(payload: JobPayloads['agent_question'
 
   const notice = pickNotice(notices, chosen, payload.contextWamid);
   const answered = known && !!answer;
-  const reply = answered ? answer.slice(0, MAX_REPLY_CHARS) : handOffReply(notice);
+  const staff: AgentStaff = { name: payload.staffName, phone: payload.staffPhone };
+  const handoffTo = answered ? undefined : handOffKey(notice, staff);
+
+  // The hand-off goes to an agent once. After that, a question the job orders
+  // do not answer gets no reply: the agent already has the number to call.
+  let alreadyHandedOff = false;
+  if (handoffTo) {
+    try {
+      alreadyHandedOff = await wasHandedOff(payload.waId, handoffTo);
+    } catch (err) {
+      // Unknown: send it. A repeated contact beats leaving a new agent unanswered.
+      logger.warn({ err, wamid: payload.wamid }, 'could not check earlier hand-offs to an agent');
+    }
+  }
+
+  if (alreadyHandedOff) {
+    await recordAgentQuestion({
+      waId: payload.waId,
+      wamid: payload.wamid,
+      question: payload.text,
+      reply: '',
+      answered: false,
+      ...(notice ? { jobOrderId: notice.jobOrderId } : {}),
+      at: new Date(),
+    });
+    logger.info(
+      { wamid: payload.wamid, jobOrderId: notice?.jobOrderId },
+      'agent already has the staff contact; question left for staff without a reply',
+    );
+    return;
+  }
+
+  const reply = answered ? answer.slice(0, MAX_REPLY_CHARS) : handOffReply(notice, staff);
 
   try {
     await sendText(payload.waId, reply, payload.phoneNumberId);
@@ -252,6 +318,7 @@ export async function processAgentQuestion(payload: JobPayloads['agent_question'
     question: payload.text,
     reply,
     answered,
+    ...(handoffTo ? { handoffTo } : {}),
     ...(notice ? { jobOrderId: notice.jobOrderId } : {}),
     at: new Date(),
   });

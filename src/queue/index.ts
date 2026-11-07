@@ -73,6 +73,9 @@ export interface JobPayloads {
     /** The message they replied to, when they used WhatsApp's reply. */
     contextWamid?: string;
     phoneNumberId?: string;
+    /** The staff member who handles this agent, from the CRM's reply policy. */
+    staffName?: string;
+    staffPhone?: string;
   };
   agent_resume: {
     waId: string;

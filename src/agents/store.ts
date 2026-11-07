@@ -5,7 +5,8 @@
  *   details as they were sent. It is the context for answering the agent's
  *   questions later (`agents/questions.ts`).
  * * `agent_questions`: each question an agent asked and what the bot replied,
- *   so a follow-up ("and the salary?") can be understood.
+ *   so a follow-up ("and the salary?") can be understood, and so an agent is
+ *   handed to their staff member once rather than on every message.
  *
  * Both expire after 90 days.
  */
@@ -44,9 +45,15 @@ export interface AgentQuestion {
   waId: string;
   wamid: string;
   question: string;
+  /** Empty when the bot stayed silent: the agent already had the staff contact. */
   reply: string;
-  /** False when the bot handed the question to the assigned staff member. */
+  /** False when the bot did not answer it: a hand-off, or silence after one. */
   answered: boolean;
+  /**
+   * Set on a hand-off: whom the reply pointed the agent to (`handOffKey`).
+   * The same hand-off is sent to an agent once.
+   */
+  handoffTo?: string;
   jobOrderId?: string;
   at: Date;
 }
@@ -103,6 +110,11 @@ export async function recordAgentQuestion(question: AgentQuestion): Promise<void
   } catch (err) {
     logger.warn({ err, wamid: question.wamid }, 'could not record an agent question');
   }
+}
+
+/** Whether this agent was already pointed to this contact (`handOffKey`). */
+export async function wasHandedOff(waId: string, handoffTo: string): Promise<boolean> {
+  return (await agentQuestions().countDocuments({ waId, handoffTo }, { limit: 1 })) > 0;
 }
 
 /** The agent's last few questions and replies since `since`, oldest first. */

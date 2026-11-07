@@ -353,10 +353,12 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
             continue;
           }
           // A text from an agent may be a question about a job order they were
-          // sent. The `agent_question` worker answers it from that job order,
-          // or stays silent if there is none.
+          // sent. The `agent_question` worker answers it from the job orders,
+          // or points the agent to the staff member who handles them, once.
           if (agent && config.AGENT_QA_ENABLED && isAgentQuestionMessage(msg)) {
             if (await claimEvent(msg.wamid)) {
+              const staffName = String(policy.agent_staff?.name ?? '').trim();
+              const staffPhone = String(policy.agent_staff?.phone ?? '').trim();
               await queue.enqueue(
                 'agent_question',
                 {
@@ -365,6 +367,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
                   text: msg.text!,
                   ...(msg.contextWamid ? { contextWamid: msg.contextWamid } : {}),
                   phoneNumberId: msg.phoneNumberId,
+                  ...(staffName || staffPhone ? { staffName, staffPhone } : {}),
                 },
                 { key: `agent-question-${msg.wamid}` },
               );

@@ -47,7 +47,10 @@ export interface AgentJobOrderFacts {
   remarks?: string | null;
   /** The job order's poster (CRM path or absolute URL): the message image. */
   poster_url?: string | null;
-  /** The staff member the job order is assigned to (`assignedStaff`). */
+  /**
+   * The staff member who handles this agent (`handlingStaff` on their Sourcing
+   * Hub record): the template's "For any queries, contact" line.
+   */
   staff_name?: string | null;
   staff_phone?: string | null;
 }
@@ -127,8 +130,8 @@ export function agentJobOrderParameters(
     parameter(facts.process_time),
     parameter(facts.b2b_rate, 'On request'),
   ];
-  // With no staff member on the order, agents are pointed back at the line
-  // the message came from, which Rafi reads.
+  // With no staff member assigned to the agent, they are pointed back at the
+  // line the message came from, which Rafi reads.
   const contact = [
     parameter(facts.staff_name, 'Adira Enterprises'),
     parameter(facts.staff_phone, 'this WhatsApp number'),

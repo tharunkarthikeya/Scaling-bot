@@ -287,6 +287,12 @@ export interface CrmWhatsappReplyPolicy {
    * treats as "not an agent".
    */
   sourcing_type?: string;
+  /**
+   * With `sourcing_type` `agent`: the staff member who handles that agent
+   * (`handlingStaff` in the Sourcing Hub), when one is assigned. The agent's
+   * hand-off reply points them to this person. Absent from an older CRM.
+   */
+  agent_staff?: { name?: string; phone?: string };
 }
 
 /** Ask the CRM whether this sender is currently an internal/business contact. */

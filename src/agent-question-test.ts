@@ -25,7 +25,7 @@ const { ensureIndexes } = await import('./db/models.js');
 const { setModelClientForTests } = await import('./conversation/model.js');
 const { agentNotices, agentQuestions, rememberAgentNotice } = await import('./agents/store.js');
 const { agentJobOrderDetails, notifyAgentOfJobOrder } = await import('./agents/notify.js');
-const { agentQuestionPrompt, describeJobOrder, handOffReply, pickNotice, processAgentQuestion } =
+const { agentQuestionPrompt, describeJobOrder, handOffKey, handOffReply, pickNotice, processAgentQuestion } =
   await import('./agents/questions.js');
 const { refreshBotSuppressionNumbers } = await import('./crm/suppression.js');
 
@@ -140,6 +140,18 @@ await check('the hand-off names the job order\'s staff member and number', () =>
   );
   const noStaff = { ...notice, details: { ...notice.details, staff_name: '', staff_phone: '' } };
   assert.equal(handOffReply(noStaff), 'For this, our team will get back to you on this number shortly.');
+});
+
+await check("the agent's own staff member is the hand-off, over the job order's", () => {
+  const notice = { waId: AGENT, jobOrderId: 'ORD-CZ', sentAt: new Date(), details: agentJobOrderDetails(CZECH as never) };
+  const zara = { name: 'Zara', phone: '+91 98849 49735' };
+  assert.equal(handOffReply(notice, zara), 'For any queries, please contact Zara - +91 98849 49735.');
+  assert.equal(handOffReply(undefined, { name: '', phone: '+91 98849 49735' }), 'For any queries, please contact +91 98849 49735.');
+  // Nobody assigned to the agent: the order's contact, as before.
+  assert.match(handOffReply(notice, { name: '', phone: '' }), /contact Rafi \(\+91 98844 47455\)/);
+  assert.equal(handOffKey(notice, zara), '919884949735');
+  assert.equal(handOffKey(notice), '919884447455');
+  assert.equal(handOffKey(undefined), 'team');
 });
 
 await check('the order the model names wins, then the quoted message, then the newest', () => {
@@ -280,6 +292,53 @@ await check('an agent suppressed while the question waited gets no reply and cos
     suppressed = [];
     await refreshBotSuppressionNumbers();
   }
+});
+
+const ZARA = { staffName: 'Zara', staffPhone: '+91 98849 49735' };
+
+await check("an unanswered question points the agent to their own staff member", async () => {
+  await sendOrder(CZECH);
+  modelReply = { known: false, answer: '', job_order_id: 'ORD-CZ' };
+  await ask('Can you reduce the B2B rate?', ZARA);
+  assert.deepEqual(texts(), ['For any queries, please contact Zara - +91 98849 49735.']);
+  const row = await agentQuestions().findOne({ waId: AGENT });
+  assert.equal(row?.answered, false);
+  assert.equal(row?.handoffTo, '919884949735');
+});
+
+await check('the staff contact is sent once, not on every message', async () => {
+  await sendOrder(CZECH);
+  modelReply = { known: false, answer: '', job_order_id: 'ORD-CZ' };
+  await ask('Can you reduce the B2B rate?', ZARA);
+  await ask('Interview date?', ZARA);
+  await ask('Visa timeline?', ZARA);
+  assert.deepEqual(texts(), ['For any queries, please contact Zara - +91 98849 49735.']);
+  // Still remembered, for follow-ups, with no reply.
+  const rows = await agentQuestions().find({ waId: AGENT }).sort({ at: 1 }).toArray();
+  assert.deepEqual(rows.map((r) => r.reply), ['For any queries, please contact Zara - +91 98849 49735.', '', '']);
+  assert.match(prompts[2]!, /Agent: Interview date\?\nYou: \(no reply; left for the staff member\)/);
+  // A question the job order does answer is still answered.
+  modelReply = { known: true, answer: 'The process time is 6-8 months.', job_order_id: 'ORD-CZ' };
+  await ask('How long is the process?', ZARA);
+  assert.equal(texts().at(-1), 'The process time is 6-8 months.');
+});
+
+await check('a new staff member for the agent is passed on once', async () => {
+  modelReply = { known: false, answer: '', job_order_id: null };
+  await ask('Any requirement for Qatar?', ZARA);
+  await ask('Any requirement for Oman?', { staffName: 'Arun', staffPhone: '+91 90000 11111' });
+  await ask('Any requirement for Kuwait?', { staffName: 'Arun', staffPhone: '+91 90000 11111' });
+  assert.deepEqual(texts(), [
+    'For any queries, please contact Zara - +91 98849 49735.',
+    'For any queries, please contact Arun - +91 90000 11111.',
+  ]);
+});
+
+await check('with nobody to name, "our team will get back to you" is also sent once', async () => {
+  modelReply = { known: false, answer: '', job_order_id: null };
+  await ask('Any requirement for Qatar?');
+  await ask('Hello?');
+  assert.deepEqual(texts(), ['For this, our team will get back to you on this number shortly.']);
 });
 
 await check('agentQuestionPrompt keeps the new message last', () => {
