@@ -23,10 +23,17 @@ process.env.CRM_API_KEY = 'service-key';
 const { connectDb, closeDb } = await import('./db/client.js');
 const { ensureIndexes } = await import('./db/models.js');
 const { setModelClientForTests } = await import('./conversation/model.js');
-const { agentNotices, agentQuestions, rememberAgentNotice } = await import('./agents/store.js');
+const { agentHandoffs, agentNotices, agentQuestions, rememberAgentNotice } = await import('./agents/store.js');
 const { agentJobOrderDetails, notifyAgentOfJobOrder } = await import('./agents/notify.js');
-const { agentQuestionPrompt, describeJobOrder, handOffKey, handOffReply, pickNotice, processAgentQuestion } =
-  await import('./agents/questions.js');
+const {
+  agentQuestionPrompt,
+  describeJobOrder,
+  handOffKey,
+  handOffReply,
+  pickNotice,
+  processAgentQuestion,
+  withoutStaffReferral,
+} = await import('./agents/questions.js');
 const { refreshBotSuppressionNumbers } = await import('./crm/suppression.js');
 
 await connectDb();
@@ -40,6 +47,10 @@ let suppressed: string[] = [];
 /** The CRM's open job orders (`GET /agent-job-orders`), or a status to fail with. */
 let openOrders: Array<Record<string, unknown>> | number = [];
 const sent: Array<{ url: string; body: any }> = [];
+/** Make WhatsApp refuse the next text message with this Graph error. */
+let refuseNextText: { status: number; code: number } | undefined;
+/** Make the next text message fail as a network error (delivery unknown). */
+let dropNextText = false;
 globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
   if (String(url) === 'https://crm.example.com/bot-suppression-directory') {
     return Response.json({ numbers: suppressed });
@@ -49,7 +60,17 @@ globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       ? new Response('down', { status: openOrders })
       : Response.json({ items: openOrders, count: openOrders.length });
   }
-  sent.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) });
+  const body = JSON.parse(String(init?.body ?? '{}'));
+  if (body.type === 'text' && dropNextText) {
+    dropNextText = false;
+    throw new TypeError('fetch failed');
+  }
+  if (body.type === 'text' && refuseNextText) {
+    const { status, code } = refuseNextText;
+    refuseNextText = undefined;
+    return Response.json({ error: { message: 'refused', code } }, { status });
+  }
+  sent.push({ url: String(url), body });
   return Response.json({ messages: [{ id: `wamid.OUT${sent.length}` }] });
 }) as typeof fetch;
 const texts = () => sent.filter((s) => s.body.type === 'text').map((s) => s.body.text.body as string);
@@ -110,7 +131,10 @@ let passed = 0;
 async function check(name: string, run: () => Promise<void> | void) {
   await agentNotices().deleteMany({});
   await agentQuestions().deleteMany({});
+  await agentHandoffs().deleteMany({});
   sent.length = 0;
+  refuseNextText = undefined;
+  dropNextText = false;
   prompts.length = 0;
   openOrders = [];
   modelReply = { known: true, answer: '', job_order_id: null };
@@ -316,22 +340,188 @@ await check('the staff contact is sent once, not on every message', async () => 
   // Still remembered, for follow-ups, with no reply.
   const rows = await agentQuestions().find({ waId: AGENT }).sort({ at: 1 }).toArray();
   assert.deepEqual(rows.map((r) => r.reply), ['For any queries, please contact Zara - +91 98849 49735.', '', '']);
-  assert.match(prompts[2]!, /Agent: Interview date\?\nYou: \(no reply; left for the staff member\)/);
+  assert.match(prompts[2]!, /Agent: Interview date\?\nYou: \(not answered from the job orders\)/);
   // A question the job order does answer is still answered.
   modelReply = { known: true, answer: 'The process time is 6-8 months.', job_order_id: 'ORD-CZ' };
   await ask('How long is the process?', ZARA);
   assert.equal(texts().at(-1), 'The process time is 6-8 months.');
 });
 
-await check('a new staff member for the agent is passed on once', async () => {
+await check('a different staff member later is not a second hand-off: once per agent, ever', async () => {
   modelReply = { known: false, answer: '', job_order_id: null };
   await ask('Any requirement for Qatar?', ZARA);
   await ask('Any requirement for Oman?', { staffName: 'Arun', staffPhone: '+91 90000 11111' });
   await ask('Any requirement for Kuwait?', { staffName: 'Arun', staffPhone: '+91 90000 11111' });
-  assert.deepEqual(texts(), [
-    'For any queries, please contact Zara - +91 98849 49735.',
-    'For any queries, please contact Arun - +91 90000 11111.',
+  assert.deepEqual(texts(), ['For any queries, please contact Zara - +91 98849 49735.']);
+});
+
+await check('job orders with different contacts still give one hand-off in all', async () => {
+  await sendOrder(CZECH, new Date(Date.now() - DAY));
+  await sendOrder({ job_order_id: 'ORD-QA', title: 'Welder', destination_country: 'Qatar', staff_name: 'Zara', staff_phone: '+91 98849 49735' });
+  modelReply = { known: false, answer: '', job_order_id: 'ORD-CZ' };
+  await ask('Czech interview date?');
+  modelReply = { known: false, answer: '', job_order_id: 'ORD-QA' };
+  await ask('Qatar interview date?');
+  modelReply = { known: false, answer: '', job_order_id: null };
+  await ask('Can we talk about commission?');
+  assert.equal(texts().length, 1);
+  assert.match(texts()[0]!, /contact Rafi/);
+});
+
+await check('the agent having no staff member on one message and one on the next: still once', async () => {
+  modelReply = { known: false, answer: '', job_order_id: null };
+  await ask('Any requirement for Qatar?');
+  await ask('Any requirement for Oman?', ZARA);
+  assert.deepEqual(texts(), ['For this, our team will get back to you on this number shortly.']);
+});
+
+await check('several questions processed at the same moment send the staff contact once', async () => {
+  await sendOrder(CZECH);
+  modelReply = { known: false, answer: '', job_order_id: 'ORD-CZ' };
+  await Promise.all([
+    ask('Interview date?', ZARA),
+    ask('Visa timeline?', ZARA),
+    ask('Can you reduce the rate?', ZARA),
+    ask('Medical cost?', ZARA),
+    ask('Who is the employer?', ZARA),
   ]);
+  assert.deepEqual(texts(), ['For any queries, please contact Zara - +91 98849 49735.']);
+  assert.equal(await agentHandoffs().countDocuments({ _id: AGENT }), 1);
+  assert.equal(await agentQuestions().countDocuments({ waId: AGENT }), 5, 'every question is still remembered');
+});
+
+await check('the same message handled twice (a queue retry) does not send it twice', async () => {
+  modelReply = { known: false, answer: '', job_order_id: null };
+  const payload = { waId: AGENT, wamid: 'wamid.RETRY', text: 'Salary?', phoneNumberId: 'AGENT-LINE', ...ZARA };
+  await processAgentQuestion(payload);
+  await processAgentQuestion(payload);
+  assert.equal(texts().length, 1);
+});
+
+await check('the hand-off on one bot line is not sent again on another', async () => {
+  modelReply = { known: false, answer: '', job_order_id: null };
+  await ask('Salary?', { ...ZARA, phoneNumberId: 'AGENT-LINE' });
+  await ask('Salary?', { ...ZARA, phoneNumberId: 'OTHER-LINE' });
+  assert.equal(texts().length, 1);
+});
+
+await check('a hand-off sent before the lock existed counts: no second one', async () => {
+  // Rows as the bot wrote them before `agent_handoffs`: with `handoffTo`
+  // (7 Nov) and without it (earlier).
+  for (const row of [
+    { reply: 'For any queries, please contact Zara - +91 98849 49735.', handoffTo: '919884949735' },
+    { reply: 'For this, please contact Rafi (+91 98844 47455), who handles the Welder (Qatar) requirement.' },
+  ]) {
+    await agentQuestions().deleteMany({});
+    await agentHandoffs().deleteMany({});
+    await agentQuestions().insertOne({
+      waId: AGENT, wamid: 'wamid.OLD', question: 'Old question', answered: false, at: new Date(Date.now() - 5 * DAY), ...row,
+    });
+    sent.length = 0;
+    modelReply = { known: false, answer: '', job_order_id: null };
+    await ask('New question nobody can answer', ZARA);
+    assert.deepEqual(texts(), [], `a second hand-off after: ${row.reply}`);
+  }
+});
+
+await check('a silent row or an answered one from before is not mistaken for a hand-off', async () => {
+  await agentQuestions().insertMany([
+    { waId: AGENT, wamid: 'wamid.A', question: 'Hi', reply: 'Hello!', answered: true, at: new Date() },
+    { waId: AGENT, wamid: 'wamid.B', question: 'x', reply: '', answered: false, at: new Date() },
+  ]);
+  modelReply = { known: false, answer: '', job_order_id: null };
+  await ask('Commission?', ZARA);
+  assert.deepEqual(texts(), ['For any queries, please contact Zara - +91 98849 49735.']);
+});
+
+await check('WhatsApp refusing the hand-off frees it for the next question, still only once', async () => {
+  modelReply = { known: false, answer: '', job_order_id: null };
+  refuseNextText = { status: 400, code: 131047 };
+  await ask('Commission?', ZARA);
+  assert.deepEqual(texts(), []);
+  await ask('Commission??', ZARA);
+  await ask('Commission???', ZARA);
+  assert.deepEqual(texts(), ['For any queries, please contact Zara - +91 98849 49735.']);
+});
+
+await check('a hand-off that may have gone out (network error) is never re-sent', async () => {
+  modelReply = { known: false, answer: '', job_order_id: null };
+  dropNextText = true;
+  await ask('Commission?', ZARA);
+  await ask('Commission??', ZARA);
+  assert.deepEqual(texts(), []);
+  assert.equal(await agentHandoffs().countDocuments({ _id: AGENT }), 1);
+});
+
+await check('after the hand-off, a model failure gives silence, not the contact again', async () => {
+  modelReply = { known: false, answer: '', job_order_id: null };
+  await ask('Commission?', ZARA);
+  modelReply = Object.assign(new Error('boom'), { status: 400 });
+  await ask('Salary?', ZARA);
+  assert.equal(texts().length, 1);
+});
+
+await check("the model's own referral is cut from an answer, and the answer still goes", async () => {
+  await sendOrder(CZECH);
+  modelReply = {
+    known: true,
+    answer: 'The salary is EUR 900. For any queries, please contact Zara - +91 98849 49735.',
+    job_order_id: 'ORD-CZ',
+  };
+  await ask('Salary?', ZARA);
+  assert.deepEqual(texts(), ['The salary is EUR 900.']);
+  // The cut answer did not use up the one hand-off.
+  assert.equal(await agentHandoffs().countDocuments({}), 0);
+});
+
+await check('after the hand-off, "thanks" never draws the contact again', async () => {
+  await sendOrder(CZECH);
+  modelReply = { known: false, answer: '', job_order_id: 'ORD-CZ' };
+  await ask('Interview date?', ZARA);
+  modelReply = { known: true, answer: "You're welcome! Feel free to reach out to Zara anytime.", job_order_id: null };
+  await ask('ok thanks', ZARA);
+  modelReply = { known: true, answer: 'Please call Rafi on 98844 47455 for that.', job_order_id: null };
+  await ask('ok', ZARA);
+  modelReply = { known: true, answer: 'Our team will get back to you shortly.', job_order_id: null };
+  await ask('?', ZARA);
+  assert.deepEqual(texts(), ['For any queries, please contact Zara - +91 98849 49735.', "You're welcome!"]);
+});
+
+await check('a model answer that is only a referral, before any hand-off, becomes the one hand-off', async () => {
+  modelReply = { known: true, answer: 'Please contact our team for this.', job_order_id: null };
+  await ask('Commission?', ZARA);
+  await ask('Commission??', ZARA);
+  assert.deepEqual(texts(), ['For any queries, please contact Zara - +91 98849 49735.']);
+});
+
+await check('the model is never shown the hand-off wording, name or number', async () => {
+  await sendOrder(CZECH);
+  modelReply = { known: false, answer: '', job_order_id: 'ORD-CZ' };
+  await ask('Interview date?', ZARA);
+  modelReply = { known: true, answer: 'Hello!', job_order_id: null };
+  await ask('Hi', ZARA);
+  const history = prompts[1]!.split('Recent conversation:')[1]!;
+  assert.doesNotMatch(history, /Zara|98849|contact/i);
+  assert.match(history, /Agent: Interview date\?\nYou: \(not answered from the job orders\)/);
+  assert.match(prompts[1]!, /Never tell the agent to contact, call, message or wait for anyone/);
+});
+
+await check('ordinary answers are not mistaken for referrals', () => {
+  const staff = [{ name: 'Zara', phone: '+91 98849 49735' }, { name: 'Rafi', phone: '+91 98844 47455' }];
+  for (const answer of [
+    "Please send each candidate's CV here as a PDF, Word file or clear photo. Make sure it shows their contact number.",
+    'Salary: INR 65000-75000 per month. Vacancies: 30.',
+    'The salary is SAR 1,500 + 200 allowance. Process time is 6-8 months.',
+    'Hello! How can I help you with our job orders?',
+    'Yes: Production Operators, Czech Republic, 30 vacancies, B2B rate 4.9 with Ticket.',
+  ]) {
+    assert.equal(withoutStaffReferral(answer, staff), answer);
+  }
+  assert.equal(
+    withoutStaffReferral('Process time is 6-8 months.\nFor more details, speak to Rafi.', staff),
+    'Process time is 6-8 months.',
+  );
+  assert.equal(withoutStaffReferral('உங்கள் கேள்விக்கு Zara - 9884949735 ஐ அழைக்கவும்', staff), '');
 });
 
 await check('with nobody to name, "our team will get back to you" is also sent once', async () => {

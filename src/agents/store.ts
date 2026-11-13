@@ -5,10 +5,14 @@
  *   details as they were sent. It is the context for answering the agent's
  *   questions later (`agents/questions.ts`).
  * * `agent_questions`: each question an agent asked and what the bot replied,
- *   so a follow-up ("and the salary?") can be understood, and so an agent is
- *   handed to their staff member once rather than on every message.
+ *   so a follow-up ("and the salary?") can be understood.
+ * * `agent_handoffs`: one row per agent number that has been told to contact
+ *   staff ("For any queries, please contact Zara - +91 ..."). The row is the
+ *   lock that keeps that reply to once per agent: its `_id` is the agent's
+ *   number, so only one message can ever claim it, however many arrive at
+ *   once. It never expires.
  *
- * Both expire after 90 days.
+ * The first two expire after 90 days.
  */
 import type { Collection } from 'mongodb';
 import { getDb } from '../db/client.js';
@@ -50,11 +54,25 @@ export interface AgentQuestion {
   /** False when the bot did not answer it: a hand-off, or silence after one. */
   answered: boolean;
   /**
-   * Set on a hand-off: whom the reply pointed the agent to (`handOffKey`).
-   * The same hand-off is sent to an agent once.
+   * Set on the one hand-off an agent gets: whom the reply pointed them to
+   * (`handOffKey`). The once-only rule itself is `agent_handoffs`.
    */
   handoffTo?: string;
   jobOrderId?: string;
+  at: Date;
+}
+
+/**
+ * The one "contact staff" reply an agent has been sent. `_id` is the agent's
+ * WhatsApp number, so a second claim for the same agent fails on the index
+ * every collection has, with no race between checking and writing.
+ */
+export interface AgentHandoff {
+  _id: string;
+  /** Whom the reply named (`handOffKey`). */
+  to: string;
+  /** The agent's message that the hand-off answered. */
+  wamid: string;
   at: Date;
 }
 
@@ -64,6 +82,8 @@ export const agentNotices = (): Collection<AgentJobOrderNotice> =>
   getDb().collection<AgentJobOrderNotice>('agent_job_order_notices');
 export const agentQuestions = (): Collection<AgentQuestion> =>
   getDb().collection<AgentQuestion>('agent_questions');
+export const agentHandoffs = (): Collection<AgentHandoff> =>
+  getDb().collection<AgentHandoff>('agent_handoffs');
 
 export async function ensureAgentIndexes(): Promise<void> {
   await agentNotices().createIndexes([
@@ -112,9 +132,62 @@ export async function recordAgentQuestion(question: AgentQuestion): Promise<void
   }
 }
 
-/** Whether this agent was already pointed to this contact (`handOffKey`). */
-export async function wasHandedOff(waId: string, handoffTo: string): Promise<boolean> {
-  return (await agentQuestions().countDocuments({ waId, handoffTo }, { limit: 1 })) > 0;
+/**
+ * A hand-off this agent was sent before `agent_handoffs` existed: an
+ * unanswered question with a reply, which can only have been the staff
+ * contact (or "our team will get back to you").
+ */
+async function handedOffBeforeLock(waId: string): Promise<boolean> {
+  const earlier = await agentQuestions().countDocuments(
+    {
+      waId,
+      $or: [{ handoffTo: { $exists: true } }, { answered: false, reply: { $exists: true, $ne: '' } }],
+    },
+    { limit: 1 },
+  );
+  return earlier > 0;
+}
+
+/**
+ * Claims the one "contact staff" reply this agent will ever get. True means
+ * this message won it and should send the hand-off; false means the agent was
+ * already sent one (by an earlier message, or by one being processed right
+ * now) and must get nothing.
+ *
+ * Throws only if the database cannot be written, before anything is sent, so
+ * the queue can retry the job instead of risking a second hand-off.
+ */
+export async function claimAgentHandoff(waId: string, claim: { to: string; wamid: string }): Promise<boolean> {
+  if (await handedOffBeforeLock(waId)) {
+    // Carry the earlier hand-off over into the lock, so it is not looked up again.
+    await agentHandoffs().updateOne(
+      { _id: waId },
+      { $setOnInsert: { to: claim.to, wamid: 'before-lock', at: new Date() } },
+      { upsert: true },
+    );
+    return false;
+  }
+  try {
+    await agentHandoffs().insertOne({ _id: waId, to: claim.to, wamid: claim.wamid, at: new Date() });
+    return true;
+  } catch (err) {
+    if ((err as { code?: number }).code === 11000) return false;
+    throw err;
+  }
+}
+
+/**
+ * Gives the claim back after WhatsApp refused the hand-off, so it was never
+ * delivered and a later question may still send it once. Only the message
+ * that made the claim can release it.
+ */
+export async function releaseAgentHandoff(waId: string, wamid: string): Promise<void> {
+  try {
+    await agentHandoffs().deleteOne({ _id: waId, wamid });
+  } catch (err) {
+    // Kept: the agent goes without the contact rather than risk it twice.
+    logger.warn({ err, wamid }, 'could not release an undelivered agent hand-off');
+  }
 }
 
 /** The agent's last few questions and replies since `since`, oldest first. */

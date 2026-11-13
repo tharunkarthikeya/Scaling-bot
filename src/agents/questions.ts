@@ -17,10 +17,18 @@
  *   An agent with nobody assigned falls back to the job order's own contact
  *   on an older notice, else "our team will get back to you on this number".
  *   The same happens if the model or the CRM is unavailable.
- * * that hand-off is sent once, not on every message: an agent already
- *   pointed to that person gets no reply to the next question the details do
- *   not answer (Rafi still reads it on the WhatsApp Business app). A new
- *   staff member, and so a new number, is handed off once again.
+ * * that hand-off is sent to an agent ONCE, ever: once per agent number, not
+ *   once per staff member, job order or line. Every later question the
+ *   details do not answer gets no reply at all (staff still read it on the
+ *   WhatsApp Business app). The rule is a lock in `agent_handoffs`, claimed
+ *   before sending, so two messages processed at the same moment cannot both
+ *   send it, and a queue retry cannot send it again.
+ * * the model never refers the agent to anyone itself. It is not shown the
+ *   earlier hand-off's wording, names or numbers, and any sentence of its
+ *   answer that points the agent to staff, a team or a phone number is
+ *   removed before sending (`withoutStaffReferral`). An answer that was
+ *   nothing but such a referral counts as unanswered, and so goes through
+ *   the once-only hand-off above.
  *
  * An agent never reaches the candidate conversation. Files are not handled
  * here: they are résumés (`agents/resumes.ts`).
@@ -33,13 +41,14 @@ import { fetchOpenAgentJobOrders } from '../crm/client.js';
 import { isBotSuppressedNumber } from '../crm/suppression.js';
 import { logger } from '../logger.js';
 import type { JobPayloads } from '../queue/index.js';
-import { sendText } from '../whatsapp/client.js';
+import { sendText, WhatsAppApiError } from '../whatsapp/client.js';
 import { agentJobOrderDetails } from './notify.js';
 import {
+  claimAgentHandoff,
   recentAgentNotices,
   recentAgentQuestions,
   recordAgentQuestion,
-  wasHandedOff,
+  releaseAgentHandoff,
   type AgentJobOrderNotice,
   type AgentQuestion,
 } from './store.js';
@@ -69,7 +78,8 @@ Rules:
 - Answer only from those job order details. Never guess, estimate or add facts that are not written there.
 - If the details answer the message, set known=true and reply briefly and politely, quoting the relevant details.
 - If the agent asks what requirements or jobs are available, set known=true and list the matching open job orders briefly (position, country, vacancies). If none match, or none are listed, set known=false.
-- If the message asks for anything the details do not state (a detail missing from the list, negotiation, discounts, interview or visa dates, the status of a candidate, the employer's name, anything else), set known=false and leave answer empty. A member of staff will be named instead.
+- If the message asks for anything the details do not state (a detail missing from the list, negotiation, discounts, interview or visa dates, the status of a candidate, the employer's name, anything else), set known=false and leave answer empty. The system deals with it; you add nothing.
+- Never tell the agent to contact, call, message or wait for anyone, never say staff or the team will get back to them, and never write a person's name or a phone number. Do not repeat or refer to anything said earlier about contacting staff.
 - Greetings, thanks and acknowledgements: known=true, reply in one short line.
 - If the agent says they have candidates or will send CVs: known=true, ask them to send each candidate's CV here (PDF, Word or a clear photo) and say it will be registered automatically.
 - Never treat the agent as a job seeker: never ask for their own CV, documents or personal details.
@@ -140,7 +150,7 @@ export function agentQuestionPrompt(
   if (history.length) {
     parts.push(
       `Recent conversation:\n${history
-        .map((row) => `Agent: ${row.question}\nYou: ${row.reply || '(no reply; left for the staff member)'}`)
+        .map((row) => `Agent: ${row.question}\nYou: ${row.answered ? row.reply : '(not answered from the job orders)'}`)
         .join('\n')}`,
     );
   }
@@ -190,6 +200,69 @@ export function handOffKey(notice: AgentJobOrderContext | undefined, staff?: Age
   const pick = (name?: string, phone?: string) =>
     (phone ?? '').replace(/\D/g, '') || (name ?? '').trim().toLowerCase();
   return pick(staff?.name, staff?.phone) || pick(notice?.details.staff_name, notice?.details.staff_phone) || 'team';
+}
+
+/** A run of text that can only be a phone number: "+91 98844 47455", "9884447455". */
+const PHONE = /\+\d[\d\s().-]{7,}\d|(?<!\d)[6-9]\d{4}\s?\d{5}(?!\d)/;
+
+/**
+ * Phrases that send the agent to someone else. English only: the prompt is
+ * the guard in other languages, and names and numbers are caught in any.
+ */
+const REFERRAL = new RegExp(
+  [
+    String.raw`\bcontact(ing)?\s+(us|me|him|her|them|our|your|the\s+(staff|team|office|concerned|recruit\w*|coordinator|person|manager)|staff|team|recruit\w*|coordinator|manager)\b`,
+    String.raw`\bplease\s+contact\b`,
+    String.raw`\b(reach\s+out|get\s+in\s+touch|speak|talk)\s+(to|with)\b`,
+    String.raw`\b(call|message|whats\s?app)\s+(us|our|the\s+(staff|team|office))\b`,
+    String.raw`\bget\s+back\s+to\s+you\b`,
+    String.raw`\b(will|shall)\s+(contact|call|reach)\s+you\b`,
+    String.raw`\b(our|the)\s+(staff|team)\s+(member\s+)?will\b`,
+    String.raw`\b(staff|team)\s+member\b`,
+    String.raw`\bfor\s+(any|further|more)\s+(quer(y|ies)|questions|clarifications?)\b`,
+  ].join('|'),
+  'i',
+);
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The agent's answer with every sentence that refers them to staff taken out:
+ * a known staff member's name or number, any phone number, or a referral
+ * phrase. Empty when nothing else was said, so the answer counts as
+ * unanswered and the once-only hand-off decides whether anything is sent.
+ */
+export function withoutStaffReferral(answer: string, staff: AgentStaff[]): string {
+  const names = staff
+    .map((s) => s.name?.trim() ?? '')
+    .filter((name) => name.length >= 3)
+    .map((name) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, 'iu'));
+  const numbers = staff
+    .map((s) => (s.phone ?? '').replace(/\D/g, '').slice(-10))
+    .filter((digits) => digits.length >= 7);
+  const refers = (sentence: string) => {
+    const digits = sentence.replace(/[\s().+-]/g, '');
+    return (
+      REFERRAL.test(sentence) ||
+      PHONE.test(sentence) ||
+      names.some((name) => name.test(sentence)) ||
+      numbers.some((number) => digits.includes(number))
+    );
+  };
+  return answer
+    .split('\n')
+    .map((line) =>
+      line
+        .split(/(?<=[.!?;।])\s+/)
+        .filter((sentence) => !refers(sentence))
+        .join(' ')
+        .trimEnd(),
+    )
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**
@@ -270,23 +343,59 @@ export async function processAgentQuestion(payload: JobPayloads['agent_question'
   }
 
   const notice = pickNotice(notices, chosen, payload.contextWamid);
-  const answered = known && !!answer;
   const staff: AgentStaff = { name: payload.staffName, phone: payload.staffPhone };
-  const handoffTo = answered ? undefined : handOffKey(notice, staff);
+  // The model must not point the agent to staff on its own: that would be a
+  // second "contact staff" message the once-only lock below never saw.
+  const cleaned = known
+    ? withoutStaffReferral(answer, [
+        staff,
+        ...notices.map((n) => ({ name: n.details.staff_name, phone: n.details.staff_phone })),
+      ])
+    : '';
+  if (known && cleaned !== answer) {
+    logger.warn(
+      { wamid: payload.wamid, removed: cleaned ? 'part' : 'all' },
+      'model referred an agent to staff; referral removed from the answer',
+    );
+  }
+  const answered = known && !!cleaned;
 
-  // The hand-off goes to an agent once. After that, a question the job orders
-  // do not answer gets no reply: the agent already has the number to call.
-  let alreadyHandedOff = false;
-  if (handoffTo) {
+  if (answered) {
+    const reply = cleaned.slice(0, MAX_REPLY_CHARS);
     try {
-      alreadyHandedOff = await wasHandedOff(payload.waId, handoffTo);
+      await sendText(payload.waId, reply, payload.phoneNumberId);
     } catch (err) {
-      // Unknown: send it. A repeated contact beats leaving a new agent unanswered.
-      logger.warn({ err, wamid: payload.wamid }, 'could not check earlier hand-offs to an agent');
+      logger.warn({ err, wamid: payload.wamid }, 'could not reply to an agent question');
+      return;
     }
+    await recordAgentQuestion({
+      waId: payload.waId,
+      wamid: payload.wamid,
+      question: payload.text,
+      reply,
+      answered: true,
+      ...(notice ? { jobOrderId: notice.jobOrderId } : {}),
+      at: new Date(),
+    });
+    logger.info(
+      {
+        wamid: payload.wamid,
+        jobOrderId: notice?.jobOrderId,
+        sentOrders: sent.length,
+        openOrders: open.length,
+      },
+      'answered an agent question from job orders',
+    );
+    return;
   }
 
-  if (alreadyHandedOff) {
+  // Not answered: the "contact staff" reply, which an agent gets once, ever.
+  // The lock is claimed before sending, so of several messages arriving
+  // together only one can send it. A database failure throws here, before
+  // anything is sent, and the queue retries.
+  const handoffTo = handOffKey(notice, staff);
+  const won = await claimAgentHandoff(payload.waId, { to: handoffTo, wamid: payload.wamid });
+  if (!won) {
     await recordAgentQuestion({
       waId: payload.waId,
       wamid: payload.wamid,
@@ -298,17 +407,23 @@ export async function processAgentQuestion(payload: JobPayloads['agent_question'
     });
     logger.info(
       { wamid: payload.wamid, jobOrderId: notice?.jobOrderId },
-      'agent already has the staff contact; question left for staff without a reply',
+      'agent was already told to contact staff; question left for staff without a reply',
     );
     return;
   }
 
-  const reply = answered ? answer.slice(0, MAX_REPLY_CHARS) : handOffReply(notice, staff);
-
+  const reply = handOffReply(notice, staff);
   try {
     await sendText(payload.waId, reply, payload.phoneNumberId);
   } catch (err) {
-    logger.warn({ err, wamid: payload.wamid }, 'could not reply to an agent question');
+    if (err instanceof WhatsAppApiError) {
+      // WhatsApp refused it, so the agent never got it: a later question may
+      // still send it, once.
+      await releaseAgentHandoff(payload.waId, payload.wamid);
+    }
+    // Any other failure (a timeout) may still have been delivered: the lock
+    // stays, because twice is worse than not at all.
+    logger.warn({ err, wamid: payload.wamid }, 'could not send the staff contact to an agent');
     return;
   }
 
@@ -317,19 +432,13 @@ export async function processAgentQuestion(payload: JobPayloads['agent_question'
     wamid: payload.wamid,
     question: payload.text,
     reply,
-    answered,
-    ...(handoffTo ? { handoffTo } : {}),
+    answered: false,
+    handoffTo,
     ...(notice ? { jobOrderId: notice.jobOrderId } : {}),
     at: new Date(),
   });
   logger.info(
-    {
-      wamid: payload.wamid,
-      answered,
-      jobOrderId: notice?.jobOrderId,
-      sentOrders: sent.length,
-      openOrders: open.length,
-    },
-    answered ? 'answered an agent question from job orders' : 'handed an agent question to staff',
+    { wamid: payload.wamid, jobOrderId: notice?.jobOrderId },
+    'handed an agent question to staff (the one hand-off this agent gets)',
   );
 }
