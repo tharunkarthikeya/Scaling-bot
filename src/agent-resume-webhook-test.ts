@@ -2,7 +2,9 @@
  * The webhook gate for Sourcing Hub senders, against an in-memory MongoDB.
  *
  * A file from a Sourcing Hub agent is queued as an agent résumé (once, even if
- * Meta delivers it twice), their text as an agent question. Clients and
+ * Meta delivers it twice); their text is dropped, never answered, except on
+ * the hand-off line, where any message from them is queued for the one
+ * "contact the staff" message (sent at most once; see agent-handoff-test). Clients and
  * associations, on any of their contact numbers, get nothing, and no Sourcing
  * Hub number ever reaches the candidate conversation. A number on the CRM
  * suppression list gets nothing at all, on any line — except an active
@@ -26,6 +28,8 @@ process.env.CRM_API_KEY = 'service-key';
 // Fixed here rather than read from `.env`, so the attendance-line checks test
 // the attendance line wherever this runs.
 process.env.WHATSAPP_ATTENDANCE_PHONE_NUMBER_ID = '1344483985421841';
+process.env.WHATSAPP_AGENT_HANDOFF_PHONE_NUMBER_ID = '1344483985421841';
+const HANDOFF_LINE = '1344483985421841';
 
 const { config } = await import('./config.js');
 const { connectDb, closeDb } = await import('./db/client.js');
@@ -63,7 +67,11 @@ globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     // The CRM's answer before suppression was checked first: a suppressed
     // agent came back as an agent. The bot must not rely on that order.
     if (phone === AGENT || phone === SUPPRESSED_AGENT) {
-      return Response.json({ ...SOURCING, sourcing_type: 'agent' });
+      return Response.json({
+        ...SOURCING,
+        sourcing_type: 'agent',
+        agent_staff: { name: 'Zara', phone: '+91 98765 43210' },
+      });
     }
     if (CLIENT_CONTACTS.includes(phone)) return Response.json({ ...SOURCING, sourcing_type: 'client' });
     if (phone === UNTYPED_SOURCING) return Response.json(SOURCING);
@@ -104,8 +112,10 @@ await ensureIndexes();
 const agentJobs: unknown[] = [];
 const inboundJobs: unknown[] = [];
 const questionJobs: unknown[] = [];
+const handoffJobs: unknown[] = [];
 queue.register('agent_resume', async (payload) => void agentJobs.push(payload));
 queue.register('agent_question', async (payload) => void questionJobs.push(payload));
+queue.register('agent_handoff', async (payload) => void handoffJobs.push(payload));
 queue.register('inbound_message', async (payload) => void inboundJobs.push(payload));
 await queue.start();
 
@@ -151,6 +161,7 @@ async function check(name: string, run: () => Promise<void>) {
   agentJobs.length = 0;
   inboundJobs.length = 0;
   questionJobs.length = 0;
+  handoffJobs.length = 0;
   otherCalls.length = 0;
   attendanceEvents.length = 0;
   await run();
@@ -187,7 +198,7 @@ await check('a photo from a Sourcing Hub contact is queued too', async () => {
   assert.equal(inboundJobs.length, 0);
 });
 
-await check('text from a Sourcing Hub contact is queued as an agent question, never as a candidate', async () => {
+await check('text from an agent is dropped: no answer, no candidate flow, no read receipt', async () => {
   await deliver(AGENT, {
     id: 'wamid.AGENT-TXT-1',
     type: 'text',
@@ -195,15 +206,44 @@ await check('text from a Sourcing Hub contact is queued as an agent question, ne
     context: { from: '919884447455', id: 'wamid.JOB-ORDER-TEMPLATE' },
   });
   await settle();
-  assert.deepEqual(questionJobs, [{
-    waId: AGENT,
-    wamid: 'wamid.AGENT-TXT-1',
-    text: 'What is the salary?',
-    contextWamid: 'wamid.JOB-ORDER-TEMPLATE',
-    phoneNumberId: '558448830676126',
-  }]);
+  assert.equal(questionJobs.length, 0, 'an agent text was queued for an answer');
+  assert.equal(handoffJobs.length, 0, 'an agent off the hand-off line was queued for the staff contact');
   assert.equal(agentJobs.length, 0);
   assert.equal(inboundJobs.length, 0);
+  assert.ok(!otherCalls.some((url) => url.endsWith('/messages')), 'something was sent to the agent');
+});
+
+await check('text from an agent on the hand-off line is queued once for the staff contact, with the staff', async () => {
+  const message = { id: 'wamid.AGENT-HO-1', type: 'text', text: { body: 'What is the salary?' } };
+  assert.equal(await deliver(AGENT, message, HANDOFF_LINE), 200);
+  assert.equal(await deliver(AGENT, message, HANDOFF_LINE), 200); // Meta redelivers
+  await settle();
+  assert.deepEqual(handoffJobs, [{
+    waId: AGENT,
+    wamid: 'wamid.AGENT-HO-1',
+    phoneNumberId: HANDOFF_LINE,
+    staffName: 'Zara',
+    staffPhone: '+91 98765 43210',
+  }]);
+  assert.equal(questionJobs.length + agentJobs.length + inboundJobs.length, 0);
+});
+
+await check('a CV from an agent on the hand-off line goes to intake and to the staff-contact check', async () => {
+  await deliver(AGENT, {
+    id: 'wamid.AGENT-HO-DOC',
+    type: 'document',
+    document: { id: 'MEDIA-HO', mime_type: 'application/pdf', filename: 'cv.pdf' },
+  }, HANDOFF_LINE);
+  await settle();
+  assert.equal(agentJobs.length, 1);
+  assert.equal(handoffJobs.length, 1);
+  assert.equal(inboundJobs.length, 0);
+});
+
+await check('clients on the hand-off line get nothing', async () => {
+  await deliver(CLIENT_CONTACTS[0]!, { id: 'wamid.CLIENT-HO', type: 'text', text: { body: 'Hi' } }, HANDOFF_LINE);
+  await settle();
+  assert.equal(handoffJobs.length + agentJobs.length + questionJobs.length + inboundJobs.length, 0);
 });
 
 await check('a candidate sending a document still goes to the candidate conversation', async () => {
@@ -230,6 +270,7 @@ await check('every contact of a Sourcing Hub client gets nothing, first contact 
   await settle();
   assert.equal(agentJobs.length, 0, 'a client was handed to the agent résumé worker');
   assert.equal(questionJobs.length, 0, 'a client was handed to the agent question worker');
+  assert.equal(handoffJobs.length, 0, 'a client was queued for the staff contact');
   assert.equal(inboundJobs.length, 0, 'a client reached the candidate conversation');
 });
 
@@ -240,7 +281,7 @@ await check('a Sourcing Hub number without a reported type is not treated as an 
     document: { id: 'MEDIA-U', mime_type: 'application/pdf', filename: 'cv.pdf' },
   });
   await settle();
-  assert.equal(agentJobs.length + questionJobs.length + inboundJobs.length, 0);
+  assert.equal(agentJobs.length + questionJobs.length + handoffJobs.length + inboundJobs.length, 0);
 });
 
 await check('a suppressed agent gets nothing: no résumé intake, no question answer, no candidate flow', async () => {
@@ -257,6 +298,7 @@ await check('a suppressed agent gets nothing: no résumé intake, no question an
   await settle();
   assert.equal(agentJobs.length, 0, 'a suppressed agent was queued for résumé intake');
   assert.equal(questionJobs.length, 0, 'a suppressed agent was queued for an answer');
+  assert.equal(handoffJobs.length, 0, 'a suppressed agent was queued for the staff contact');
   assert.equal(inboundJobs.length, 0, 'a suppressed agent reached the candidate conversation');
 });
 
@@ -275,7 +317,7 @@ await check('a suppressed number on the attendance line is not answered by atten
   await settle();
   assert.deepEqual(otherCalls, [], 'the attendance workflow ran for a suppressed number');
   assert.equal(attendanceEvents.length, 0, 'a suppressed non-employee reached the attendance CRM');
-  assert.equal(inboundJobs.length + agentJobs.length + questionJobs.length, 0);
+  assert.equal(inboundJobs.length + agentJobs.length + questionJobs.length + handoffJobs.length, 0);
 });
 
 await check('a suppressed employee still marks attendance on the attendance line, start to finish', async () => {
@@ -301,7 +343,7 @@ await check('a suppressed employee still marks attendance on the attendance line
   assert.equal(attendanceEvents[1]?.command_message_id, 'wamid.STAFF-IN');
   assert.deepEqual(otherCalls, []);
   assert.equal(
-    inboundJobs.length + agentJobs.length + questionJobs.length,
+    inboundJobs.length + agentJobs.length + questionJobs.length + handoffJobs.length,
     0,
     'a suppressed employee was let past attendance into another workflow',
   );
@@ -312,7 +354,7 @@ await check('a suppressed employee gets nothing on any other line', async () => 
   await settle();
   assert.equal(attendanceEvents.length, 0, 'attendance ran off the attendance line');
   assert.deepEqual(otherCalls, []);
-  assert.equal(inboundJobs.length + agentJobs.length + questionJobs.length, 0);
+  assert.equal(inboundJobs.length + agentJobs.length + questionJobs.length + handoffJobs.length, 0);
 });
 
 console.log(`\n${passed} passed\n`);

@@ -1394,7 +1394,7 @@ export async function ensureIndexes(): Promise<void> {
     { key: { waId: 1, receivedAt: -1 }, name: 'waId_receivedAt' },
   ]);
 
-  // Job orders sent to Sourcing Hub agents and their questions (`agents/store.ts`).
+  // Job orders sent to Sourcing Hub agents (`agents/store.ts`).
   const { ensureAgentIndexes } = await import('../agents/store.js');
   await ensureAgentIndexes();
 

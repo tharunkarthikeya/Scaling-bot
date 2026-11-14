@@ -289,14 +289,13 @@ const schema = z.object({
   WHATSAPP_AGENT_PHONE_NUMBER_ID: blankable(z.string().min(1).optional()),
 
   /**
-   * Answering agents' texts (`agents/questions.ts`) from the job orders sent
-   * to them in the last AGENT_QA_CONTEXT_DAYS days and the CRM's other open
-   * job orders. Anything those do not say is handed to the order's assigned
-   * staff member, or to "our team" when no order is in question. Off stops
-   * the replies; agents' texts are then left for Rafi, as before.
+   * The one line on which an agent's message gets a reply: the "contact the
+   * staff" message, sent ONCE per agent number, ever (`agents/handoff.ts`).
+   * Every other line never replies to an agent. +91 63817 27653 by the user's
+   * choice (2026-11-14). Set empty to send it on no line.
    */
-  AGENT_QA_ENABLED: bool.default('true'),
-  AGENT_QA_CONTEXT_DAYS: z.coerce.number().int().positive().default(30),
+  WHATSAPP_AGENT_HANDOFF_PHONE_NUMBER_ID: z.string().default('1344483985421841'),
+
 
   /**
    * The country code to read a bare ten-digit staff number as.

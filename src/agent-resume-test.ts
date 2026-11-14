@@ -1,4 +1,4 @@
-/** Agents' résumés: which messages qualify, the CRM hand-off, and the reply. Offline. */
+/** Agents' résumés: which messages qualify, the CRM hand-off, and that the agent is never replied to. Offline. */
 import assert from 'node:assert/strict';
 
 process.env.REDIS_URL = '';
@@ -7,7 +7,7 @@ process.env.MOCK_WHATSAPP_MEDIA = 'false';
 process.env.CRM_API_URL = 'https://crm.example.com';
 process.env.CRM_API_KEY = 'service-key';
 
-const { agentResumeReply, isAgentResumeMessage, processAgentResume } = await import('./agents/resumes.js');
+const { isAgentResumeMessage, processAgentResume } = await import('./agents/resumes.js');
 const { refreshBotSuppressionNumbers } = await import('./crm/suppression.js');
 
 type Call = { url: string; init?: RequestInit };
@@ -43,10 +43,8 @@ const JOB = {
   phoneNumberId: '558448830676126',
 };
 
-const sentTexts = () =>
-  calls
-    .filter((c) => c.url.endsWith('/messages'))
-    .map((c) => JSON.parse(String(c.init?.body)) as { to: string; text: { body: string } });
+/** Anything sent to WhatsApp. An agent must never be sent a reply. */
+const sentMessages = () => calls.filter((c) => c.url.endsWith('/messages'));
 const crmCall = () => calls.find((c) => c.url === 'https://crm.example.com/agent-resumes');
 
 let passed = 0;
@@ -67,32 +65,7 @@ await check('documents and photos qualify; text does not', () => {
   assert.equal(isAgentResumeMessage({ type: 'audio', media: { id: 'm' } }), false);
 });
 
-await check('the reply names the candidate and their CRM id when one is created', () => {
-  assert.equal(
-    agentResumeReply({ status: 'created', candidate_id: 'c', candidate_code: 'CND-1', full_name: 'Ramesh' }),
-    'Received. Ramesh has been added to Adira Enterprises (ID: CND-1). Thank you.',
-  );
-});
-
-await check('each refusal gets a reply that says what to do, and never names another candidate', () => {
-  const dup = agentResumeReply(
-    { status: 'rejected', code: 'duplicate_candidate', message: 'A candidate with this email or phone already exists: Someone Else (CND-9).' },
-    'cv.pdf',
-  )!;
-  assert.match(dup, /already registered/);
-  assert.doesNotMatch(dup, /Someone Else|CND-9/);
-  assert.match(agentResumeReply({ status: 'rejected', code: 'not_a_resume' }, 'pic.jpg')!, /does not look like a résumé/);
-  assert.match(agentResumeReply({ status: 'rejected', code: 'missing_candidate_contact' })!, /clearer copy/);
-  assert.match(agentResumeReply({ status: 'rejected', code: 'resume_too_large' })!, /20 MB/);
-  assert.match(agentResumeReply({ status: 'error', code: 'resume_ocr_failed' })!, /send it again/);
-});
-
-await check('clients, associations and inactive agents get no reply', () => {
-  assert.equal(agentResumeReply({ status: 'ignored', reason: 'not_an_agent' }), null);
-  assert.equal(agentResumeReply({ status: 'processing' }), null);
-});
-
-await check('the file goes to the CRM with the sender and message id, and the agent is told', async () => {
+await check('the file goes to the CRM with the sender and message id, and the agent is not replied to', async () => {
   await processAgentResume(JOB);
   const crm = crmCall();
   assert.ok(crm, 'the CRM was not called');
@@ -102,13 +75,7 @@ await check('the file goes to the CRM with the sender and message id, and the ag
   assert.equal(form.get('wamid'), 'wamid.AGENT-1');
   assert.equal(form.get('line_id'), '558448830676126');
   assert.equal((form.get('file') as File).name, 'ramesh.pdf');
-
-  const [reply] = sentTexts();
-  assert.ok(reply, 'no reply was sent');
-  assert.equal(reply.to, '919876543210');
-  assert.match(reply.text.body, /Ramesh Kumar has been added .*CND-1001/);
-  // From the line the agent wrote to.
-  assert.ok(calls.some((c) => c.url.endsWith('/558448830676126/messages')));
+  assert.equal(sentMessages().length, 0, 'the agent was sent a reply');
 });
 
 await check('a photo with no filename is still sent, with a sensible name', async () => {
@@ -116,22 +83,32 @@ await check('a photo with no filename is still sent, with a sensible name', asyn
   assert.equal(((crmCall()?.init?.body as FormData).get('file') as File).name, 'resume.pdf');
 });
 
-await check('a non-agent is left alone: no reply', async () => {
-  crmReply = () => Response.json({ status: 'ignored', reason: 'not_an_agent' });
-  await processAgentResume(JOB);
-  assert.equal(sentTexts().length, 0);
+await check('no outcome sends the agent anything: refused, duplicate, ignored or CRM error', async () => {
+  const outcomes: Array<() => Response> = [
+    () => Response.json({ status: 'rejected', code: 'duplicate_candidate', message: 'exists: Someone Else (CND-9)' }),
+    () => Response.json({ status: 'rejected', code: 'not_a_resume' }),
+    () => Response.json({ status: 'rejected', code: 'missing_candidate_contact' }),
+    () => Response.json({ status: 'error', code: 'resume_ocr_failed' }),
+    () => Response.json({ status: 'ignored', reason: 'not_an_agent' }),
+    () => new Response('bad request', { status: 400 }),
+  ];
+  for (const outcome of outcomes) {
+    crmReply = outcome;
+    await processAgentResume(JOB);
+  }
+  assert.equal(sentMessages().length, 0, 'the agent was sent a reply');
 });
 
 await check('the CRM being down is retried, not answered', async () => {
   crmReply = () => new Response('down', { status: 503 });
   await assert.rejects(processAgentResume(JOB));
-  assert.equal(sentTexts().length, 0);
+  assert.equal(sentMessages().length, 0);
 });
 
 await check('a message the CRM is still reading is retried for its outcome', async () => {
   crmReply = () => Response.json({ status: 'processing' });
   await assert.rejects(processAgentResume(JOB), /still being processed/);
-  assert.equal(sentTexts().length, 0);
+  assert.equal(sentMessages().length, 0);
 });
 
 await check('an agent suppressed while the job waited gets nothing: no download, no intake, no reply', async () => {

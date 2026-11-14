@@ -29,7 +29,7 @@ import { record, renderMetrics } from './metrics/index.js';
 import { notifyAdminsOfSlaBreach, notifyStaffOfAssignment } from './staff/notify.js';
 import { notifyAgentOfJobOrder } from './agents/notify.js';
 import { isAgentResumeMessage } from './agents/resumes.js';
-import { isAgentQuestionMessage } from './agents/questions.js';
+import { isAgentHandoffLine } from './agents/handoff.js';
 import { isSourcingWhatsAppNumber } from './ats/sourcingGuard.js';
 import { isBotSuppressedNumber } from './crm/suppression.js';
 import { isAttendanceStaffNumber } from './crm/attendance-staff.js';
@@ -328,49 +328,55 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
           const agent =
             policy.reason === 'sourcing_contact_number' && policy.sourcing_type === 'agent';
 
+          // The bot never replies to an agent (user rule, 2026-11-14), with one
+          // exception. Besides the new job order broadcast
+          // (`/api/agent-job-order`), which is not a reply, an agent can get
+          // exactly one message: "contact the staff", with that staff member's
+          // name and number, ONCE per agent number, ever, and only for writing
+          // to the hand-off line (+91 63817 27653, `agents/handoff.ts`). On
+          // every other line their texts are left for Rafi, unanswered.
+          //
           // An agent sending a document or photo is sending a candidate's CV.
           // The `agent_resume` worker hands it to the CRM, which reads it and
-          // answers.
-          if (agent && isAgentResumeMessage(msg)) {
+          // creates the candidate. That sends the agent nothing.
+          const resume = agent && isAgentResumeMessage(msg);
+          const handoff = agent && isAgentHandoffLine(msg.phoneNumberId);
+          if (resume || handoff) {
             if (await claimEvent(msg.wamid)) {
-              await queue.enqueue(
-                'agent_resume',
-                {
-                  waId: msg.waId,
-                  wamid: msg.wamid,
-                  mediaId: msg.media!.id,
-                  mimeType: msg.media!.mimeType,
-                  filename: msg.media!.filename,
-                  phoneNumberId: msg.phoneNumberId,
-                },
-                { key: `agent-resume-${msg.wamid}` },
-              );
-              logger.info(
-                { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
-                'sourcing contact sent a file; queued as a possible agent résumé',
-              );
-            }
-            continue;
-          }
-          // A text from an agent may be a question about a job order they were
-          // sent. The `agent_question` worker answers it from the job orders,
-          // or points the agent to the staff member who handles them, once.
-          if (agent && config.AGENT_QA_ENABLED && isAgentQuestionMessage(msg)) {
-            if (await claimEvent(msg.wamid)) {
-              const staffName = String(policy.agent_staff?.name ?? '').trim();
-              const staffPhone = String(policy.agent_staff?.phone ?? '').trim();
-              await queue.enqueue(
-                'agent_question',
-                {
-                  waId: msg.waId,
-                  wamid: msg.wamid,
-                  text: msg.text!,
-                  ...(msg.contextWamid ? { contextWamid: msg.contextWamid } : {}),
-                  phoneNumberId: msg.phoneNumberId,
-                  ...(staffName || staffPhone ? { staffName, staffPhone } : {}),
-                },
-                { key: `agent-question-${msg.wamid}` },
-              );
+              if (resume) {
+                await queue.enqueue(
+                  'agent_resume',
+                  {
+                    waId: msg.waId,
+                    wamid: msg.wamid,
+                    mediaId: msg.media!.id,
+                    mimeType: msg.media!.mimeType,
+                    filename: msg.media!.filename,
+                    phoneNumberId: msg.phoneNumberId,
+                  },
+                  { key: `agent-resume-${msg.wamid}` },
+                );
+                logger.info(
+                  { waId: msg.waId, wamid: msg.wamid, phoneNumberId: msg.phoneNumberId },
+                  'sourcing contact sent a file; queued as a possible agent résumé',
+                );
+              }
+              if (handoff) {
+                const staffName = String(policy.agent_staff?.name ?? '').trim();
+                const staffPhone = String(policy.agent_staff?.phone ?? '').trim();
+                // The worker's lock decides whether it is actually sent: an
+                // agent who already had it gets nothing.
+                await queue.enqueue(
+                  'agent_handoff',
+                  {
+                    waId: msg.waId,
+                    wamid: msg.wamid,
+                    phoneNumberId: msg.phoneNumberId,
+                    ...(staffName || staffPhone ? { staffName, staffPhone } : {}),
+                  },
+                  { key: `agent-handoff-${msg.wamid}` },
+                );
+              }
             }
             continue;
           }
@@ -380,6 +386,7 @@ export async function buildServer(options: ServerOptions = {}): Promise<FastifyI
               wamid: msg.wamid,
               phoneNumberId: msg.phoneNumberId,
               reason: policy.reason,
+              ...(agent ? { sourcingType: 'agent' } : {}),
             },
             'CRM reply policy suppressed inbound without read receipt',
           );

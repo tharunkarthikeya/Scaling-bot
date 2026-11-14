@@ -9,9 +9,10 @@
  * It is a template because an agent has usually not written to that line in
  * the last 24 hours, and Meta refuses free-form text outside that window.
  *
- * Each send is remembered (`agents/store.ts`) so the agent's questions about
- * it can be answered (`agents/questions.ts`). The line is still on the
- * WhatsApp Business app, where Rafi also reads it.
+ * Each send is remembered (`agents/store.ts`) as a record of who was told
+ * what. This broadcast is the only message the bot ever sends an agent: it
+ * never replies to them (user rule, 2026-11-14). The line is still on the
+ * WhatsApp Business app, where Rafi reads and answers agents directly.
  *
  * Like the staff relay, this never throws. The job order is already saved, so
  * a failed send is a reason in the reply, not a 500.
@@ -166,9 +167,9 @@ export function agentJobOrderImage(posterUrl?: string | null): string {
 }
 
 /**
- * The job order as the agent was told about it, kept for answering their
- * questions later. Blank where the order said nothing, so the answerer knows
- * it does not know (unlike the template, which needs "Not stated").
+ * The job order as the agent was told about it, kept as a record of the send.
+ * Blank where the order said nothing (unlike the template, which needs
+ * "Not stated").
  */
 export function agentJobOrderDetails(facts: AgentJobOrderFacts): AgentJobOrderDetails {
   const clean = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim();
@@ -219,8 +220,8 @@ export async function notifyAgentOfJobOrder(
       { agentId: facts.agent_id, jobOrderId: facts.job_order_id, shadowed: result.shadowed },
       'told an agent about a new job order',
     );
-    // Remembered so the agent's questions about it can be answered. Not in
-    // shadow mode: nothing reached the agent, so there is nothing to answer for.
+    // Remembered as a record of the send. Not in shadow mode: nothing reached
+    // the agent.
     if (!result.shadowed) {
       await rememberAgentNotice({
         waId: to,

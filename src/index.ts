@@ -10,7 +10,7 @@ import { processOcrJob, sweepRunningExtractions } from './ocr/veris.js';
 import { reconcileCrmSync, syncCandidateToCrm } from './crm/sync.js';
 import { exportToAts } from './ats/export.js';
 import { processAgentResume } from './agents/resumes.js';
-import { processAgentQuestion } from './agents/questions.js';
+import { processAgentHandoff } from './agents/handoff.js';
 import { ensureAtsCollections } from './ats/client.js';
 import { refreshSourcingContactNumbers } from './ats/sourcingGuard.js';
 import { crmConfigured } from './crm/client.js';
@@ -136,8 +136,20 @@ function registerWorkers(): void {
   // the same kind of work, just slower per job.
   queue.register('agent_resume', processAgentResume, config.QUEUE_CONCURRENCY_CRM_SYNC);
 
-  // Agents' questions about the job orders they were sent (`agents/questions.ts`).
-  queue.register('agent_question', processAgentQuestion, config.QUEUE_CONCURRENCY_CRM_SYNC);
+  // The one "contact the staff" message an agent can get, once per number,
+  // ever, and only on the hand-off line (`agents/handoff.ts`).
+  queue.register('agent_handoff', processAgentHandoff, config.QUEUE_CONCURRENCY_CRM_SYNC);
+
+  // Agents' texts used to be answered here. The bot never replies to an agent
+  // now (user rule, 2026-11-14) and the webhook queues no such job. A job
+  // queued before this deploy is dropped unanswered.
+  queue.register(
+    'agent_question',
+    async (payload) => {
+      logger.info({ wamid: payload.wamid }, 'leftover agent question dropped; agents get no bot replies');
+    },
+    config.QUEUE_CONCURRENCY_CRM_SYNC,
+  );
 }
 
 async function main(): Promise<void> {
@@ -199,6 +211,7 @@ async function main(): Promise<void> {
     queue.observe('crm_sync');
     queue.observe('ats_export');
     queue.observe('agent_resume');
+    queue.observe('agent_handoff');
     queue.observe('agent_question');
   }
 

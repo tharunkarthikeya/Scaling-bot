@@ -63,8 +63,9 @@ export interface JobPayloads {
    * file, far longer than a webhook may wait.
    */
   /**
-   * A text from a Sourcing Hub agent, answered from the job orders they were
-   * sent (`agents/questions.ts`). The worker stays silent when there are none.
+   * Retired: a text from a Sourcing Hub agent, which the bot used to answer.
+   * Agents get no bot replies now; nothing queues this, and the handler in
+   * `index.ts` only drops jobs queued before that change.
    */
   agent_question: {
     waId: string;
@@ -72,6 +73,19 @@ export interface JobPayloads {
     text: string;
     /** The message they replied to, when they used WhatsApp's reply. */
     contextWamid?: string;
+    phoneNumberId?: string;
+    /** The staff member who handles this agent, from the CRM's reply policy. */
+    staffName?: string;
+    staffPhone?: string;
+  };
+  /**
+   * A message from a Sourcing Hub agent on the hand-off line, which may earn
+   * them the one "contact the staff" message they will ever get
+   * (`agents/handoff.ts`).
+   */
+  agent_handoff: {
+    waId: string;
+    wamid: string;
     phoneNumberId?: string;
     /** The staff member who handles this agent, from the CRM's reply policy. */
     staffName?: string;
